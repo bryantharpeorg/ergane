@@ -866,3 +866,59 @@ async def read_loop_config(request: ReadLoopConfigInput) -> ReadLoopConfigResult
         verify_order=verify_order,
         diff_refusal_bytes=diff_refusal_bytes,
     )
+
+
+# --- tree revision: what the worker's tree was loaded from (156-US2) ----------
+
+
+#: Test seam for `tree_revision_activity`: production reads the worker host's
+#: tree; scheduler tests script a fixed answer so git is not the subject.
+_tree_revision_runner: Callable[[str], str | None] | None = None
+
+
+def _tree_revision_from_git(target_repo: str) -> str | None:
+    """The revision the tree this process imported its code from is at.
+
+    Same capture `_worker_revision` (`factory/worker.py`) makes at boot, made
+    at ask time instead: an activity runs in the worker process, where the
+    workflow's modules were imported, so the answer is the tree the worker's
+    code was loaded from — the "tree revision" half of FR-004's comparison.
+    `None` when the tree is not a git checkout, degrading to "unknown" the
+    same way the boot stamp does. The `target_repo` argument is part of the
+    sibling seams' shared call shape, not a path the read resolves against:
+    the revision that decides skew is the one the worker's *own* code was
+    loaded from (FR-005), wherever the target clone sits.
+    """
+    import subprocess
+
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=Path(__file__).resolve().parent.parent,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+            or None
+        )
+    except Exception:
+        return None
+
+
+@activity.defn
+async def tree_revision_activity(request: ReadLoopConfigInput) -> str | None:
+    """The revision the worker's tree is at, read at ask time (156-US2, FR-005).
+
+    A workflow may not run git (156 plan trap 3), so the read is an activity —
+    and the activity is registered at worker boot beside every other, which is
+    what keeps the refusal path inside code the worker already has loaded: only
+    its return value is new. Its input reuses `ReadLoopConfigInput` — one
+    `target_repo` string, already on the boundary — rather than minting a
+    record the payload-shape sweep would then have to allowlist. The roadmap
+    compares the answer against the boot stamp on its own input and parks the
+    spec when the two disagree.
+    """
+    runner = _tree_revision_runner
+    if runner is not None:
+        return runner(request.target_repo)
+    return _tree_revision_from_git(request.target_repo)

@@ -126,6 +126,7 @@ from tests.roadmap_script import (
     ScriptedEpicWorkflow,
     landed_status,
 )
+from tests.test_roadmap_scheduler import HARNESS_REVISION, _BootRevisionInterceptor
 from tests.test_interpreter import (
     EPIC_ID as TEST_EPIC_ID,
     TARGET_REPO as TEST_TARGET_REPO,
@@ -635,6 +636,9 @@ async def _run_roadmap(
         saved["_read_loop_config_runner"] = getattr(
             roadmap_activities, "_read_loop_config_runner", None
         )
+        saved["_tree_revision_runner"] = getattr(
+            roadmap_activities, "_tree_revision_runner", None
+        )
         saved["roadmap_check_aliases"] = getattr(
             roadmap_activities, "check_aliases", None
         )
@@ -644,6 +648,9 @@ async def _run_roadmap(
             path=str(target_repo), default_branch="main", head_ref="abc123"
         )
         roadmap_activities._derive_runner = _derive_runner
+        # 156-US2: the tree seam answers the harness revision, so the skew
+        # check is aligned here and the dispatch pins below still fire.
+        roadmap_activities._tree_revision_runner = lambda _: HARNESS_REVISION
         roadmap_activities._preflight_registry = lambda: {}
         roadmap_activities._preflight_client = lambda proxy_url: None
 
@@ -676,6 +683,9 @@ async def _run_roadmap(
             roadmap_activities.onboard_target,
             roadmap_activities.count_open_epics,
             roadmap_activities.read_loop_config,
+            # 156-US2: the tree-revision read, served so the skew check's
+            # activity call lands on the (aligned) scripted seam.
+            roadmap_activities.tree_revision_activity,
             read_corpus_activity,
             read_spec_text_activity,
             record_roadmap_failure,
@@ -683,7 +693,12 @@ async def _run_roadmap(
             send_roadmap_notice,
         ]
         interceptors = (
-            [_RecordingInterceptor(child_starts)] if child_starts is not None else []
+            [_BootRevisionInterceptor(HARNESS_REVISION)]
+            + (
+                [_RecordingInterceptor(child_starts)]
+                if child_starts is not None
+                else []
+            )
         )
         async with Worker(
             env.client,
@@ -721,6 +736,8 @@ async def _run_roadmap(
                 roadmap_activities._open_epics_provider = value
             elif key == "_read_loop_config_runner":
                 roadmap_activities._read_loop_config_runner = value
+            elif key == "_tree_revision_runner":
+                roadmap_activities._tree_revision_runner = value
             elif key == "roadmap_check_aliases":
                 if value is not None:
                     roadmap_activities.check_aliases = value

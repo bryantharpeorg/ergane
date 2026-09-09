@@ -103,6 +103,7 @@ with workflow.unsafe.imports_passed_through():
         onboard_target,
         preflight_spec,
         read_loop_config,
+        tree_revision_activity,
     )
     from factory.activities.verify_activities import (
         DEFAULT_VERIFICATION_DB_PATH,
@@ -195,6 +196,63 @@ def _epic_id_for(spec_dir: str) -> str:
     return f"epic-{spec_dir}"
 
 
+#: 156-US2 (US2-S4, FR-003's conservative direction): the wording the park uses
+#: when the worker's boot revision is `None` — a pre-053 worker stamps nothing,
+#: so the comparison has one side missing. The vocabulary is the CLI refusal's
+#: (`skew_refusal`, `factory/cli/nouns/build.py`), spelled here rather than
+#: imported because FR-005 forbids the refusal path from importing code the
+#: worker has not already imported, and a workflow module may not reach into the
+#: CLI across the sandbox boundary. One vocabulary, two seams.
+_UNKNOWN_REVISION_DETAIL = "worker revision is unknown"
+
+
+def _skew_park_detail(
+    worker_revision: str | None, tree_revision: str | None
+) -> str | None:
+    """The skew refusal the roadmap parks a spec with, or `None` to dispatch.
+
+    156-US2 (FR-004): the roadmap's twin of the CLI's `skew_refusal` — same
+    `None` arms, same remedy, different second value. The CLI compares the
+    worker's boot revision against its own; the roadmap compares it against
+    what the tree-revision activity answered, because the roadmap *is* the
+    worker and needs the tree's answer read at ask time (FR-005).
+
+    Pure and module-level like `_child_config`: a decision over data, testable
+    without Temporal, and computable from the two strings alone — the boot
+    stamp the payload carries and the activity's answer — so the refusal can
+    never depend on code the worker has not already imported (FR-005).
+
+    Worker-`None` is an unknown revision, which cannot be compared and parks
+    (the conservative direction); tree-`None` is the tree's own blindness —
+    the worker host is not a git checkout — and composes nothing, because
+    "the tree cannot say what it is" is not skew and parking on it would lock
+    every roadmap on such a host out of dispatching entirely. Equality is the
+    aligned case, which adds nothing (FR-006: an aligned tick must not
+    degrade dispatch into a park).
+
+    The refusal is one line (US2-S2: it renders through the same park-reason
+    surface every other park uses, and the standing contract is branch paths
+    and cures), naming both revisions and the restart remedy — the same three
+    facts the CLI refusal carries at the terminal.
+    """
+    remedy = "systemctl --user restart ergane-worker"
+    if worker_revision is None:
+        return (
+            f"{_UNKNOWN_REVISION_DETAIL} (tree revision "
+            f"{tree_revision or 'unknown'}); not dispatching an epic the "
+            f"worker would wedge. Remedy: {remedy}."
+        )
+    if tree_revision is None:
+        return None
+    if worker_revision == tree_revision:
+        return None
+    return (
+        f"worker is running different code: worker revision {worker_revision}, "
+        f"tree revision {tree_revision} — not dispatching an epic the worker "
+        f"would wedge in workflow-task retry. Remedy: {remedy}."
+    )
+
+
 def _child_config(
     pinned: VerificationConfig, requested: VerificationConfig
 ) -> VerificationConfig:
@@ -279,6 +337,14 @@ class RoadmapInput:
     #: US3 idle-wait seconds (FR-007). `None` keeps drain-and-exit (FR-006).
     idle_rescan_s: int | None = None
     carry_over: "RoadmapCarryOver | None" = None
+    #: 156-US2 (FR-004): the revision of the code the worker that imported this
+    #: workflow was booted from — stamped at dispatch by the same interceptor
+    #: that stamps `EpicInput` (053 US3), read by the skew check in `_dispatch`.
+    #: `None` means the worker predates the stamp, which parks with the
+    #: "unknown" wording rather than dispatching into a worker of unproven
+    #: code. Defaulted so every payload written before this story decodes (the
+    #: boundary rule `test_temporal_payload_shape.py` holds).
+    worker_revision: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1020,6 +1086,17 @@ class RoadmapWorkflow:
                 poll_interval_s=request.poll_interval_s,
                 idle_rescan_s=request.idle_rescan_s,
                 carry_over=carry,
+                # `worker_revision` is deliberately NOT carried. The stamp is a
+                # property of the worker that serves a run, not of the run: it
+                # is left `None` here so the interceptor of whichever worker
+                # picks the new run up re-stamps it (the `None` guard only
+                # fills an unset field). Carrying it would glue this roadmap to
+                # the boot revision of a worker that may have since been
+                # restarted onto the tree — the very cure the park names — and
+                # a carried stale stamp would re-park the spec after the
+                # unpark, with no exit. Re-stamped per run, the operator's
+                # restart clears the skew on the next boundary, which is the
+                # story's whole point (US2-S3).
             ),
         )
 
@@ -1287,7 +1364,40 @@ class RoadmapWorkflow:
             self._park(spec_dir, "manifest", self._roadmap_failure_message(exc))
             return
 
-        # 7. Start the child epic — ABANDON on parent close (SC-004: killing the
+        # 7. The 156 skew refusal (FR-004): a worker whose boot revision differs
+        # from the revision its own tree is at would wedge the child's first
+        # workflow task in retry — occurrence 3's shape. The comparison reads
+        # the stamp on this run's own payload (`request.worker_revision`) and
+        # the tree-revision activity's answer, both worker-side strings; the
+        # activity was registered at worker boot, so the refusal sits entirely
+        # in code the worker already has loaded and can never depend on the
+        # code that moved (FR-005).
+        #
+        # The check runs after the clone/derive/preflight/onboarding gates and
+        # before the child start: the park is a dispatch refusal (check
+        # `dispatch`), not a corpus refusal, and a spec that would wedge must
+        # be parked even if every earlier gate passed. Worker-`None` parks with
+        # the "unknown" wording (US2-S4); tree-`None` composes nothing (the
+        # worker host is not a git checkout — not skew).
+        try:
+            tree_revision: str | None = await workflow.execute_activity(
+                tree_revision_activity,
+                ReadLoopConfigInput(target_repo=request.target_repo),
+                **_FAST,
+            )
+        except FailureError as exc:
+            # The read failing is not skew: park with the failure verbatim and
+            # let the line proceed — the same containment every sibling read
+            # gets, so the check itself can never be the thing that wedges the
+            # tick (trap 5).
+            self._park(spec_dir, "dispatch", self._roadmap_failure_message(exc))
+            return
+        refusal = _skew_park_detail(request.worker_revision, tree_revision)
+        if refusal is not None:
+            self._park(spec_dir, "dispatch", refusal)
+            return
+
+        # 8. Start the child epic — ABANDON on parent close (SC-004: killing the
         # roadmap never kills the epic), default id reuse (a closed id is
         # reusable; a running collision parks, never adopts — T011).
         try:

@@ -98,8 +98,10 @@ async def _run_roadmap(
         onboard_target,
         preflight_spec,
         read_loop_config,
+        tree_revision_activity,
     )
     from factory.roadmap.workflow import read_corpus_activity, read_spec_text_activity
+    from tests.test_roadmap_scheduler import HARNESS_REVISION, _BootRevisionInterceptor
 
     world = RoadmapWorld()
     world.apply()
@@ -118,11 +120,18 @@ async def _run_roadmap(
                 read_corpus_activity,
                 read_loop_config,
                 read_spec_text_activity,
+                # 156-US2: the tree-revision read, served with the rest; the
+                # world's seam answers the harness revision, so the skew check
+                # is aligned and the first tick dispatches as before.
+                tree_revision_activity,
                 record_roadmap_failure,
                 reset_roadmap_failures,
                 send_roadmap_notice,
                 send_escalation,
             ],
+            # 156-US2: the boot stamp, so `worker_revision` is not `None` — the
+            # skew check would otherwise park with the "unknown" wording.
+            interceptors=[_BootRevisionInterceptor(HARNESS_REVISION)],
             workflow_runner=UnsandboxedWorkflowRunner(),
         ):
             handle = await env.client.start_workflow(
