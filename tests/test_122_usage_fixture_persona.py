@@ -34,8 +34,8 @@ import yaml
 
 from factory.config import (
     ERGANE_PERSONAS_PATH_ENV,
+    ROUTE_GATEWAY,
     ROUTE_SUBSCRIPTION,
-    SUBSCRIPTION_AGENT,
     load_personas,
 )
 from tests import test_usage_activities as usage
@@ -53,6 +53,7 @@ PLACEHOLDER = "CHANGEME"
 #: slash-shaped alias and minting a virtual key.
 GATEWAY_IMPLEMENTER = {
     "agent": "claude-code",
+    "route": ROUTE_GATEWAY,
     "model": f"gateway/{PLACEHOLDER}",
     "fallback": f"local/{PLACEHOLDER}",
 }
@@ -60,7 +61,8 @@ GATEWAY_IMPLEMENTER = {
 #: The route the operator asked for on 2026-08-29 and the suite refused: no
 #: gateway key, and a bare CLI model name with no slash in it.
 SUBSCRIPTION_IMPLEMENTER = {
-    "agent": SUBSCRIPTION_AGENT,
+    "agent": "claude-code",
+    "route": ROUTE_SUBSCRIPTION,
     "model": PLACEHOLDER,
     "fallback": None,
 }
@@ -109,10 +111,9 @@ def test_the_usage_tests_pass_with_a_subscription_implementer(tmp_path: Path) ->
     # The registry really is the shape that broke: subscription-routed, and a
     # model alias with no slash in it. Asserted before the run so a registry
     # that silently failed to mutate cannot pass as a demonstration.
-    # 154-US1 (FR-002): the legacy `agent: subscription` value is refactored
-    # into the pair ("claude-code", "subscription") at load — the route field
-    # is what carries "subscription-routed" now, and it is the pair, not the
-    # raw sentinel, that decides the key issuance under test here.
+    # 154-US1 (FR-002): CLI and route are independent. The fixture must set
+    # both, or the shipped registry's explicit gateway route survives the
+    # overlay and this supposed subscription control never tests that route.
     implementer = load_personas(registry)["implementer"]
     assert implementer.route == ROUTE_SUBSCRIPTION
     assert implementer.needs_virtual_key is False
