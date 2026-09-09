@@ -83,6 +83,29 @@ and predate this story's files — see the attempt archive note
 `host-incident-resolv-bwrap.md`). The warnings are the pre-existing
 deprecation/Temporal noise.
 
+### The gate deadline, measured (2026-09-09, attempt 2)
+
+The declared gate has no `timeouts:` block, so its deadline is the code
+default `gate_timeout_s: 600` (`factory/verify/models.py:1209`), and the
+suite's own duration now sits on that wall. Three runs against this tree:
+
+```
+bare host, alone                    PASS 5987/58   suite 599.45s   margin  0.55s
+boundary (factory run_gates bwrap, tmpfs HOME), alone
+                                    PASS 5987/58   suite 598.77s   margin  1.23s
+boundary, overlapping another suite TIMEOUT at 600.3s (killed mid-run)
+```
+
+Attempt 1's gate TIMEOUT is this wall, not these files: the suite takes the
+whole default deadline, and contention or the resolv.conf incident above tips
+it over. The deadline is an operator declaration — spec 121's committed guard
+(`test_this_repositorys_node_worktree_agrees_with_the_landing_branch`) fails
+any node worktree whose `ergane.yaml` differs from the landing branch's copy,
+so a node cannot declare `timeouts:` itself. Recorded for the operator:
+raising `timeouts: {test: …}` in `ergane.yaml` on the landing branch is the
+one-line fix, and it takes effect for every attempt after the next dispatch
+pins its base ref.
+
 ## The six fresh-session discovery observations (2026-09-09)
 
 Clients: `codex-cli 0.153.4` (standalone release, staged from the pinned
