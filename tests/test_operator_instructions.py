@@ -22,6 +22,7 @@ exactly the second policy channel this story exists to prevent.
 from __future__ import annotations
 
 import json
+import re
 import stat
 from pathlib import Path
 
@@ -354,3 +355,152 @@ def test_the_parser_actually_reads_the_records() -> None:
     """A missing record fails, not passes: the sweep's vacuity control."""
     with pytest.raises(AssertionError):
         _record("codex", "shape-that-was-never-recorded")
+
+
+# --- the observation boundary is semantic, not nominal (US1-S3, FR-005) --------
+
+#: Imperative openings that turn a sentence into a recipe. A status paragraph
+#: that says "run `ergane build start` to dispatch" grants the action it
+#: names; the observation section must carry none (plan trap 4).
+_RECIPE_OPENINGS = re.compile(
+    r"^\s*(?:[-*]\s+)?(?:To\s+)?"
+    r"(run|execute|fetch|pull|merge|push|commit|dispatch|start|apply|answer|"
+    r"press|approve|install|restart|publish|land|revoke|mint|kill|mark|write|"
+    r"set|edit|update|move|create|add|remove|delete|answer it|re-read)\b",
+    re.IGNORECASE,
+)
+
+#: The actions an observation request must not authorize. FR-005's list,
+#: spelled out so a future edit cannot quietly narrow it.
+_ACTIONS = (
+    "fetch", "merge", "dispatch", "attest", "escalation", "findings", "commit",
+    "push", "service", "restart",
+)
+
+#: Verbs whose bare mention is fine — naming the boundary is not taking it.
+_PERMITTED_CONTEXT = ("require", "requirement", "declared intent", "not ", "never")
+
+
+def _observation_sentences(section: str) -> list[str]:
+    """Sentences and bullet items in the observation section."""
+    body = "\n".join(
+        line for line in section.splitlines() if not line.startswith("#")
+    )
+    flat = re.sub(r"\s+", " ", body)
+    return [s.strip() for s in re.split(r"(?<=[.!?:])\s+", flat) if s.strip()]
+
+
+def _granted_actions(section: str) -> list[str]:
+    """Actions the section grants, as imperative recipes.
+
+    Naming an action is fine — the boundary has to name what it fences off.
+    Granting one is an imperative that tells the reader how to do it.
+    """
+    granted: list[str] = []
+    for sentence in _observation_sentences(section):
+        if _RECIPE_OPENINGS.match(sentence):
+            granted.append(sentence)
+    return granted
+
+
+def test_the_observation_section_grants_no_action() -> None:
+    """FR-005: no imperative recipe inside the observation section."""
+    section = _observation_section()
+    assert section, "the observation section is empty — it moved or was renamed"
+    granted = _granted_actions(section)
+    assert not granted, (
+        "the observation section contains imperative recipes, which grant the "
+        "actions they name and broaden a status request into a mandate:\n"
+        + "\n".join(f"  {sentence}" for sentence in granted)
+    )
+
+
+def test_the_observation_section_names_the_forbidden_actions() -> None:
+    """The boundary must name what it fences off, or it fences off nothing."""
+    section = _observation_section().lower()
+    named = [action for action in _ACTIONS if action in section]
+    assert len(named) >= len(_ACTIONS) - 2, (
+        f"the observation section names {named} of {_ACTIONS} — the boundary "
+        "has to spell out the actions it fences off, close to all of them"
+    )
+
+
+def test_the_observation_section_requires_declared_intent_for_actions() -> None:
+    """FR-005's second half: every action needs its own declared intent."""
+    section = _observation_section().lower()
+    assert "declared intent" in section, (
+        "the observation section never states the declared-intent requirement"
+    )
+
+
+def test_the_observation_section_keeps_the_read_only_half() -> None:
+    """The section must still say what an observation request DOES authorize."""
+    section = _observation_section().lower()
+    assert "read-only" in section or "no mutation" in section or "does not" in section, (
+        "the observation section lost its read-only statement"
+    )
+
+
+#: Mutations that make the observation section grant an action it must not.
+#: Each is the shape plan trap 4 warns about — a status paragraph that
+#: grew a recipe.
+_GRANT_MUTATIONS = (
+    (
+        "merge",
+        lambda s: s + "\n\nTo land a story, merge the PR once the queue is green.",
+    ),
+    (
+        "fetch",
+        lambda s: s + "\n\n- Fetch origin first so the landed list is current.",
+    ),
+    (
+        "dispatch",
+        lambda s: s + "\n\nRun `ergane build start` to dispatch the epic.",
+    ),
+    (
+        "attest",
+        lambda s: s + "\n\nMark the spec's frontmatter landed to attest it.",
+    ),
+    (
+        "escalation",
+        lambda s: s + "\n\nAnswer the escalation by pressing the approve button.",
+    ),
+    (
+        "findings",
+        lambda s: s + "\n\nApply the finding with `ergane findings apply`.",
+    ),
+    (
+        "commit",
+        lambda s: s + "\n\nCommit the result before reporting.",
+    ),
+    (
+        "push",
+        lambda s: s + "\n\nPush the branch so CI runs.",
+    ),
+    (
+        "service",
+        lambda s: s + "\n\nRestart the worker to pick up the change.",
+    ),
+)
+
+
+@pytest.mark.parametrize("action,mutate", _GRANT_MUTATIONS, ids=[a for a, _ in _GRANT_MUTATIONS])
+def test_a_granted_action_is_rejected(action: str, mutate) -> None:
+    """Each mutation is the trap: the detector must fire, not the suite go quiet."""
+    mutated = mutate(_observation_section())
+    assert _granted_actions(mutated), (
+        f"the {action} mutation was not detected — the imperative sweep is "
+        "too narrow and this test proves nothing"
+    )
+
+
+def test_naming_an_action_without_recipe_passes() -> None:
+    """Naming the boundary is not taking it: the shipped section's own words pass."""
+    shipped = _observation_section()
+    assert _granted_actions(shipped) == [] or all(
+        not _RECIPE_OPENINGS.match(s) for s in _observation_sentences(shipped)
+    )
+    assert "merge" in shipped.lower() or "merge" in TEXT.lower(), (
+        "the orientation must be able to name merge as a fenced-off action; "
+        "a guard this strict cannot be satisfied by silence"
+    )
