@@ -21,6 +21,7 @@ exactly the second policy channel this story exists to prevent.
 
 from __future__ import annotations
 
+import json
 import stat
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from tests.page_holds_true import REPO_ROOT
 
 AGENTS_MD = REPO_ROOT / "AGENTS.md"
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
+FIXTURES = REPO_ROOT / "tests" / "fixtures" / "operator-instructions"
 
 
 # --- the tracked file types (US1-S1, FR-001/FR-002) ---------------------------
@@ -228,3 +230,127 @@ def _first_prose_line(lines: list[str]) -> str:
         )
         return stripped
     pytest.fail("the page carries no prose at all")
+
+
+# --- the six-context discovery evidence (US1-S2, FR-009) ----------------------
+
+#: The three session shapes the acceptance scenario names, and the two clients.
+SHAPES = ("root", "nested", "worktree")
+CLIENTS = ("codex", "claude")
+
+
+def _record(client: str, shape: str) -> dict:
+    path = FIXTURES / f"{client}-{shape}.json"
+    assert path.exists(), f"the discovery record {path.name} is missing"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("client", CLIENTS)
+@pytest.mark.parametrize("shape", SHAPES)
+def test_every_client_shape_recorded(client: str, shape: str) -> None:
+    """FR-009: root, nested and worktree evidence exists for both clients."""
+    record = _record(client, shape)
+    assert record["client"] == client
+    assert record["session_shape"] == shape
+    assert record["redaction"], "the record must state how it was redacted"
+
+
+def test_the_records_carry_no_credentials_or_absolute_host_paths() -> None:
+    """The committed evidence is redacted: no token shape, no absolute home path."""
+    forbidden = (
+        "sk-", "sk_", "Bearer ", "ghp_", "github_pat_",
+        str(Path.home()), "/home/admin", "/root/", "LITELLM_MASTER_KEY",
+    )
+    for path in sorted(FIXTURES.glob("*.json")):
+        text = path.read_text(encoding="utf-8")
+        for needle in forbidden:
+            assert needle not in text, (
+                f"{path.name} carries {needle!r} — the six-context evidence must "
+                "stay redacted (no credentials, no absolute home paths)"
+            )
+
+
+@pytest.mark.parametrize("client", CLIENTS)
+@pytest.mark.parametrize("shape", SHAPES)
+def test_every_observation_names_the_canonical_instructions_exactly_once(
+    client: str, shape: str
+) -> None:
+    """Scenario 2: each observation names the canonical instructions exactly once.
+
+    The worktree records are the deliberate zero: a node worktree must NOT
+    see the repository's orientation as its standards (trap 1), so Codex's
+    measured stop at the worktree root is the contract, not a gap. For the
+    shapes where the canonical file is in reach, the count is exactly one —
+    a second copy of the policy showing up in a client's context is the
+    drift this evidence exists to catch.
+    """
+    record = _record(client, shape)
+    observation = record["observation"]
+    assert observation["canonical_named"] == "AGENTS.md"
+    expected = 0 if client == "codex" and shape == "worktree" else 1
+    assert observation["canonical_occurrences"] == expected, (
+        f"{client} at {shape} reports {observation['canonical_occurrences']} "
+        f"occurrences of the canonical instructions; the contract is {expected}"
+    )
+    loaded = observation["instruction_files_loaded"]
+    if expected:
+        assert any("AGENTS.md" in name for name in loaded), (
+            f"{client} at {shape} loaded {loaded} — the canonical file must be "
+            "among what the session received"
+        )
+        assert observation["resolved_bytes_equal_canonical"], (
+            "the record claims the canonical file was loaded but not that its "
+            "bytes matched; the compatibility contract is exact bytes (FR-002)"
+        )
+
+
+@pytest.mark.parametrize("client", CLIENTS)
+@pytest.mark.parametrize("shape", SHAPES)
+def test_every_record_carries_the_dispatched_node_facts(
+    client: str, shape: str
+) -> None:
+    """Scenario 2: the record shows the assembled prompt and standards precedence.
+
+    The point of carrying these in the evidence: auto-discovery must never
+    outrank what a dispatched node was explicitly given. A record that
+    proves discovery without proving precedence would let a future edit
+    turn the orientation into a second standards channel and this suite
+    would stay green.
+    """
+    facts = _record(client, shape)["dispatched_node_facts"]
+    line = facts["assembled_prompt_standards_line"]
+    assert ".specify/memory/constitution.md" in line, (
+        f"{client}-{shape} records an assembled prompt that does not name the "
+        "standards path — the record is not a dispatched node's facts"
+    )
+    assert facts["precedence"].startswith("declared standards outrank"), (
+        f"{client}-{shape} states precedence {facts['precedence']!r}"
+    )
+
+
+def test_the_six_records_agree_on_the_canonical_file() -> None:
+    """All six observations, including the zero, point at the same canonical name."""
+    named = {
+        _record(client, shape)["observation"]["canonical_named"]
+        for client in CLIENTS
+        for shape in SHAPES
+    }
+    assert named == {"AGENTS.md"}, (
+        f"the records name {named} — one canonical file, two entry points"
+    )
+
+
+def test_the_fixture_readme_names_all_six_records() -> None:
+    """The evidence's own README covers every record, so none can be added silently."""
+    readme = (FIXTURES / "README.md").read_text(encoding="utf-8")
+    for client in CLIENTS:
+        for shape in SHAPES:
+            assert f"{client}-{shape}" in readme, (
+                f"the fixture README does not describe {client}-{shape}"
+            )
+
+
+def test_the_parser_actually_reads_the_records() -> None:
+    """A missing record fails, not passes: the sweep's vacuity control."""
+    with pytest.raises(AssertionError):
+        _record("codex", "shape-that-was-never-recorded")
