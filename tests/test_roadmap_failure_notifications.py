@@ -222,10 +222,15 @@ async def run_roadmap_with_notifications(
         onboard_target,
         preflight_spec,
         read_loop_config,
+        tree_revision_activity,
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
         read_spec_text_activity,
+    )
+    from tests.test_roadmap_scheduler import (
+        HARNESS_REVISION,
+        _BootRevisionInterceptor,
     )
 
     activities = [
@@ -238,6 +243,10 @@ async def run_roadmap_with_notifications(
         read_corpus_activity,
         read_spec_text_activity,
         read_loop_config,
+        # 156-US2: the tree-revision read, served with the rest; the shared
+        # world's seam answers the harness revision, so the skew check is
+        # aligned and these notification tests dispatch as before.
+        tree_revision_activity,
         record_roadmap_failure,
         reset_roadmap_failures,
     ]
@@ -254,6 +263,9 @@ async def run_roadmap_with_notifications(
             task_queue="workgraph",
             workflows=[RoadmapWorkflow, ScriptedEpicWorkflow],
             activities=activities,
+            # 156-US2: the boot stamp, so `worker_revision` is not `None` — the
+            # skew check would otherwise park with the "unknown" wording.
+            interceptors=[_BootRevisionInterceptor(HARNESS_REVISION)],
             workflow_runner=UnsandboxedWorkflowRunner(),
         ):
             input_kwargs: dict[str, Any] = {
@@ -317,10 +329,15 @@ async def run_roadmap_with_sandboxed_workflow(
         onboard_target,
         preflight_spec,
         read_loop_config,
+        tree_revision_activity,
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
         read_spec_text_activity,
+    )
+    from tests.test_roadmap_scheduler import (
+        HARNESS_REVISION,
+        _BootRevisionInterceptor,
     )
 
     activities = [
@@ -333,6 +350,10 @@ async def run_roadmap_with_sandboxed_workflow(
         read_corpus_activity,
         read_spec_text_activity,
         read_loop_config,
+        # 156-US2: the tree-revision read, served with the rest; the shared
+        # world's seam answers the harness revision, so the skew check is
+        # aligned and these notification tests dispatch as before.
+        tree_revision_activity,
         record_roadmap_failure,
         reset_roadmap_failures,
     ]
@@ -349,6 +370,10 @@ async def run_roadmap_with_sandboxed_workflow(
             task_queue="workgraph",
             workflows=[RoadmapWorkflow, ScriptedEpicWorkflow],
             activities=activities,
+            # 156-US2: the boot stamp here too — the sandboxed runner re-imports
+            # the workflow module, which is exactly the shape the by-name match
+            # exists for; the stamp is a property of the serving worker either way.
+            interceptors=[_BootRevisionInterceptor(HARNESS_REVISION)],
             workflow_runner=SandboxedWorkflowRunner(),
         ):
             input_kwargs: dict[str, Any] = {

@@ -194,6 +194,10 @@ ACTIVITIES = [
     roadmap_activities.onboard_target,
     roadmap_activities.count_open_epics,
     roadmap_activities.read_loop_config,
+    # 156-US2 — the tree-revision read the roadmap's skew refusal compares
+    # against the boot stamp (FR-005): registered at boot with the rest, so the
+    # refusal can never depend on code the worker has not already imported.
+    roadmap_activities.tree_revision_activity,
     read_corpus_activity,
     read_spec_text_activity,
 ]
@@ -297,7 +301,11 @@ def build_worker(client: Client) -> Worker:
 
 
 class _WorkerRevisionInterceptor(Interceptor):
-    """Factory that injects the captured worker revision into every EpicWorkflow input."""
+    """Factory that injects the captured worker revision into every EpicWorkflow input.
+
+    156-US2 widens it to `RoadmapInput` the same way: the roadmap's skew
+    comparison reads the same boot stamp the epic's status query reports.
+    """
 
     def __init__(self, revision: str | None) -> None:
         self._revision = revision
@@ -321,7 +329,17 @@ class _WorkerRevisionInterceptor(Interceptor):
                 # raised NameError had it fired. By *name*, not identity: the SDK
                 # sandbox re-imports the module, so `is` never matches. Both
                 # measured on the dev server, 2026-08-22 (082-US2).
-                if getattr(input.type, "__name__", "") == "EpicWorkflow" and input.args:
+                #
+                # 156-US2: `RoadmapInput` joins the stamp by the same by-name
+                # arm — the roadmap is the second dispatch seam (FR-004), and a
+                # boot revision it cannot see is a skew check that always
+                # answers "unknown". Same `None` guard: a payload that arrived
+                # with the field already set (a test's, or a caller's) wins.
+                if (
+                    getattr(input.type, "__name__", "")
+                    in ("EpicWorkflow", "RoadmapWorkflow")
+                    and input.args
+                ):
                     original = input.args[0]
                     if getattr(original, "worker_revision", None) is None:
                         input.args = (replace(original, worker_revision=revision),)

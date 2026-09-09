@@ -25,6 +25,7 @@ precedes T013): until it lands, every test here fails.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from pathlib import Path
@@ -154,6 +155,12 @@ class _BootRevisionInterceptor(Interceptor):
     shape. Without it the tests would have to construct `RoadmapInput` by hand
     per revision, and the boot value would stop being a property of the serving
     worker — which is the fact under test.
+
+    Shared with the hand-built harnesses (`test_scheduled_epics_carry_the_dials`,
+    `test_023_us2_dispatch_pin`, `test_ergane_roadmap`,
+    `test_roadmap_first_tick_on_fresh_init`): a worker without the stamp leaves
+    `RoadmapInput.worker_revision` at its `None` default, and the 156 skew check
+    parks with the "unknown" wording what those tests expect dispatched.
     """
 
     def __init__(self, revision: str | None) -> None:
@@ -651,6 +658,7 @@ async def run_roadmap(
         onboard_target,
         preflight_spec,
         read_loop_config,
+        tree_revision_activity,
     )
     from factory.roadmap.workflow import (
         read_corpus_activity,
@@ -667,6 +675,7 @@ async def run_roadmap(
         read_corpus_activity,
         read_spec_text_activity,
         read_loop_config,
+        tree_revision_activity,
         record_roadmap_failure,
         reset_roadmap_failures,
         send_roadmap_notice,
@@ -1970,6 +1979,13 @@ async def test_the_park_spends_through_the_existing_unpark_signal(
     existing grammar, no new surface. The operator's restart is represented
     by a fresh run whose tree seam now answers the worker's boot revision:
     the next tick dispatches the unparked spec.
+
+    The skewed run holds itself open on `idle_rescan_s` — under skew no child
+    ever starts, so nothing else keeps the workflow alive past the park, and a
+    signal racing a draining workflow dies as `Completed workflow`. The idle
+    wait is the roadmap's own parked-between-ticks posture, which is what an
+    operator's unpark actually lands on; the spend is observed through the
+    live query, not through a final status that the signal may beat.
     """
     specs_root = build_corpus(
         tmp_path, {"001-alpha": dict(state=SpecState.READY)}
@@ -1978,12 +1994,18 @@ async def test_the_park_spends_through_the_existing_unpark_signal(
 
     skewed = RoadmapWorld(tree_revision="deadf00")
     async with run_roadmap(
-        env, skewed, str(specs_root), child_starts=starts
+        env, skewed, str(specs_root), child_starts=starts, idle_rescan_s=120
     ) as handle:
         park = await _await_park(handle, "001-alpha")
         assert park.check == "dispatch"
         await handle.signal("unpark_spec", "001-alpha")
-        status = await handle.result()
+
+        # The spend is visible on the live workflow: the park entry is gone
+        # before the run ends. The run then idles; cancel it and read the
+        # still-empty parked list off the same run.
+        await _await_park_gone(handle, "001-alpha")
+        await handle.cancel()
+        status = await handle.query("roadmap_status", result_type=RoadmapStatus)
 
     assert status.parked == [], "the unpark must spend the skew park"
     assert starts == [], "still skewed through this run: nothing may dispatch"
@@ -2001,6 +2023,19 @@ async def test_the_park_spends_through_the_existing_unpark_signal(
     assert _status_of(final, "001-alpha").landed is True
 
 
+async def _await_park_gone(handle: Any, spec_dir: str) -> None:
+    """Poll `roadmap_status` until `spec_dir` is no longer parked."""
+
+    async def poll() -> None:
+        while True:
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            if all(f.spec_dir != spec_dir for f in status.parked):
+                return
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(poll(), timeout=30)
+
+
 async def _await_park(handle: Any, spec_dir: str) -> Any:
     """Poll `roadmap_status` until `spec_dir` is parked, and hand back its finding."""
     import asyncio as _asyncio
@@ -2013,7 +2048,7 @@ async def _await_park(handle: Any, spec_dir: str) -> Any:
                     return finding
             await _asyncio.sleep(0.01)
 
-    return await asyncio.wait_for(poll(), timeout=30)
+    return await _asyncio.wait_for(poll(), timeout=30)
 
 
 async def test_a_worker_of_unknown_revision_parks_with_the_unknown_wording(
