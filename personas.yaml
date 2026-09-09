@@ -291,7 +291,10 @@ implementer:
   # third paragraph: these are reasoning models, a tight max_tokens returns
   # empty content that presents as a broken gateway, and an alias probe is not
   # a capability probe.
-  agent: claude-code
+  # Operator selection 2026-09-09: Codex harness, existing Ollama Cloud model.
+  # The credential route stays gateway; this does not enable subscription auth.
+  agent: codex
+  route: gateway
   model: ollama-cloud/glm-5.3-flash
   fallback: local/qwen3.6-27b
   skills: [implement, tdd]
@@ -375,7 +378,8 @@ judge:
   timeout: 3600
 
 closer:
-  agent: claude-code
+  agent: codex
+  route: gateway
   # Added 2026-08-13 (Bryan): the rung for a story that has already proved
   # stubborn. Deliberately NOT the debugger — a debugger diagnoses, a closer
   # finishes, so this carries the implementer's skills and write scope, not
@@ -496,7 +500,8 @@ debugger:
   # rung 4 where it attributed none, which reads as a cost increase that did
   # not happen — and in exchange an expired Claude login can no longer kill a
   # build that reaches this rung.
-  agent: claude-code
+  agent: codex
+  route: gateway
   model: ollama-cloud/glm-5.3
   fallback: local/qwen3.6-27b
   skills: [diagnosing-bugs]
