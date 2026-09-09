@@ -4,13 +4,13 @@ Read `plan.md` before starting. Trap 1 is the one that decides whether this
 story is worth anything: the ledger row this spec declares still names the
 7,200-second heartbeat window in its summary, and that window was closed by
 082-US5 — `factory/workgraph/workflow.py:487` and
-`factory/workgraph/workflow.py:490` — `_agent_heartbeat_timeout`. Re-deriving a
+`factory/workgraph/workflow.py:495` — `_agent_heartbeat_timeout`. Re-deriving a
 heartbeat clamp fixes nothing and fails FR-003. Trap 4 is the first hazard inside
 US1: adding the bound without classifying its expiry turns a stall into a
 recorded attempt with no work behind it, sent to verification and judged, with
 every gate green. Traps 16 and 17 are the second, and they are the ones that
 refuted the first draft of this spec: `_attempt` has **two** call sites, and the
-one at `factory/workgraph/workflow.py:3976` — `EpicWorkflow._recovery_attempt`
+one at `factory/workgraph/workflow.py:3954` — `EpicWorkflow._recovery_attempt`
 catches nothing, so the raise FR-004 introduces would kill a node outright on an
 ordinary worker restart during a recovery cycle — and would not even arrive as
 itself, because that method's `finally` reads a `termination` that is unbound
@@ -49,11 +49,11 @@ are green from the first commit; do not manufacture a failure for those. T005 is
 **not** one of them, and it is the one worth naming twice, because it is half
 green and half red before T009 lands. Its **first** shape — the payload on the
 `SCHEDULE_TO_START` timeout's own `last_heartbeat_details` — passes on today's
-tree, because `factory/workgraph/workflow.py:2492` —
+tree, because `factory/workgraph/workflow.py:2512` —
 `EpicWorkflow._attempt_timeout` already reads that field and returns the figure.
 Its **second** shape — the payload reached through the cause chain — is **red**
 on today's tree, because that method binds `timeout = exc.cause` at
-`factory/workgraph/workflow.py:2489` — `EpicWorkflow._attempt_timeout`, tests
+`factory/workgraph/workflow.py:2512` — `EpicWorkflow._attempt_timeout`, tests
 that one object's type, and walks no `__cause__` anywhere, so the cause-chain
 shape comes back with `last_snapshot=None` and fails the "carrying that payload's
 figure" assertion. That red is the expected starting state, not a mistake in the
@@ -78,16 +78,16 @@ without it touch a region an earlier task in the same phase is already editing.
       epic and assert that the `ACTIVITY_TASK_SCHEDULED` event for
       `run_agent_attempt` carries a `schedule_to_start_timeout` equal to the new
       module constant, **and** that the constant is at least the thirty-minute
-      floor FR-014 states. Copy the reader at `tests/test_interpreter.py:2901` —
+      floor FR-014 states. Copy the reader at `tests/test_interpreter.py:2986` —
       `test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout`,
       which does exactly this for `heartbeat_timeout` at
       `tests/test_interpreter.py:2905` and asserts at
       `tests/test_interpreter.py:2909`; `_EVENT_ACTIVITY_SCHEDULED` is at
-      `tests/test_interpreter.py:3973`. The field is unset today, so this is red
+      `tests/test_interpreter.py:4089`. The field is unset today, so this is red
       before T008, and the floor assertion is the only thing standing between a
       too-short value and a node killed by an ordinary restart.
 - [ ] T002 [P] [US1] (spec US1-S2, FR-002, FR-003, trap 1) Build a two-node graph
-      with `tests/test_interpreter.py:402` — `make_node` whose
+      with `tests/test_interpreter.py:405` — `make_node` whose
       `timeout_override_s` values differ by two orders of magnitude, run it, and
       assert on both scheduled events at once: the two `schedule_to_start_timeout`
       values are **equal**, the two `heartbeat_timeout` values are **not**, and
@@ -113,7 +113,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `TimeoutError` of type `HEARTBEAT` carrying a heartbeat payload, and assert
       the method still returns `AdapterResult(termination=Termination.TIMEOUT)`
       carrying that payload's figure and writing it to `record.last_snapshot` —
-      byte-identical to `factory/workgraph/workflow.py:2506` —
+      byte-identical to `factory/workgraph/workflow.py:2512` —
       `EpicWorkflow._attempt_timeout` today. This is 082-US5's behaviour and the
       assertion that stops this story swallowing a worker death.
 - [ ] T005 [P] [US1] (spec US1-S7, FR-015, trap 19) **The assertion that catches
@@ -131,7 +131,7 @@ without it touch a region an earlier task in the same phase is already editing.
       in which no agent started would record hours of paid work as never having
       happened (constitution V, trap 8). Half of this test is red before T009 and
       is meant to be: the first shape passes on today's tree, and the cause-chain
-      shape fails on it, because `factory/workgraph/workflow.py:2489` —
+      shape fails on it, because `factory/workgraph/workflow.py:2512` —
       `EpicWorkflow._attempt_timeout` binds `exc.cause` and never walks
       `__cause__`. Write both shapes and leave that red standing — it goes green
       when T009 widens the search, and red again the moment T009 is written as a
@@ -149,15 +149,15 @@ without it touch a region an earlier task in the same phase is already editing.
 - [ ] T007 [US1] (spec US1-S6, FR-013, traps 16 and 17) **The second call site,
       which no landed test covers.** Compose three landed shapes: script a
       rejected landing into a recovery cycle the way
-      `tests/test_interpreter.py:4671` —
+      `tests/test_interpreter.py:4787` —
       `test_recovery_escalation_kill_preserves_the_branch` does (`script_landing`
       with `checks_failed_snapshot()`, `script_sync`, and a scripted `press`);
       replace `EpicWorkflow._attempt` with a stub that raises the no-agent-started
-      signal on the recovery attempt, the way `tests/test_interpreter.py:2598` —
+      signal on the recovery attempt, the way `tests/test_interpreter.py:2714` —
       `test_an_attempt_raise_still_teardowns_and_propagates` replaces it; and
       count the recovery teardowns by `lease.attempt == 2` the way
-      `tests/test_interpreter.py:2588` does inside
-      `tests/test_interpreter.py:2530` —
+      `tests/test_interpreter.py:2646` does inside
+      `tests/test_interpreter.py:2646` —
       `test_a_verify_raise_in_recovery_still_teardowns_and_propagates`. Assert
       four things: exactly one escalation was sent for the node, its landing state
       is the one the scripted press produces, its `terminal_reason` is not the
@@ -181,18 +181,18 @@ without it touch a region an earlier task in the same phase is already editing.
       is that scenario — and mind trap 6: the word is **bound** or **limit**,
       never `cap`, and no string in the module may say a limit was `exceeded`.
 - [ ] T009 [US1] (FR-004, FR-005, FR-015, traps 4 and 19) In
-      `factory/workgraph/workflow.py:2475` — `EpicWorkflow._attempt_timeout`,
+      `factory/workgraph/workflow.py:2512` — `EpicWorkflow._attempt_timeout`,
       add the one branch this story needs, in this order. First keep the existing
-      heartbeat read at `factory/workgraph/workflow.py:2491` —
+      heartbeat read at `factory/workgraph/workflow.py:2512` —
       `EpicWorkflow._attempt_timeout`, widened to look for the payload on the
       cause's own `last_heartbeat_details` **and** on the `TimeoutError`s
       reachable through its cause chain, so the snapshot is computed before
       anything is decided. Then, and only when that search found nothing, a
       `SCHEDULE_TO_START` timeout raises the same workflow-internal signal
-      `factory/workgraph/workflow.py:737` — `_LaunchFailed` carries, so
+      `factory/workgraph/workflow.py:748` — `_LaunchFailed` carries, so
       `factory/workgraph/workflow.py:2222` — `EpicWorkflow._run_node` records
       launch evidence instead of an `AttemptRecord` and the node is bounded by
-      `factory/verify/models.py:1205` — `VerificationConfig`. A
+      `factory/verify/models.py:1213` — `VerificationConfig`. A
       `SCHEDULE_TO_START` that **did** carry a measurement falls through to
       today's `AdapterResult(termination=Termination.TIMEOUT)` with that figure
       (FR-015), and so does every other cause. A condition on
@@ -202,7 +202,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `_AGENT_RETRIES` cannot absorb it (trap 3). This task is only correct
       together with T011 — the same raise reaches a second caller that catches
       nothing.
-- [ ] T010 [US1] (FR-006) Give `factory/workgraph/workflow.py:737` —
+- [ ] T010 [US1] (FR-006) Give `factory/workgraph/workflow.py:748` —
       `_LaunchFailed` a field naming which fault raised it, and build **one**
       reason function that both `factory/workgraph/workflow.py:2235` —
       `EpicWorkflow._run_node` and `factory/workgraph/workflow.py:2243` —
@@ -212,21 +212,21 @@ without it touch a region an earlier task in the same phase is already editing.
       no-worker ending names the schedule-to-start cause instead. Two hardcoded
       strings, one per branch, satisfy T006's second half and fail its first.
 - [ ] T011 [US1] (FR-013, traps 16 and 17) Handle the signal at the **second**
-      call site. At `factory/workgraph/workflow.py:3976` —
+      call site. At `factory/workgraph/workflow.py:3954` —
       `EpicWorkflow._recovery_attempt` the raise must end that recovery cycle as
       one that produced no result — the same `None` its other failures return,
       which `factory/workgraph/workflow.py:3817` — `EpicWorkflow._run_recovery`
       already turns into a landing escalation — rather than escaping through
       `EpicWorkflow._run_recovery` (which has no `except` anywhere) to
-      `factory/workgraph/workflow.py:1654` — `EpicWorkflow._reap_finished`, whose
+      `factory/workgraph/workflow.py:1656` — `EpicWorkflow._reap_finished`, whose
       `except Exception` KILLs the node. Bind `termination` before the `try` at
-      `factory/workgraph/workflow.py:3975` — `EpicWorkflow._recovery_attempt` the
+      `factory/workgraph/workflow.py:4054` — `EpicWorkflow._recovery_attempt` the
       way `factory/workgraph/workflow.py:1780` — `EpicWorkflow._run_node` binds
-      its own, so the `finally` at `factory/workgraph/workflow.py:4034` —
+      its own, so the `finally` at `factory/workgraph/workflow.py:4114` —
       `EpicWorkflow._recovery_attempt` still closes the recovery key exactly once
       instead of raising `UnboundLocalError` over the ending. Do not widen the
       handler to bare `Exception`: the landed contract that a raise in recovery
-      reaches the reaper (`tests/test_interpreter.py:2530`) must survive for every
+      reaches the reaper (`tests/test_interpreter.py:2646`) must survive for every
       other exception.
 
 ### Verification for this story
@@ -260,14 +260,14 @@ without it touch a region an earlier task in the same phase is already editing.
       key, that activity's own retry attempt as an integer, and its last heartbeat
       time — none of them a protobuf message. Asserting the state alone would let
       the two fields trap 9 and trap 18 are about ship silently or not at all.
-      Today `factory/cli/nouns/build.py:442` — `_live_spend` discards the whole
+      Today `factory/cli/nouns/build.py:456` — `_live_spend` discards the whole
       entry and the map is empty. The fake must answer `HasField` for the message fields only —
       `state` and `attempt` are proto3 scalars and `HasField` raises `ValueError`
       on them (trap 7), so build the fake so a production call that gets this
       wrong fails loudly here rather than in an operator's terminal. Do **not**
       let the production repair be a `try/except ValueError`:
       `tests/test_ergane_status.py:1528` pins this function's exception clauses to
-      exactly three and `tests/test_ergane_status.py:1808` —
+      exactly three and `tests/test_ergane_status.py:1822` —
       `test_no_temporal_call_site_catches_the_transport_failure_alone` sweeps for
       a fourth (trap 15).
 - [ ] T014 [P] [US2] (spec US2-S2, FR-009) Assert the pair: two documents
@@ -285,10 +285,10 @@ without it touch a region an earlier task in the same phase is already editing.
       (constitution V).
 - [ ] T016 [P] [US2] (spec US2-S4, FR-011, traps 14 and 18) **The control, and the
       one landed assertion this story amends.** Assert that the `live_spend`
-      object `build status --json` emits at `factory/cli/nouns/build.py:1178` —
+      object `build status --json` emits at `factory/cli/nouns/build.py:1298` —
       `_query_status` still carries `spend_usd` and `captured_at` under those
       exact keys with those exact types for every entry that has a figure, **and**
-      that the document loads as JSON at all — `factory/cli/nouns/build.py:1188` —
+      that the document loads as JSON at all — `factory/cli/nouns/build.py:1298` —
       `_query_status` runs the whole map through `json.dumps`, which refuses the
       protobuf `Timestamp` that `last_heartbeat_time` arrives as (trap 18).
       `tests/test_ergane_build.py:815` —
@@ -316,8 +316,8 @@ without it touch a region an earlier task in the same phase is already editing.
 ### Implementation for this story
 
 - [ ] T018 [US2] (FR-007, FR-008, traps 7, 9 and 18) In
-      `factory/cli/nouns/build.py:407` — `_live_spend`, move the heartbeat filter
-      at `factory/cli/nouns/build.py:442` — `_live_spend` off the entry's
+      `factory/cli/nouns/build.py:421` — `_live_spend`, move the heartbeat filter
+      at `factory/cli/nouns/build.py:456` — `_live_spend` off the entry's
       existence and onto the figure alone: every pending `run_agent_attempt` whose
       activity id names a node gets an entry, and `spend_usd`/`captured_at` are
       present only when a payload decodes. Carry the pending activity's `state`,
@@ -325,7 +325,7 @@ without it touch a region an earlier task in the same phase is already editing.
       — the state as its enum name, the heartbeat time as an ISO-8601 string
       beside the plain `str` that `captured_at` already is at
       `factory/cli/nouns/build.py:459` — `_live_spend` — because
-      `factory/cli/nouns/build.py:1188` — `_query_status` serialises the whole map
+      `factory/cli/nouns/build.py:1298` — `_query_status` serialises the whole map
       and `json.dumps` refuses a protobuf `Timestamp` (trap 18). Read `state` and
       `attempt` **directly** — `HasField` raises on a proto3 scalar and nothing in
       this function guards it — and label the activity's retry count so it cannot
@@ -333,18 +333,18 @@ without it touch a region an earlier task in the same phase is already editing.
       query document (trap 9). Add no exception clause to this function: a landed
       sweep pins its three by name (trap 15).
 - [ ] T019 [US2] (FR-009, FR-010, FR-012, trap 12) In
-      `factory/cli/nouns/build.py:464` — `render_status`, replace the bare figure
+      `factory/cli/nouns/build.py:478` — `render_status`, replace the bare figure
       at `factory/cli/nouns/build.py:494` — `render_status` with a token that
       names the pending activity's state and, when a figure is present, carries
       the capture time beside it. Follow the three token helpers already there —
-      `factory/cli/nouns/build.py:757` — `_routing_token`,
-      `factory/cli/nouns/build.py:524` — `_base_token` and
-      `factory/cli/nouns/build.py:718` — `_reason_token` — rather than growing the
+      `factory/cli/nouns/build.py:800` — `_routing_token`,
+      `factory/cli/nouns/build.py:539` — `_base_token` and
+      `factory/cli/nouns/build.py:733` — `_reason_token` — rather than growing the
       format string at `factory/cli/nouns/build.py:501` — `render_status`. A node
       with no entry gets the empty string, exactly as today.
 - [ ] T020 [US2] (trap 10) Confirm by reading that
-      `factory/workgraph/cli.py:842` — `_live_spend` and
-      `factory/workgraph/cli.py:916` — `render_status` were **not** edited. They
+      `factory/workgraph/cli.py:855` — `_live_spend` and
+      `factory/workgraph/cli.py:929` — `render_status` were **not** edited. They
       are a pre-`ergane` copy that no module under `factory/` and no test imports,
       and `ergane build status` dispatches the `factory/cli/nouns/build.py` pair
       through the parser at `factory/cli/nouns/build.py:2166`. Editing the twin

@@ -19,7 +19,7 @@ has today:
 Its callers are exactly two — `factory/verify/diffcheck.py:390`, inside
 `factory/verify/diffcheck.py:376` — `judge_input`, and
 `factory/activities/agent_activities.py:735`, inside
-`factory/activities/agent_activities.py:718` — `read_worktree_diff`. The first
+`factory/activities/agent_activities.py:739` — `read_worktree_diff`. The first
 feeds the refusal, the second feeds the judge's prompt. Neither passes a
 pathspec, and there is no third caller.
 
@@ -123,10 +123,10 @@ carries `text` and `truncated` (`factory/verify/judge.py:265`),
 and `truncated` becomes `truncated_input` on the prompt
 (`factory/verify/judge.py:286`) and from there onto the verdict and the stored
 row. On the refusal side the record types are
-`factory/verify/models.py:444` — `DiffSizeRefusal`,
-`factory/verify/models.py:467` — `DiffAbridgement` and
-`factory/verify/models.py:429` — `DiffFileSize`, all three carried on
-`factory/verify/models.py:509` — `OutputCheck`, which
+`factory/verify/models.py:456` — `DiffSizeRefusal`,
+`factory/verify/models.py:479` — `DiffAbridgement` and
+`factory/verify/models.py:441` — `DiffFileSize`, all three carried on
+`factory/verify/models.py:521` — `OutputCheck`, which
 `factory/verify/diffcheck.py:172` — `check_output` fills at
 `factory/verify/diffcheck.py:252-256` and `factory/verify/diffcheck.py:262`.
 Filling the record is only half of writing it: `OutputCheck` is serialised field
@@ -136,7 +136,7 @@ and read back one key at a time at
 `factory/verify/store.py:1214` — `_output_check_from_dict`. A field added to the
 dataclass and not to those two functions is dropped on write and absent on read,
 and every operator-facing reader works from a loaded row — the rendering at
-`factory/cli/nouns/build.py:1446` and the retry prompt at
+`factory/cli/nouns/build.py:1625` and the retry prompt at
 `factory/workgraph/prompt.py:956`, which quotes
 `factory/workgraph/prompt.py:975` — `_size_listing` verbatim into the next
 attempt's brief. That is trap 14, and the same two readers are half of trap 16.
@@ -145,33 +145,33 @@ attempt's brief. That is trap 14, and the same two readers are half of trap 16.
 `_TOP_LEVEL_KEYS` is at `factory/verify/factory_yaml.py:109` and
 `_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify")` at
 `factory/verify/factory_yaml.py:134`;
-`factory/verify/factory_yaml.py:269` — `_reject_unknown_keys` picks between them
+`factory/verify/factory_yaml.py:280` — `_reject_unknown_keys` picks between them
 by version at `factory/verify/factory_yaml.py:270`. The reader list is inside
-`factory/verify/factory_yaml.py:199` — `parse_factory_config`, where
+`factory/verify/factory_yaml.py:208` — `parse_factory_config`, where
 `_read_writes` is called at `factory/verify/factory_yaml.py:217` and
 `_read_diff_refusal_bytes` at `factory/verify/factory_yaml.py:224`. The two
 readers worth modelling on are
-`factory/verify/factory_yaml.py:633` — `_read_diff_refusal_bytes`, which is 092's
+`factory/verify/factory_yaml.py:699` — `_read_diff_refusal_bytes`, which is 092's
 own dial and shows the refusal shape, and
-`factory/verify/factory_yaml.py:694` — `_read_caches`, which is the list-shaped
+`factory/verify/factory_yaml.py:760` — `_read_caches`, which is the list-shaped
 reader and shows how an absent optional key becomes `()`.
 
 **The pin, and every hop it already travels — the route forks, and the fork is
 the hop a description leaves out.**
-`factory/verify/factory_yaml.py:1068` — `load_loop_config` is the dispatch-time
+`factory/verify/factory_yaml.py:1134` — `load_loop_config` is the dispatch-time
 read; its signature is at `factory/verify/factory_yaml.py:1070` and its return at
 `factory/verify/factory_yaml.py:1086`. Its docstring at
-`factory/verify/factory_yaml.py:1079-1083` states the rule this spec inherits:
+`factory/verify/factory_yaml.py:1145-1149` states the rule this spec inherits:
 a value that decides a verdict is read "from the declaration that owns it, once,
 here (constitution IX)". From there `diff_refusal_bytes` travels through
-`factory/activities/roadmap_activities.py:821` — `ReadLoopConfigResult` (field at
+`factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult` (field at
 `factory/activities/roadmap_activities.py:833`, filled at
 `factory/activities/roadmap_activities.py:858` and
 `factory/activities/roadmap_activities.py:866`) and then **into two dispatch
 paths, both of which must be wired**:
 
 - the roadmap's own child start.
-  `factory/roadmap/workflow.py:1170` — `_dispatch` awaits that activity result
+  `factory/roadmap/workflow.py:1247` — `_dispatch` awaits that activity result
   and builds the child's `EpicInput` at `factory/roadmap/workflow.py:1296`,
   naming the pinned value at `factory/roadmap/workflow.py:1303`. **This is the
   factory's normal dispatch path**: the roadmap schedule fires it unattended, so
@@ -184,7 +184,7 @@ paths, both of which must be wired**:
   `factory/cli/nouns/build.py:951` names it on the `EpicInput` constructed at
   `factory/cli/nouns/build.py:931`.
 
-Both land on `factory/workgraph/workflow.py:532` — `EpicInput` at
+Both land on `factory/workgraph/workflow.py:537` — `EpicInput` at
 `factory/workgraph/workflow.py:595`. Copy that route exactly, both forks:
 eleven lines across five files, and it is the whole of FR-004. `grep -n 'EpicInput(' factory/` returns a
 third construction site, `factory/workgraph/cli.py:675`; it carries no 092 pin
@@ -195,7 +195,7 @@ five unpackings, two in production
 `factory/cli/nouns/build.py:826`) and three in landed tests
 (`tests/test_092_manifest_threshold.py:186`,
 `tests/test_092_manifest_threshold.py:233`,
-`tests/test_023_us2_dispatch_pin.py:823`).
+`tests/test_023_us2_dispatch_pin.py:848`).
 
 **The two last hops, one per consuming story.** For the refusal:
 `factory/activities/verify_activities.py:294` — `CheckOutputInput` carries
@@ -209,18 +209,24 @@ naming the pinned value at `factory/workgraph/workflow.py:2619`. For the judge:
 `factory/activities/verify_activities.py:444`; the workflow reads the diff at
 `factory/workgraph/workflow.py:2627` and constructs the judge input at
 `factory/workgraph/workflow.py:2923`, inside
-`factory/workgraph/workflow.py:2901` — `_score` — **not** inside
-`factory/workgraph/workflow.py:2708` — `_judge`, which reaches it only through
+`factory/workgraph/workflow.py:2942` — `_score` — **not** inside
+`factory/workgraph/workflow.py:2749` — `_judge`, which reaches it only through
 `self._score(...)` at `factory/workgraph/workflow.py:2771`. Edit `_score`; read
 `_judge` for the retry loop around it. `factory/verify/judge.py:307` — `build_prompt`
 calls `prepare_diff` at `factory/verify/judge.py:352`.
 
-**The only exclusion list in the tree, and it is not this one.**
-`factory/workgraph/detector.py:70` is `EXCLUDED_DIR_NAMES` and
-`factory/workgraph/detector.py:73` is `EXCLUDED_SUFFIXES`; the comment above them
-at `factory/workgraph/detector.py:66` describes generated content, which is why
-an implementer will find them. They govern the runtime-root snapshot, never the
-diff. Do not extend them and do not import them.
+**There is no exclusion list in the tree, and the one there was got deleted on
+this spec's own argument.** Until epic 130 the detector carried
+`EXCLUDED_DIR_NAMES` and `EXCLUDED_SUFFIXES` under a comment describing generated
+content, which is why a search for prior art used to land there. **They are gone.**
+130 US3 FR-006 removed them rather than let the list grow a branch for the next
+language, and `factory/workgraph/detector.py:35` records the ruling in the module
+docstring. Nothing replaced them: the surviving rule is the target repository's
+own ignore rules, applied by git through `--exclude-standard` when `_tracked_state`
+reads untracked files.
+
+So there is nothing here to extend, nothing to import, and — see trap 18 — a test
+that fails you if you put one back.
 
 ## Traps
 
@@ -360,7 +366,7 @@ Do not "improve" on it by refusing a pattern that matched nothing in one diff:
 that would refuse every ordinary story in a repository that declared a lockfile.
 
 **Trap 10 — the patterns are pinned, never read from the node's worktree.**
-`factory/verify/factory_yaml.py:1079-1083` states the rule for the sibling dial:
+`factory/verify/factory_yaml.py:1145-1149` states the rule for the sibling dial:
 a value that decides a verdict is read from the declaration that owns it, once,
 at dispatch. A node that could write `generated_paths: ["**"]` into its
 worktree's manifest would exempt its entire diff from the refusal and from the
@@ -376,13 +382,13 @@ along the route `diff_refusal_bytes` already takes
 that gets left out is the roadmap's, because a route recited from the CLI's
 `ergane build start` reads complete without it, and it is the wrong one to leave
 out: the schedule dispatches through
-`factory/roadmap/workflow.py:1170` — `_dispatch` unattended, so wiring only the
+`factory/roadmap/workflow.py:1247` — `_dispatch` unattended, so wiring only the
 CLI ships a manifest key that every hand-run epic honours and every scheduled
 epic ignores — green tests, green gate, the outage intact wherever the factory
 actually runs. That is trap 11's failure shape landing on a hop rather than on a
 seam. US1-S5 is the test that catches it; it needs two manifests on disk and an
 assertion over the `EpicInput` each path actually starts the epic with —
-`tests/test_023_us2_dispatch_pin.py:731` — `test_roadmap_dispatch_reads_config_per_child`
+`tests/test_023_us2_dispatch_pin.py:756` — `test_roadmap_dispatch_reads_config_per_child`
 captures the roadmap's child start and is the shape to copy.
 
 **Trap 11 — the declaration must leave the schema, in both consuming stories.**
@@ -400,7 +406,7 @@ what makes them unsatisfiable by the shortcut.
 read the branch before writing a test against it.**
 `factory/verify/factory_yaml.py:958-963` refuses a manifest that declares a
 `verify:` list without `diff_check` in it. It does **not** fire for a manifest
-with no `verify:` block: `factory/verify/factory_yaml.py:915` — `_read_verify`
+with no `verify:` block: `factory/verify/factory_yaml.py:981` — `_read_verify`
 returns the default order at `factory/verify/factory_yaml.py:923-924`, and that
 default (`factory/verify/models.py:340`) already contains `diff_check`. A test
 written from the words "a manifest that omits `diff_check`" fails against today's
@@ -438,7 +444,7 @@ read.** `OutputCheck` is written to the store field by field:
 `factory/verify/store.py:1214` — `_output_check_from_dict` reads them back one by
 one. A new FR-012 field added
 only where `check_output` fills it is dropped on write and absent on read, and
-`factory/cli/nouns/build.py:1446` and `factory/workgraph/prompt.py:956` both
+`factory/cli/nouns/build.py:1625` and `factory/workgraph/prompt.py:956` both
 render from a *loaded* row — so the cheapest implementation that satisfies an
 in-memory assertion lands a disclosure nobody will ever see, which is trap 1's
 shape repeated inside this spec. 092 set the standard the other way and it is the
@@ -514,6 +520,29 @@ named as what spent the allowance, and US3-S7 asserts it. The disclosure of what
 *was* excluded belongs on FR-012's field, with its real byte count, where it does
 not have to share a unit with a total it was left out of.
 
+**Trap 18 — the shape you will reach for first is already banned, by a test.**
+This spec asks you to name generated paths, so the first design that comes to
+mind is a list of them in the tree. Epic 130 US3 FR-006 deleted exactly that
+list from `factory/workgraph/detector.py` and
+`tests/test_us3_no_language_shaped_list.py:183` —
+`test_detector_defines_no_generated_path_exclusion_list` now asserts it stays
+deleted. That test does three things you must respect. It fails if
+`EXCLUDED_DIR_NAMES`, `EXCLUDED_SUFFIXES` or `_snapshot_paths` are defined in
+that module again. It fails if the strings `.gitignore`, `check-ignore` or
+`pathspec` appear anywhere in that module's source — so an ignore-rule parser
+may not replace the list either. And it fails if `--exclude-standard` stops
+appearing there.
+
+None of that forbids what this spec actually builds, and the distinction is the
+trap: the ban is **scoped to `factory/workgraph/detector.py`**, because the test
+reads that one file's source. This spec's declaration lives in the repository's
+own `ergane.yaml` and is consumed under `factory/verify/`, which the test never
+reads. So: declare the patterns in the manifest, consume them in `factory/verify/`,
+and do not touch the detector. If you find yourself adding a default list of
+generated-looking names *in code* — anywhere, not only in the detector — you have
+rebuilt the thing 130 removed, and the reason it was removed applies unchanged:
+it is a guess about a repository you cannot see.
+
 **Trap 17 — the elision does not make an over-limit diff fit, and an acceptance
 criterion written as though it did is unsatisfiable.** What FR-007 takes out of
 `factory/verify/judge.py:515` — `_allocate`'s input is the generated file's
@@ -541,6 +570,23 @@ and the second is the expensive one:
 
 Keep the fixture; assert the grants.
 
+**Trap 19 — THE PRESSURE THIS SPEC RELIEVES WAS MEASURED AGAIN ON 2026-09-08, ON
+THIS FLOOR, AND IT IS WORSE THAN THE ORIGINAL EVIDENCE SAYS.** The spec's case
+rests on one container run refused at 70,652 bytes against 65,536. Since then,
+thirty stories landed on `ergane-buildout` and three of them came in at ninety
+per cent or more of the same bound: `133/us5` at 64,887 bytes (99%), `155/us1` at
+64,144 (98%), and `133/us9` at 63,077 (96%). The first cleared by 649 bytes. One
+of those attempts spent ten of its fifteen commits deleting docstrings to fit.
+
+Two things follow for how you build this. **The margin is real, so the saving
+must be real**: an implementation that excludes generated files from the
+*reported* total while still passing their bytes to the judge relieves nothing,
+and the 649-byte case is how close that distinction runs. **And the acceptance
+evidence is available without waiting for a refusal**: you do not need to provoke
+an over-limit diff to demonstrate the rule, because a `uv.lock`-shaped file in a
+64KB-adjacent diff is now an ordinary week on this floor. Measure a real one.
+
+
 ## Sizing
 
 US1 touches `factory/verify/factory_yaml.py` (one tuple entry, one reader, one
@@ -561,7 +607,7 @@ declared scope rather than collateral: the enumeration at
 `tests/test_120_rewrite_carries_forward.py:310` (trap 5) and the three 3-tuple
 unpackings of `load_loop_config` at `tests/test_092_manifest_threshold.py:186`,
 `tests/test_092_manifest_threshold.py:233` and
-`tests/test_023_us2_dispatch_pin.py:823`.
+`tests/test_023_us2_dispatch_pin.py:848`.
 
 US2 touches `factory/verify/diffbounds.py` (the one stub renderer, beside
 `factory/verify/diffbounds.py:125` — `file_listing`, and its name added to the
@@ -574,7 +620,7 @@ here and not in the judge), `factory/verify/judge.py` (the filtered call to
 argument at `factory/activities/verify_activities.py:444`) and
 `factory/workgraph/workflow.py` (one line at
 `factory/workgraph/workflow.py:2923`, inside
-`factory/workgraph/workflow.py:2901` — `_score`).
+`factory/workgraph/workflow.py:2942` — `_score`).
 
 US3 touches `factory/verify/diffbounds.py`
 (`factory/verify/diffbounds.py:137` — `assembled`,

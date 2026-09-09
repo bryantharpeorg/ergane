@@ -89,14 +89,14 @@ passes forever).
       `factory/cli/roadmap.py:205` — `_connect`, `('Exception',)` for
       `factory/cli/repo.py:85` — `_open_client` — and that each of those three
       functions still awaits. Do not edit `tests/test_ergane_status.py`'s table
-      or its sweep at `tests/test_ergane_status.py:1702` —
+      or its sweep at `tests/test_ergane_status.py:1716` —
       `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal`;
       this task states the contract in this story's diff so it is met as scope
       rather than as a red gate.
 - [ ] T004 [US1] (spec US1-S2, FR-002) One case per migrated caller, four small
       cases rather than one loop — a loop that skips a caller looks identical to a
       loop that covers it. With the choke point's seam bound to a fake, assert
-      each of `factory/workgraph/cli.py:969` — `_connect`,
+      each of `factory/workgraph/cli.py:977` — `_connect`,
       `factory/cli/nouns/__init__.py:54` — `_open_client`,
       `factory/cli/roadmap.py:205` — `_connect` and `factory/cli/repo.py:85` —
       `_open_client` behaves as it does today, including its own exit code.
@@ -114,9 +114,9 @@ passes forever).
       point module **in `factory/controlplane/`** — beside
       `factory/controlplane/resolve.py:232` — `resolve_temporal_target`,
       `factory/controlplane/client.py` being the obvious name — and **not** under
-      `factory/cli/`, where `tests/test_ergane_status.py:1586` —
+      `factory/cli/`, where `tests/test_ergane_status.py:1600` —
       `_cli_python_modules` would discover it and redden
-      `tests/test_ergane_status.py:1702` —
+      `tests/test_ergane_status.py:1716` —
       `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal`
       (trap 24). Do not re-export it from `factory/controlplane/__init__.py`,
       which is zero bytes on purpose. One
@@ -139,7 +139,7 @@ passes forever).
       are `exec_module`-d into fresh module objects, so the seam must live where
       discovery never reloads it.
 - [ ] T008 [P] [US1] (FR-002, trap 19) Migrate
-      `factory/workgraph/cli.py:969` — `_connect`, keeping its `EXIT_TRANSPORT`
+      `factory/workgraph/cli.py:977` — `_connect`, keeping its `EXIT_TRANSPORT`
       translation and its address-in-the-message behaviour. **Keep the
       `resolve_temporal_target()` call at `factory/workgraph/cli.py:966` and its
       import at `factory/workgraph/cli.py:32`**, and pass the resolved target
@@ -366,7 +366,7 @@ Independent of Phases 1, 2, 3, 5 and 6.
       refuses the same way.
 - [ ] T042 [P] [US4] (spec US4-S4, FR-018) Assert both routes refuse: the salvage
       path through `factory/workgraph/worktree.py:511` — `salvage`, and the reset
-      path reached from `factory/cli/nouns/build.py:1897` — `_reset_epic` through
+      path reached from `factory/cli/nouns/build.py:2332` — `_reset_epic` through
       `factory/workgraph/worktree.py:1750` — `_archive_node`.
 - [ ] T043 [US4] (spec US4-S5, FR-017) **The control for trap 3.** Build a node
       worktree nested inside an enclosing repository — which is where they live —
@@ -382,7 +382,7 @@ Independent of Phases 1, 2, 3, 5 and 6.
       `_worktree_ownership` shows which half matters: the resolved top level must
       equal `path.resolve()`. Use the repo-free half, because
       `factory/workgraph/worktree.py:511` — `salvage` is handed no `target_repo`
-      and `factory/activities/agent_activities.py:762` — `salvage_worktree` has
+      and `factory/activities/agent_activities.py:783` — `salvage_worktree` has
       none to give it. **The refusal wording splits with the routes.** On the
       `_archive_node` route, which does take a `repo`, reuse
       `factory/workgraph/worktree.py:1088` — `_ownership_refusal` unchanged. On
@@ -435,11 +435,11 @@ waits for Phase 3 to merge: both stories write `tests/test_live_capacity.py`
       assert that every id the live capacity tier mints through
       `tests/test_live_capacity.py:176` — `_probe_id` wears no `epic-` prefix.
 - [ ] T073 [P] [US5] (spec US5-S3, FR-020) Capture the visibility query
-      `factory/activities/roadmap_activities.py:771-772` — `_list_open_epics` sends,
+      `factory/activities/roadmap_activities.py:772-773` — `_list_open_epics` sends,
       from a fake client that records it, and assert it carries
       `WorkflowType = "EpicWorkflow"` beside its `ExecutionStatus` clause. Assert in
       the same test that the pinned type name equals the type Temporal registers for
-      `factory/workgraph/workflow.py:752` — `EpicWorkflow`, so the pin cannot drift
+      `factory/workgraph/workflow.py:763` — `EpicWorkflow`, so the pin cannot drift
       from the class. Model the query on `factory/escalation/client.py:52-59`.
 - [ ] T051 [P] [US5] (spec US5-S2, FR-020, trap 22) Script a listing containing
       `epic-capacity-can-3d2bb231` carrying a probe's workflow type, hand it to the
@@ -447,12 +447,12 @@ waits for Phase 3 to merge: both stories write `tests/test_live_capacity.py`
       not on the id, since nobody can rename a workflow already on the namespace.
       Build the executions with `.id` and `.workflow_type`, return them from a fake
       client's `list_workflows`, and run
-      `factory/activities/roadmap_activities.py:754` — `_list_open_epics` through
+      `factory/activities/roadmap_activities.py:755` — `_list_open_epics` through
       `ActivityEnvironment(client=fake)`, the way
       `tests/test_live_capacity.py:202` — `_running_ids` already does. **Do not
-      bind `factory/activities/roadmap_activities.py:785-788`**: that seam
+      bind `factory/activities/roadmap_activities.py:786-789`**: that seam
       defaults to `_list_open_epics` and is read only by
-      `factory/activities/roadmap_activities.py:800` — `count_open_epics`, so
+      `factory/activities/roadmap_activities.py:801` — `count_open_epics`, so
       binding it replaces the function whose new filter is the whole of this
       requirement and the test then asserts on the set it supplied itself — a
       test-only diff would pass.
@@ -472,16 +472,16 @@ waits for Phase 3 to merge: both stories write `tests/test_live_capacity.py`
       prefix. Change what probes are *named*; **trap 4** — do not tighten what an
       epic id is.
 - [ ] T055 [US5] (FR-020) The mechanism, in
-      `factory/activities/roadmap_activities.py:754` — `_list_open_epics`: add the
+      `factory/activities/roadmap_activities.py:755` — `_list_open_epics`: add the
       `WorkflowType = "EpicWorkflow"` clause to the query at
-      `factory/activities/roadmap_activities.py:771-772` — `_list_open_epics`, pin
+      `factory/activities/roadmap_activities.py:772-773` — `_list_open_epics`, pin
       the type name beside the status pinned at
-      `factory/activities/roadmap_activities.py:782`, and drop any listed execution
+      `factory/activities/roadmap_activities.py:783`, and drop any listed execution
       whose `workflow_type` is not that one, so a supplied listing decides the
       exclusion without a server. **Trap 4**: replacing the bare literal at
-      `factory/activities/roadmap_activities.py:774` — `_list_open_epics` with
+      `factory/activities/roadmap_activities.py:775` — `_list_open_epics` with
       `EPIC_ID_PREFIX` (`factory/cli/status.py:114`,
-      `factory/cli/nouns/build.py:188`) is a tidy-up worth doing and is *not* the
+      `factory/cli/nouns/build.py:196`) is a tidy-up worth doing and is *not* the
       fix — both spellings are `"epic-"`. Import the constant; do not edit either
       module, and note in the commit body which one you imported and why the other
       stays.
@@ -534,7 +534,7 @@ Waits only for Phase 1 to merge.
       `factory/doctor/probes.py:491` — `_gather_async`,
       `factory/doctor/probes.py:603` — `_closed_epics_from_temporal`,
       `factory/controlplane/verify.py:193` — `_temporal_client_factory`,
-      `factory/notify/service.py:1048` — `main`, `factory/worker.py:342` — `main`,
+      `factory/notify/service.py:1048` — `main`, `factory/worker.py:351` — `main`,
       `factory/supervision/deploy.py:749` — `asked` and
       `factory/roadmap/schedule.py:165` — `_default_schedule_client` obtains its
       client from the choke point **and still resolves its own target first**
@@ -542,7 +542,7 @@ Waits only for Phase 1 to merge.
       `PYTEST_CURRENT_TEST` set, `factory/roadmap/schedule.py:144` —
       `_default_schedule_client` still raises `ScheduleUnavailable` with its own
       message, before the choke point is asked at all.
-- [ ] T061 [P] [US6] (spec US6-S3, FR-006) Assert `factory/worker.py:333` — `main`
+- [ ] T061 [P] [US6] (spec US6-S3, FR-006) Assert `factory/worker.py:351` — `main`
       is not refused with `PYTEST_CURRENT_TEST` unset. Bind the seam; do not
       connect.
 - [ ] T062 [P] [US6] (spec US6-S4, FR-006) Assert that merely importing
@@ -621,7 +621,7 @@ Waits only for Phase 1 to merge.
       `resolve_temporal_target()` call at `factory/notify/service.py:1047` and its
       import at `factory/notify/service.py:1045`; this module is the tenth entry
       in `tests/test_declared_temporal.py:392` (the tuple `_RESOLVER_SITES`).
-- [ ] T067 [US6] (FR-023, FR-006, trap 19) Migrate `factory/worker.py:342` —
+- [ ] T067 [US6] (FR-023, FR-006, trap 19) Migrate `factory/worker.py:351` —
       `main`, keeping the `resolve_temporal_target()` call at
       `factory/worker.py:339` and the module-scope import at
       `factory/worker.py:80`. **Trap 9**: the worker is allowed to reach

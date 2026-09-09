@@ -1,5 +1,44 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-08. US1 61f63ca6af73, US2 1c96876be292,
+# US3 3efb1319d39b — all three observed on ergane-buildout by content.
+#
+# VERIFIED BY EXERCISING THE REFUSAL, NOT BY READING THE VERDICT. The two
+# decision functions were called directly across the complete case table, and
+# the conservative direction FR-003 asks for was confirmed as the asymmetry it
+# is meant to be:
+#
+#   worker != tree        -> US1 REFUSES,  US2 PARKS   (the headline case)
+#   worker unknown        -> US1 REFUSES,  US2 PARKS   (an unknown revision
+#                            cannot be compared, so it is treated as skew)
+#   tree unknown          -> US1 allows,   US2 dispatches
+#   worker == tree        -> US1 allows,   US2 dispatches
+#
+# The third row is the one worth naming: "the tree cannot say what it is" is not
+# skew, and parking on it would lock a repository that is not a git checkout out
+# of its own factory forever. `_skew_notice` (build) and `_skew_park_detail`
+# (roadmap) agree on all four rows, which is FR-003's real requirement -- two
+# surfaces, one rule.
+#
+# `_cli_revision()` answered 1c96876 against a tree at 1c96876 while this was
+# checked, so the mechanism was reading the real revision, not a fixture.
+#
+# US3 IS A DELIBERATE ABSENCE, AND THAT IS WHY IT LOOKS EMPTY. It landed as one
+# test file and no production line, which reads like a story that built nothing.
+# It is not: the design decision it locks is that a refusal mints **no durable
+# skew state**. `build status` and `roadmap status` re-derive the skew from live
+# sources every time they are asked, so a cleared skew leaves no residue to
+# explain later. Its ten tests assert both directions -- visible while skewed,
+# and gone once the worker is aligned -- and all ten pass. A record would have
+# been the easier story and the worse design; the absence is the deliverable.
+#
+# ONE LESSON FOR THE NEXT SPEC THAT TOUCHES THIS FILE. US2 landed +111 lines
+# into factory/roadmap/workflow.py. Spec 131, which cites that file 128 times,
+# had been brought to zero validate refusals an hour earlier; the merge moved
+# all 128 of its anchors and put it back to 45 refusals with nobody editing it.
+# Reported against refinement/a-landing-silently-invalidates-every-spec-anchor-
+# below-it, now at four occurrences.
+#
 fixes:
   - interpreter/a-fresh-epic-on-a-stale-worker-wedges-in-workflow-task-retry
 ---

@@ -13,10 +13,11 @@
         "US1",
         "FR-001",
         "FR-002",
-        "FR-003",
         "FR-004",
         "FR-005",
-        "FR-006"
+        "FR-022",
+        "FR-027",
+        "FR-029"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -31,12 +32,14 @@
         "US2",
         "FR-007",
         "FR-008",
-        "FR-009"
+        "FR-009",
+        "FR-030"
       ],
-      "depends_on": [
-        "us1"
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1",
+        "us3"
       ],
-      "depends_on_merged": [],
       "timeout_override_s": null
     },
     {
@@ -50,7 +53,8 @@
         "FR-011",
         "FR-012",
         "FR-013",
-        "FR-014"
+        "FR-014",
+        "FR-025"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -63,15 +67,14 @@
       "spec_ref": "074-a-test-cannot-reach-the-operators-floor:US4",
       "requirement_keys": [
         "US4",
+        "FR-005",
         "FR-015",
         "FR-016",
         "FR-017",
         "FR-018"
       ],
       "depends_on": [],
-      "depends_on_merged": [
-        "us1"
-      ],
+      "depends_on_merged": [],
       "timeout_override_s": null
     },
     {
@@ -83,31 +86,35 @@
         "US5",
         "FR-019",
         "FR-020",
-        "FR-021"
+        "FR-021",
+        "FR-024",
+        "FR-026"
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us4"
+        "us3"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us6",
+      "story_key": "US6",
+      "persona": "implementer",
+      "spec_ref": "074-a-test-cannot-reach-the-operators-floor:US6",
+      "requirement_keys": [
+        "US6",
+        "FR-003",
+        "FR-006",
+        "FR-023",
+        "FR-027",
+        "FR-028"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us1"
       ],
       "timeout_override_s": null
     }
   ],
-  "inferred_edges": [
-    {
-      "node_id": "us4",
-      "depends_on_merged": "us1",
-      "shared_files": [
-        "factory/cli/nouns/build.py"
-      ],
-      "reason": "inferred, not declared: US4's task slice and US1's both name `factory/cli/nouns/build.py`, and the spec declares no ordering between them. Raced, whichever lands second is rejected for the other's change, so US4 \u2014 the later-declared of the two \u2014 waits for US1 to merge. Declare `concurrent_with: [US1]` on US4 to run them together anyway (069-US2 FR-007)"
-    },
-    {
-      "node_id": "us5",
-      "depends_on_merged": "us4",
-      "shared_files": [
-        "factory/cli/nouns/build.py"
-      ],
-      "reason": "inferred, not declared: US5's task slice and US4's both name `factory/cli/nouns/build.py`, and the spec declares no ordering between them. Raced, whichever lands second is rejected for the other's change, so US5 \u2014 the later-declared of the two \u2014 waits for US4 to merge. Declare `concurrent_with: [US4]` on US5 to run them together anyway (069-US2 FR-007)"
-    }
-  ]
+  "inferred_edges": []
 }

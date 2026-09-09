@@ -59,7 +59,7 @@ fixes:
 # the red is confirmation and forbids the sibling-map workaround that would clear
 # it. And `tests/test_ergane_status.py:1528` pins `_live_spend`'s exception
 # clauses to exactly three, swept by name at
-# `tests/test_ergane_status.py:1808`, which closes trap 7's tempting repair — a
+# `tests/test_ergane_status.py:1822`, which closes trap 7's tempting repair — a
 # `try/except ValueError` around the scalar read — as trap 15. The same pass found
 # a second production caller of `render_status`, the floor board at
 # `factory/cli/status.py:805`, which passes no live map, and counted the landed
@@ -79,9 +79,9 @@ fixes:
 # REPAIRED 2026-09-04 (refinement-2026-09-04-tail) after an adversarial review
 # refuted the draft; anchors re-read again at 602a92c. Four classes of change,
 # and no declared key moved. (1) The blocking one: `_attempt` has a **second**
-# caller, `factory/workgraph/workflow.py:3976` — `EpicWorkflow._recovery_attempt`,
+# caller, `factory/workgraph/workflow.py:3954` — `EpicWorkflow._recovery_attempt`,
 # whose try has only a `finally` — so FR-004's raise would have escaped through
-# `_run_recovery` to the reaper at `factory/workgraph/workflow.py:1654` and ended
+# `_run_recovery` to the reaper at `factory/workgraph/workflow.py:1656` and ended
 # the node KILLED, unrecorded, on an ordinary restart during a recovery cycle;
 # worse, that finally reads a `termination` that is unbound before the attempt
 # returns, so the raise becomes an `UnboundLocalError` and the recovery key is
@@ -136,7 +136,7 @@ fixes:
 # own closing sentence. Half of T005 is red today. US1-S7 and FR-015 require
 # **both** shapes of a `SCHEDULE_TO_START` timeout that carries a measurement,
 # including the payload reached through the cause chain, and at 602a92c
-# `factory/workgraph/workflow.py:2489` — `EpicWorkflow._attempt_timeout` binds
+# `factory/workgraph/workflow.py:2512` — `EpicWorkflow._attempt_timeout` binds
 # `timeout = exc.cause`, type-tests that one object and reads its
 # `last_heartbeat_details` only; it walks no `__cause__`, so the cause-chain
 # shape returns `last_snapshot=None` until T009's widening lands. An implementer
@@ -166,7 +166,7 @@ progress for as long as the epic lives.
 
 The chain is six steps, each anchored to the line that makes it true:
 
-1. `factory/workgraph/workflow.py:2428` — `EpicWorkflow._attempt` assigns
+1. `factory/workgraph/workflow.py:2429` — `EpicWorkflow._attempt` assigns
    `record.state = NodeState.RUNNING`. That is the only place in the module the
    value is written, and it happens on the line **above**
    `factory/workgraph/workflow.py:2429` — `EpicWorkflow._attempt`, where the
@@ -175,8 +175,8 @@ The chain is six steps, each anchored to the line that makes it true:
    (`factory/workgraph/workflow.py:2439` — `EpicWorkflow._attempt`), the
    start-to-close bound (`factory/workgraph/workflow.py:2440` —
    `EpicWorkflow._attempt`), the heartbeat bound
-   (`factory/workgraph/workflow.py:2443` — `EpicWorkflow._attempt`) and the retry
-   policy (`factory/workgraph/workflow.py:2444` — `EpicWorkflow._attempt`). All
+   (`factory/workgraph/workflow.py:2480` — `EpicWorkflow._attempt`) and the retry
+   policy (`factory/workgraph/workflow.py:2481` — `EpicWorkflow._attempt`). All
    three timers start when a worker accepts the task; none of them arms before
    that. `grep -rn "schedule_to_start\|schedule_to_close" factory/` returns
    nothing, and `git log --all -S"schedule_to_start_timeout"` returns no commit:
@@ -184,7 +184,7 @@ The chain is six steps, each anchored to the line that makes it true:
 3. The workflow then parks on that activity with no bound of its own —
    `factory/workgraph/workflow.py:2447` — `EpicWorkflow._attempt`, whose
    `timeout=None` is spelled at `factory/workgraph/workflow.py:2449`. The
-   method's own docstring says so at `factory/workgraph/workflow.py:2407` —
+   method's own docstring says so at `factory/workgraph/workflow.py:2429` —
    `EpicWorkflow._attempt`: the wait "creates **no Temporal timer**", which is
    true and is the point — nothing is counting.
 4. When the wait does end in an error, the classification cannot tell the two
@@ -192,9 +192,9 @@ The chain is six steps, each anchored to the line that makes it true:
    every `ActivityError`, re-raises only the adapter's own
    `AGENT_LAUNCH_FAILED` (`factory/workgraph/workflow.py:2470` —
    `EpicWorkflow._attempt`), and hands everything else to
-   `factory/workgraph/workflow.py:2475` — `EpicWorkflow._attempt_timeout`, which
+   `factory/workgraph/workflow.py:2512` — `EpicWorkflow._attempt_timeout`, which
    returns `AdapterResult(termination=Termination.TIMEOUT, ...)` at
-   `factory/workgraph/workflow.py:2506` — `EpicWorkflow._attempt_timeout`. A
+   `factory/workgraph/workflow.py:2512` — `EpicWorkflow._attempt_timeout`. A
    timeout that means "a worker accepted this and then died" and one that would
    mean "no worker ever accepted this" become the same recorded attempt, charged
    to the ladder and sent to verification with nothing behind it.
@@ -216,7 +216,7 @@ The chain is six steps, each anchored to the line that makes it true:
    ending classified on the timeout type alone would therefore record hours of
    paid agent work as an attempt that never started.
 6. Meanwhile the only live reading discards exactly the case in question.
-   `factory/cli/nouns/build.py:442` — `_live_spend` skips any pending activity
+   `factory/cli/nouns/build.py:456` — `_live_spend` skips any pending activity
    with no `heartbeat_details`, so a scheduled-and-unaccepted activity puts
    nothing in the map at all; and Temporal retains `heartbeat_details` across
    retry attempts, so a **re-scheduled** attempt that still carries the previous
@@ -241,13 +241,13 @@ recorded ending instead of on a hand-typed `temporal activity fail`. It does not
 make a stalled epic clear itself while nobody is polling, and no requirement
 here says it does. The same fact bounds what US2 can show: while the worker is
 gone, `ergane build status` renders nothing at all, because
-`factory/cli/nouns/build.py:1125` — `_query_status` reads the node document from
+`factory/cli/nouns/build.py:1298` — `_query_status` reads the node document from
 a workflow query that no worker is there to answer.
 
 **The half that is already closed, stated so nobody rebuilds it.** The ledger
 row's original summary — "Nothing fails until heartbeatTimeout (7200s here)" —
 is fixed. `factory/workgraph/workflow.py:487` sets a 120-second ceiling and
-`factory/workgraph/workflow.py:490` — `_agent_heartbeat_timeout` derives each
+`factory/workgraph/workflow.py:495` — `_agent_heartbeat_timeout` derives each
 attempt's bound inside it, landed as 082-US5. Given that bound, the scheduler
 park at `factory/workgraph/workflow.py:1138` — `EpicWorkflow.run` is correct: a
 node whose worker died stalls for two minutes, not two hours. That mechanism is
@@ -306,13 +306,13 @@ worth its two lines, and it is not the load-bearing half.
 
 It is not a claim to add signals that already ship. `build status --json`
 already carries the whole live map including `captured_at`
-(`factory/cli/nouns/build.py:1178` — `_query_status`), and
+(`factory/cli/nouns/build.py:1298` — `_query_status`), and
 `factory/doctor/probes.py:345` — `StaleWorkerProbe.evaluate` already emits
 `ops/no-worker-running`. Neither is tied to a node, which is the gap; neither is
 removed or restated.
 
-It is not a repair of the twin renderer. `factory/workgraph/cli.py:842` —
-`_live_spend` and `factory/workgraph/cli.py:916` — `render_status` are a copy
+It is not a repair of the twin renderer. `factory/workgraph/cli.py:855` —
+`_live_spend` and `factory/workgraph/cli.py:929` — `render_status` are a copy
 that no module under `factory/` and no test imports; editing them satisfies no
 scenario here.
 
@@ -341,7 +341,7 @@ signal through both callers of `_attempt`.
    `run_agent_attempt` carries a non-zero `schedule_to_start_timeout` equal to
    the module constant this story adds, **and** that constant is at least the
    floor FR-014 states — asserted by one committed test that reads the event the
-   way `tests/test_interpreter.py:2901` —
+   way `tests/test_interpreter.py:2986` —
    `test_a_dead_agent_is_still_detected_under_a_derived_heartbeat_timeout`
    already reads `heartbeat_timeout` off the same event. The field is unset on
    today's tree, so a diff that leaves the call site alone cannot pass this, and
@@ -378,19 +378,19 @@ signal through both callers of `_attempt`.
 6. **Given** a node whose landing was rejected into a recovery cycle, with
    `EpicWorkflow._attempt` replaced so that the recovery's own attempt raises the
    no-agent-started signal — the substitution
-   `tests/test_interpreter.py:2598` —
+   `tests/test_interpreter.py:2714` —
    `test_an_attempt_raise_still_teardowns_and_propagates` already makes, over the
-   scripted rejection `tests/test_interpreter.py:4671` —
+   scripted rejection `tests/test_interpreter.py:4787` —
    `test_recovery_escalation_kill_preserves_the_branch` already builds — **When**
    the epic is run to completion, **Then** the node ends through the landing
    escalation rather than through the reaper: exactly one escalation was sent for
    it, its landing state is the one the scripted press produces, its
    `terminal_reason` is not the signal's text recorded as a crashed coroutine,
    and the recovery key was torn down exactly once, asserted the way
-   `tests/test_interpreter.py:2588` —
+   `tests/test_interpreter.py:2646` —
    `test_a_verify_raise_in_recovery_still_teardowns_and_propagates` counts
    teardowns. One committed test asserts all four, and on today's tree the same
-   raise reaches `factory/workgraph/workflow.py:1654` —
+   raise reaches `factory/workgraph/workflow.py:1656` —
    `EpicWorkflow._reap_finished` as an `UnboundLocalError` with the key still
    open, so no diff that leaves the recovery call site alone can pass it.
 7. **Given** an `ActivityError` whose cause is a `TimeoutError` of type
@@ -427,7 +427,7 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
    holds an entry for that node carrying all three fields FR-007 requires — the
    pending activity's state under its own key, that activity's own retry attempt
    as an integer, and its last heartbeat time — with no protobuf message among
-   them. Today `factory/cli/nouns/build.py:442` — `_live_spend` discards it and
+   them. Today `factory/cli/nouns/build.py:456` — `_live_spend` discards it and
    the map is empty, so a diff that leaves that filter alone cannot pass, and a
    diff that carries the state alone fails the other two assertions; a committed
    test asserts the entry field by field.
@@ -446,7 +446,7 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
    `live_spend` object is read, **Then** every entry that carries a figure still
    carries `spend_usd` and `captured_at` under those exact keys with those exact
    types, **and** the whole document is JSON the reader can load — the control
-   for the machine reader at `factory/cli/nouns/build.py:1178` —
+   for the machine reader at `factory/cli/nouns/build.py:1298` —
    `_query_status`, asserted by a committed test that loads that document, so
    this story is additive for anything already parsing it and cannot ship a field
    `json.dumps` refuses.
@@ -472,10 +472,10 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
 - **FR-004**: An `ActivityError` whose cause is a `TimeoutError` of type
   `SCHEDULE_TO_START` **from which no heartbeat measurement is reachable** MUST
   be classified as an ending in which no agent started — raised as the same
-  workflow-internal signal `factory/workgraph/workflow.py:737` — `_LaunchFailed`
+  workflow-internal signal `factory/workgraph/workflow.py:748` — `_LaunchFailed`
   carries — so on the node path at `factory/workgraph/workflow.py:1884` —
   `EpicWorkflow._run_node` it appends no `AttemptRecord`, spends nothing from the
-  ladder, and is bounded by `factory/verify/models.py:1205` —
+  ladder, and is bounded by `factory/verify/models.py:1213` —
   `VerificationConfig` rather than looping.
 - **FR-005**: Every other `ActivityError` MUST keep today's classification: a
   `HEARTBEAT` or `START_TO_CLOSE` timeout still returns
@@ -488,17 +488,17 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
   `AGENT_LAUNCH_FAILED`; neither string may be hardcoded at
   `factory/workgraph/workflow.py:2235` — `EpicWorkflow._run_node` in a way that
   serves both.
-- **FR-007**: The live map built by `factory/cli/nouns/build.py:407` —
+- **FR-007**: The live map built by `factory/cli/nouns/build.py:421` —
   `_live_spend` MUST hold an entry for every pending `run_agent_attempt` whose
   activity id names a node in the status document, whether or not a heartbeat
   payload decodes, and each entry MUST carry the pending activity's state, that
   activity's own retry attempt and its last heartbeat time. Every value on the
   entry MUST be a JSON scalar the `--json` document can carry, because
-  `factory/cli/nouns/build.py:1188` — `_query_status` serialises the whole map:
+  `factory/cli/nouns/build.py:1298` — `_query_status` serialises the whole map:
   the state as its name and the heartbeat time as a string beside `captured_at`,
   never the protobuf messages they arrive as.
 - **FR-008**: An entry's spend figure MUST stay optional — present only when a
-  payload decodes — and `factory/cli/nouns/build.py:464` — `render_status` MUST
+  payload decodes — and `factory/cli/nouns/build.py:478` — `render_status` MUST
   produce a line for an entry that has none.
 - **FR-009**: The node line MUST name the pending activity's state, so two
   documents differing only in that state do not produce the same line.
@@ -512,13 +512,13 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
   byte-identical to today's, and the state token MUST be absent rather than
   rendered as a sentinel.
 - **FR-013**: The no-agent-started signal MUST be handled at **both** call sites
-  of `EpicWorkflow._attempt`. At `factory/workgraph/workflow.py:3976` —
+  of `EpicWorkflow._attempt`. At `factory/workgraph/workflow.py:3954` —
   `EpicWorkflow._recovery_attempt` it MUST end that recovery cycle as one that
   produced no result — the same `None` the cycle's other failures return, which
   reaches the landing escalation at `factory/workgraph/workflow.py:3817` —
   `EpicWorkflow._run_recovery` — with the recovery key torn down exactly once at
-  `factory/workgraph/workflow.py:4034` — `EpicWorkflow._recovery_attempt`. It
-  MUST NOT reach `factory/workgraph/workflow.py:1654` —
+  `factory/workgraph/workflow.py:4114` — `EpicWorkflow._recovery_attempt`. It
+  MUST NOT reach `factory/workgraph/workflow.py:1656` —
   `EpicWorkflow._reap_finished`, whose `except Exception` ends the node KILLED
   with no attempt and no landing resolution.
 - **FR-014**: The constant FR-002 adds MUST be at least thirty minutes. It is a
@@ -526,7 +526,7 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
   (`factory/supervision/units.py:604` — `_service_text`), but the operator
   sequence that produced both measured sightings is stop-worker, land, restart,
   which is minutes; and a node gets only the two launch strikes
-  `factory/verify/models.py:1205` — `VerificationConfig` allows, so a bound short
+  `factory/verify/models.py:1213` — `VerificationConfig` allows, so a bound short
   enough to fire during an ordinary restart kills nodes that were never in
   trouble. The ending only has to beat the unbounded wait it replaces.
 - **FR-015**: A `SCHEDULE_TO_START` timeout that **does** carry a heartbeat

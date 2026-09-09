@@ -1,7 +1,59 @@
 ---
-state: ready
+state: landed
 depends_on_landed:
   - 154-an-agent-names-its-cli-and-its-route-separately
+# Attested landed 2026-09-08. US1 994dcccd6f92, US2 1b84e3d3be71,
+# US3 18b83474c6fa, US4 6c61d66ccb73 — all four observed on ergane-buildout by
+# content, all four first attempt.
+#
+# VERIFIED AGAINST THE REAL CLI, WHICH IS NEW. When these stories were drafted
+# no Codex binary existed on the worker host, so every behavioural claim was an
+# assumption. The operator installed and signed in to `codex-cli 0.153.4` on
+# 2026-09-07, which made this the first spec here that could be checked against
+# the thing it describes:
+#
+#   US1  `codex` is a registered adapter (`_ADAPTERS` holds claude-code and
+#        codex), CodexAdapter.name == "codex", and the gateway constants are
+#        present: CODEX_GATEWAY_KEY, CODEX_HOME (the per-node CODEX_HOME that
+#        keeps concurrent nodes' session trees apart), provider `ergane-gateway`,
+#        wire_api `responses`.
+#   US2  The refusal marker is `unexpected status 401 Unauthorized`, with
+#        `--dangerously-bypass-approvals-and-sandbox` and `--skip-git-repo-check`
+#        on the launch. Both flags were confirmed by hand against 0.153.4's own
+#        `codex exec --help`, as was the absence of any caller-settable session
+#        id.
+#   US3  A persona declaring `agent: codex` + `route: subscription` loads, and
+#        `routes_through_gateway` answers False — no virtual key is minted. Then
+#        the live half: `discover_codex_credential()` returns
+#        /home/admin/.codex/auth.json, the operator's actual ChatGPT-mode
+#        credential, not a fixture.
+#   US4  The toolchain pins @openai/codex 0.153.4 and `find_tool("codex")`
+#        resolves found_at=~/.local/bin/codex through to
+#        real_path=~/.codex/packages/standalone/releases/0.153.4-aarch64-unknown-linux-musl/bin/codex
+#        — it follows the symlink to the standalone payload, which is what a
+#        bwrap bind actually needs.
+#
+# THE OPERATOR'S ROUTING RULING, 2026-09-08: Codex runs on the ChatGPT
+# subscription, not the metered gateway. US1's gateway path stays as a route,
+# not a mandate; US3 is the one that matters, and its `credential_source`
+# evidence is what tells the two apart in a transcript.
+#
+# ONE DIVERGENCE THIS SPEC LEFT BEHIND, recorded in plan.md as trap 8: US4's
+# Dockerfile installs the npm package while the operator host runs a standalone
+# musl build (`codex doctor`: `managed by npm: no`), so image and host exercise
+# different branches of `_toolchain_binds`. Measured under real bwrap, a lone
+# leaf bind of the standalone binary launches but degrades `runtime` from
+# `standalone` to `other` and falls back from its bundled ripgrep to the system
+# one — invisible on a host with /usr bound, fatal to search in a slim image.
+#
+# HOW THIS EPIC ACTUALLY RAN, because the record should not read cleaner than it
+# was. It completed at 3/4: US2 merged as PR #456 and was then recorded KILLED by
+# a post-merge worktree-cleanup error, and because a KILLED node never satisfies
+# depends_on_merged, US3 was never dispatched and the epic reported COMPLETED one
+# story short with no escalation. Filed as occurrence 3 of
+# `mergequeue/a-single-misread-poll-kills-a-verified-node-irreversibly`. US3
+# finally ran on 2026-09-08 only after 154 was attested, because this spec's
+# `depends_on_landed` reads the frontmatter and not git.
 # DRAFTED 2026-09-06 by an operator session from docs/codex-adapter-plan.md
 # (§6 Spec B), against ergane-buildout at 8e8b3a1, with the 154 seam spec as
 # its premise. Anchors re-read from the working tree on 2026-09-06.

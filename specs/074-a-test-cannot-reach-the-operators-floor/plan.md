@@ -90,7 +90,7 @@ and the FR-014 enumerator needed an anti-vacuity floor (trap 26).
 
 US1's four, all CLI or operator entry points:
 
-- `factory/workgraph/cli.py:969` — `_connect`
+- `factory/workgraph/cli.py:977` — `_connect`
 - `factory/cli/nouns/__init__.py:54` — `_open_client`. Its docstring explains why
   the seam lives on the package rather than on `build`: noun modules are
   `exec_module`-d into fresh module objects, so a monkeypatch on an imported
@@ -106,7 +106,7 @@ US6's seven:
 - `factory/doctor/probes.py:603` — `_closed_epics_from_temporal`
 - `factory/controlplane/verify.py:193` — `_temporal_client_factory`
 - `factory/notify/service.py:1048` — `main`
-- `factory/worker.py:342` — `main`, inside `factory/worker.py:333` — `main`.
+- `factory/worker.py:351` — `main`, inside `factory/worker.py:351` — `main`.
   FR-006 is about this one.
 - `factory/supervision/deploy.py:749` — `asked`. **This site is not in the
   2026-08-20 table.** 082-US2 landed it on 2026-08-22, nested inside
@@ -153,12 +153,12 @@ into a red gate, and no anchor tier can see either.
   of collision: it asserts the literal `Client.connect` occurs exactly once in
   `factory/cli/roadmap.py`, which T010 removes. Carry it forward; FR-027.
 - `tests/test_ergane_status.py:1516` `EXPECTED_GUARDS` and the sweep at
-  `tests/test_ergane_status.py:1702` —
+  `tests/test_ergane_status.py:1716` —
   `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal`. The
-  module set is derived, at `tests/test_ergane_status.py:1586` —
+  module set is derived, at `tests/test_ergane_status.py:1600` —
   `_cli_python_modules`, from every file under `factory/cli/` containing
   `await ` and one of `temporalio` / `RPCError` / `WorkflowQuery` /
-  `WorkflowAlreadyStartedError`; `tests/test_ergane_status.py:1685` —
+  `WorkflowAlreadyStartedError`; `tests/test_ergane_status.py:1699` —
   `_discovered_guard_modules` then reports each awaiting function's `except`
   clause tuples, and the sweep asserts the discovered module set equals the table
   *and*, per module, that the function set and each clause tuple match. Trap 24.
@@ -251,8 +251,8 @@ pieces before writing a line:
 - `factory/workgraph/worktree.py:1766` — `_archive_node`, still `if path.is_dir()`
   then `factory/workgraph/worktree.py:1768` — `_archive_node` runs `git add -A`.
   This is the `build reset` route, reached from
-  `factory/cli/nouns/build.py:1672` — `reset_command` through
-  `factory/cli/nouns/build.py:1897` — `_reset_epic`, through
+  `factory/cli/nouns/build.py:2178` — `reset_command` through
+  `factory/cli/nouns/build.py:2332` — `_reset_epic`, through
   `factory/workgraph/worktree.py:1607` — `reset` and
   `factory/workgraph/worktree.py:1660` — `archive_and_clear_remote_branch`.
 
@@ -289,15 +289,15 @@ exists.
 
 ### US5's surface
 
-- `factory/activities/roadmap_activities.py:754` — `_list_open_epics`, and the
-  grammar at `factory/activities/roadmap_activities.py:774` — `_list_open_epics`:
+- `factory/activities/roadmap_activities.py:755` — `_list_open_epics`, and the
+  grammar at `factory/activities/roadmap_activities.py:775` — `_list_open_epics`:
   `if execution.id.startswith("epic-")`. A bare literal, not the constant — and
   replacing it with the constant changes nothing, because the constant *is*
-  `"epic-"` (`factory/cli/status.py:114`, `factory/cli/nouns/build.py:188`). The
+  `"epic-"` (`factory/cli/status.py:114`, `factory/cli/nouns/build.py:196`). The
   behaviour lives one line up, in the query at
-  `factory/activities/roadmap_activities.py:771-772` — `_list_open_epics`, whose
+  `factory/activities/roadmap_activities.py:772-773` — `_list_open_epics`, whose
   only clause today is the status pinned at
-  `factory/activities/roadmap_activities.py:782`. FR-020 adds the second clause
+  `factory/activities/roadmap_activities.py:783`. FR-020 adds the second clause
   there and a type check beside the id test; trap 4.
 - `execution.workflow_type` is a field the SDK's `WorkflowExecution` carries
   (beside `id`, `status` and `raw_info`, which `factory/versioning.py:171` —
@@ -312,14 +312,14 @@ exists.
   `factory/cli/nouns/build.py:930` — `_start_epic`,
   `factory/workgraph/cli.py:674` — `_start_epic` and
   `factory/roadmap/workflow.py:1295` — `_dispatch`. The class is
-  `factory/workgraph/workflow.py:752` — `EpicWorkflow`, registered under its own
+  `factory/workgraph/workflow.py:763` — `EpicWorkflow`, registered under its own
   name, which is the value the pinned constant must be proven equal to.
-- `factory/activities/roadmap_activities.py:785-788` — `_open_epics_provider`.
+- `factory/activities/roadmap_activities.py:786-789` — `_open_epics_provider`.
   Module-level, so it cannot be written in the symbol-tier form; the range covers
   its comment and its assignment. **It is `count_open_epics`'s seam, not a seam
   for exercising the reader.** It defaults to `_list_open_epics` itself and is
   read at exactly one place,
-  `factory/activities/roadmap_activities.py:800` — `count_open_epics`, so binding
+  `factory/activities/roadmap_activities.py:801` — `count_open_epics`, so binding
   it *replaces* the function whose new type filter is the whole of FR-020. No test
   of FR-020 may bind it — trap 22. The way to drive the real reader over a
   scripted listing is already in the tree:
@@ -332,8 +332,8 @@ exists.
   `EPIC_ID_PREFIX` imported at `factory/supervision/units.py:1292` — `_open_epics`.
   FR-024.
 - The prefix, spelled at five sites: `factory/cli/status.py:114`
-  `EPIC_ID_PREFIX = "epic-"`, `factory/cli/nouns/build.py:188` the same constant
-  again, `factory/activities/roadmap_activities.py:774` — `_list_open_epics` the
+  `EPIC_ID_PREFIX = "epic-"`, `factory/cli/nouns/build.py:196` the same constant
+  again, `factory/activities/roadmap_activities.py:775` — `_list_open_epics` the
   bare literal, `factory/workgraph/cli.py:162` — `workflow_id`, and
   `factory/roadmap/workflow.py:195` — `_epic_id_for`.
   `factory/escalation/client.py:59` documents why one such literal is pinned.
@@ -373,7 +373,7 @@ populated. And the helper already exists: `factory/workgraph/worktree.py:1037` �
 **2. `salvage` has no `target_repo`, so it cannot call `_worktree_ownership`.**
 `factory/workgraph/worktree.py:511` — `salvage` takes `epic_id`, `node_id`,
 `termination`, `attempt`, `factory_root` and nothing else, and
-`factory/activities/agent_activities.py:762` — `salvage_worktree` hands it no
+`factory/activities/agent_activities.py:783` — `salvage_worktree` hands it no
 repository either. The tempting move is to reach for
 `factory/workgraph/worktree.py:954` — `_main_worktree` to find one — which from
 inside a husk returns the **operator's checkout**, exactly the failure being
@@ -402,7 +402,7 @@ beside the id test — and that pair, not the rename, is what makes the workflow
 already on the namespace stop counting, because nobody can rename it now. The
 precedent is `factory/escalation/client.py:52-59`, whose comment says what the
 clause is for in the tree's own words. What is **not** the fix: replacing the bare
-literal at `factory/activities/roadmap_activities.py:774` — `_list_open_epics` with
+literal at `factory/activities/roadmap_activities.py:775` — `_list_open_epics` with
 `EPIC_ID_PREFIX`. Both are `"epic-"`; the substitution is a tidy-up and changes no
 behaviour whatever, and a story that does only that has done nothing. Prove FR-021
 against a real id from `factory/roadmap/workflow.py:195` — `_epic_id_for` carried on
@@ -456,7 +456,7 @@ session stash rather than `os.environ`, so an enumerating test that only greps f
 that is *supposed* to reach production, and it is also the process that imports
 everything else here. A guard that keys on "am I in a test" is correct; a guard
 that keys on "is this the worker" is not, because a test that imports
-`factory/worker.py:333` — `main` must not connect either. US6-S3 and US6-S4.
+`factory/worker.py:351` — `main` must not connect either. US6-S3 and US6-S4.
 
 **10. There is a landed test that deliberately enters the unguarded client, and
 deleting it is the wrong move.** `tests/test_runtime_root.py:124` —
@@ -505,10 +505,13 @@ anyone has that the live path works.
 
 **16. The 2026-08-20 anchors in the ledger are stale too.** The finding
 `hardening/live-tier-probes-leak-onto-the-production-namespace-wearing-the-epic-prefix`
-lists `factory/activities/roadmap_activities.py:494` and
-`tests/test_live_capacity.py:169` in its `refs`. Both now point at unrelated code
-(`drift_for_spec` and a `task_queue=` keyword). Work from this plan's anchors, not
-from the ledger row's; correcting the row is an operator act.
+stores, in its `refs`, line 494 of `factory/activities/roadmap_activities.py` and
+line 169 of `tests/test_live_capacity.py`. Neither resolves any more: 494 is a
+blank line two above `drift_for_spec`, and 169 is a `task_queue=` keyword — both
+unrelated to this spec. (They are written here in prose rather than as anchors on
+purpose: they are quotations of a stale record, and an anchor that resolves would
+misrepresent them as current.) Work from this plan's anchors, not from the ledger
+row's; correcting the row is an operator act.
 
 **17. The capacity tier's own positive case is an epic-prefixed probe id, and the
 gate cannot see it break.** `tests/test_live_capacity.py:260` —
@@ -621,9 +624,9 @@ requirement is that the value itself is where production can see it. FR-010,
 US3-S7.
 
 **22. Binding `_open_epics_provider` to prove FR-020 proves nothing.**
-`factory/activities/roadmap_activities.py:785-788` — `_open_epics_provider`
+`factory/activities/roadmap_activities.py:786-789` — `_open_epics_provider`
 defaults to `_list_open_epics` and is read only by
-`factory/activities/roadmap_activities.py:800` — `count_open_epics`. A test that
+`factory/activities/roadmap_activities.py:801` — `count_open_epics`. A test that
 binds it hands back its own scripted set and then asserts on the set it just
 supplied: **a test-only diff passes it with the production filter unwritten**,
 which is exactly the vacuity FR-020 exists to close. Drive the real reader
@@ -654,11 +657,11 @@ The trio names one landed carry-forward besides these,
 list, and treating it as the whole list is how this survived two repairs.
 
 **24. A second landed AST guard decides where the choke point may live, and it
-is not the one trap 19 is about.** `tests/test_ergane_status.py:1586` —
+is not the one trap 19 is about.** `tests/test_ergane_status.py:1600` —
 `_cli_python_modules` collects every file under `factory/cli/` that contains
 `await ` and one of `temporalio` / `RPCError` / `WorkflowQuery` /
 `WorkflowAlreadyStartedError`, and
-`tests/test_ergane_status.py:1702` —
+`tests/test_ergane_status.py:1716` —
 `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal` asserts
 that this discovered set **equals** the table at
 `tests/test_ergane_status.py:1516` and that, per module, the function set and
@@ -699,10 +702,36 @@ goes from a registered `live_*` marker to the module that carries it. A mapping
 that misses, or a glob that collects nothing, yields an empty set and a green
 test with the requirement unwritten — the same vacuity trap 22 closes for FR-020
 and the same one the tree already closes for its own sweeps at
-`tests/test_ergane_status.py:1733` —
+`tests/test_ergane_status.py:1747` —
 `test_the_discovered_module_set_contains_status_and_build`. Assert the enumerated
 set is non-empty and names at least `tests/test_live_notify.py` and
 `tests/test_live_capacity.py`. FR-014, US3-S5, T027.
+
+**27. The compiled work graph beside this file was stale for three weeks, and a
+manual `build start` would have shipped five stories out of six.**
+`specs/074-a-test-cannot-reach-the-operators-floor/workgraph.json` held five
+nodes against a six-story spec, with a dependency chain (`us4←us1`, `us5←us4`)
+that the live derivation does not produce. It was regenerated on 2026-09-08 and
+now holds six nodes at chain depth 2 (`us2←us1,us3`; `us5←us3`; `us6←us1`), so
+this spec is **two rounds of work, not six**. The trap generalises: the roadmap
+derives its graph in-process and never writes it back, so the on-disk artefact
+drifts silently, while `ergane build start` reads it off disk. If you regenerate
+it again, diff the node count against `grep -c '^### User Story' spec.md` before
+trusting it.
+
+**28. A neighbouring defect was filed on 2026-09-07 and is deliberately NOT in
+this spec's `fixes:`.** `tooling/gate-commit-inherits-the-callers-live-tier-environment`
+(warning, one sighting) is the same *family* as this spec — a tool reaching the
+operator's live floor because the ambient environment let it — but a different
+*mechanism*: a shell script inheriting `TEMPORAL_*` and `LITELLM_*` from the
+caller, not a Python process failing a pytest guard. It is named here so you
+recognise it if you trip it, and it is absent from `fixes:` on purpose. A
+`fixes:` list longer than the functional requirements justify is a claim, not a
+fix — the standing lesson from 092 and 100 — and nothing in FR-001 to FR-020
+changes how `scripts/gate-commit` builds its environment. If you believe US3's
+work does close it, say so in the PR body and let an operator report the
+occurrence; do not edit the frontmatter to claim it.
+
 
 ## Sizing
 
@@ -835,7 +864,7 @@ what `concurrent_with` on US5 declares. Apart from that one test file, US3's sur
    back has **six** nodes and knows FR-022 through FR-030. The one on disk was
    compiled on 2026-08-23 at the five-story shape, `ergane build start` resolves
    `<specs_root>/<epic_id>/workgraph.json` off disk
-   (`factory/cli/nouns/build.py:1657` — `resolve_reset_graph`), and the roadmap
+   (`factory/cli/nouns/build.py:2147` — `resolve_reset_graph`), and the roadmap
    dispatches a `ready` spec itself without waiting for an operator — so a flip
    with the stale file present hands every node a criteria set from before this
    refinement. This is an operator act: no refinement run has been permitted to

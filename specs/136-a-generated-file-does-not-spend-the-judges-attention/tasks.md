@@ -58,8 +58,8 @@ without it touch a region an earlier task in the same phase is already editing.
       `generated_paths: [7]` and `generated_paths: "package-lock.json"`, assert
       each is refused with a message naming the offending value and the rule.
       Model the refusal shape on
-      `factory/verify/factory_yaml.py:633` — `_read_diff_refusal_bytes` and the
-      list handling on `factory/verify/factory_yaml.py:694` — `_read_caches`.
+      `factory/verify/factory_yaml.py:699` — `_read_diff_refusal_bytes` and the
+      list handling on `factory/verify/factory_yaml.py:760` — `_read_caches`.
 - [ ] T004 [P] [US1] (spec US1-S4, FR-003, FR-005, trap 4) Given a diff with one
       section matching a declared pattern and one matching none, assert the
       matching section is classified generated, its listing line carries its
@@ -75,13 +75,13 @@ without it touch a region an earlier task in the same phase is already editing.
       `EpicInput` the epic is actually started with are the committed clone's —
       on **both** dispatch paths, the roadmap's child start and the hand-started
       CLI's. Copy
-      `tests/test_023_us2_dispatch_pin.py:731` — `test_roadmap_dispatch_reads_config_per_child`
+      `tests/test_023_us2_dispatch_pin.py:756` — `test_roadmap_dispatch_reads_config_per_child`
       for the first and
-      `tests/test_023_us2_dispatch_pin.py:380` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`
+      `tests/test_023_us2_dispatch_pin.py:389` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`
       for the second; both capture the epic input rather than the read that fed
       it. Asserting over
-      `factory/verify/factory_yaml.py:1068` — `load_loop_config`'s return or over
-      `factory/activities/roadmap_activities.py:821` — `ReadLoopConfigResult`
+      `factory/verify/factory_yaml.py:1134` — `load_loop_config`'s return or over
+      `factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult`
       does **not** satisfy US1-S5: both sit upstream of the fork, and the fork is
       where T012 can be half-done. Not `[P]`: it builds two manifests and drives
       dispatch over both.
@@ -105,7 +105,7 @@ without it touch a region an earlier task in the same phase is already editing.
       only source of the answer. Scope it to those three files and say why in the
       test: a grep of all of `factory/` **fails today**, before any change — `npm`
       is written fifteen times elsewhere, counted at 602a92c across four files,
-      at `factory/verify/factory_yaml.py:738` (a cache example),
+      at `factory/verify/factory_yaml.py:804` (a cache example),
       `factory/stack_packs.py:45` (the stack packs) and
       `factory/verify/gates.py:834` (gate prose) among them, and none of those is
       a classification rule. Keep the search list short and named in the test, not
@@ -120,7 +120,7 @@ without it touch a region an earlier task in the same phase is already editing.
       (`factory/verify/factory_yaml.py:109`), where `diff_refusal_bytes` sits at
       `factory/verify/factory_yaml.py:120` and which
       `tests/test_forge_manifest.py:333` pins to `ergane init`'s interview
-      prompts. `factory/verify/factory_yaml.py:269` — `_reject_unknown_keys`
+      prompts. `factory/verify/factory_yaml.py:280` — `_reject_unknown_keys`
       picks its known-set by version at `factory/verify/factory_yaml.py:270` and
       needs no edit; neither does `factory/cli/init.py`, which carries the key
       forward off `_KNOWN_KEYS` (`factory/cli/init.py:511`). **One landed test
@@ -138,7 +138,7 @@ without it touch a region an earlier task in the same phase is already editing.
       else in that file; `tests/test_120_rewrite_carries_forward.py:311` stays
       true untouched because this spec adds no interview prompt.
 - [ ] T009 [US1] (FR-002, FR-003) Add the reader, called from the reader list in
-      `factory/verify/factory_yaml.py:199` — `parse_factory_config` beside
+      `factory/verify/factory_yaml.py:208` — `parse_factory_config` beside
       `factory/verify/factory_yaml.py:224`. Absent means `()`; a non-list, a
       non-string entry and an empty-string entry are each refused naming the
       value and the rule.
@@ -157,16 +157,16 @@ without it touch a region an earlier task in the same phase is already editing.
       counts. Default the pattern list to empty everywhere so an unclassified
       call renders today's string byte for byte.
 - [ ] T012 [US1] (FR-004, trap 10) Carry the patterns on
-      `factory/verify/factory_yaml.py:1068` — `load_loop_config`'s return
+      `factory/verify/factory_yaml.py:1134` — `load_loop_config`'s return
       (`factory/verify/factory_yaml.py:1086`, and the signature at
       `factory/verify/factory_yaml.py:1070`), then along the route
       `diff_refusal_bytes` already takes:
-      `factory/activities/roadmap_activities.py:821` — `ReadLoopConfigResult`
+      `factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult`
       (field beside `factory/activities/roadmap_activities.py:833`, filled at
       `factory/activities/roadmap_activities.py:858` and
       `factory/activities/roadmap_activities.py:866`), and then **both** forks of
       the route, not one: the roadmap's own child start —
-      `factory/roadmap/workflow.py:1170` — `_dispatch` builds the child
+      `factory/roadmap/workflow.py:1247` — `_dispatch` builds the child
       `EpicInput` at `factory/roadmap/workflow.py:1296` and names the pinned
       value at `factory/roadmap/workflow.py:1303` — **and** the hand-started
       CLI's — `factory/cli/nouns/build.py:826`,
@@ -174,7 +174,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `factory/cli/nouns/build.py:890`, and
       `factory/cli/nouns/build.py:951` on the `EpicInput` at
       `factory/cli/nouns/build.py:931`. Both land on
-      `factory/workgraph/workflow.py:532` — `EpicInput` beside
+      `factory/workgraph/workflow.py:537` — `EpicInput` beside
       `factory/workgraph/workflow.py:595`. Eleven lines across five files, and
       the roadmap fork is the one the schedule fires, so leaving it out ships a
       manifest key that only hand-started epics honour. `factory/workgraph/cli.py:675` is a third
@@ -184,7 +184,7 @@ without it touch a region an earlier task in the same phase is already editing.
       today: widening it breaks five unpackings, and the three in landed tests
       are declared scope — `tests/test_092_manifest_threshold.py:186`,
       `tests/test_092_manifest_threshold.py:233` and
-      `tests/test_023_us2_dispatch_pin.py:823`. Widen each unpacking; do not
+      `tests/test_023_us2_dispatch_pin.py:848`. Widen each unpacking; do not
       change what those tests assert.
 
 ### Verification for this story
@@ -281,8 +281,8 @@ without it touch a region an earlier task in the same phase is already editing.
       `factory/verify/judge.py:307` — `build_prompt` at
       `factory/verify/judge.py:352`, and named once in the workflow at
       `factory/workgraph/workflow.py:2923` — which is inside
-      `factory/workgraph/workflow.py:2901` — `_score`, **not** inside
-      `factory/workgraph/workflow.py:2708` — `_judge`, which reaches it only
+      `factory/workgraph/workflow.py:2942` — `_score`, **not** inside
+      `factory/workgraph/workflow.py:2749` — `_judge`, which reaches it only
       through `self._score(...)` at `factory/workgraph/workflow.py:2771`. Empty
       default at every hop. Without this task every test above can pass while
       production reads nothing.
@@ -320,12 +320,12 @@ without it touch a region an earlier task in the same phase is already editing.
       asserts the abridgement record survives, and assert the serialised document
       the way `tests/test_092_abridged_is_recorded.py:274` does. An in-memory
       assertion alone is satisfied by a field that is dropped on write. The
-      record types are `factory/verify/models.py:444` — `DiffSizeRefusal`,
-      `factory/verify/models.py:467` — `DiffAbridgement` and
-      `factory/verify/models.py:509` — `OutputCheck`; a measurement that left
+      record types are `factory/verify/models.py:456` — `DiffSizeRefusal`,
+      `factory/verify/models.py:479` — `DiffAbridgement` and
+      `factory/verify/models.py:521` — `OutputCheck`; a measurement that left
       something out and did not say so is the omission Principle VIII refuses,
       and the loaded row is the only thing an operator ever reads
-      (`factory/cli/nouns/build.py:1446`).
+      (`factory/cli/nouns/build.py:1625`).
 - [ ] T025 [P] [US3] (spec US3-S3, FR-014, trap 12) **Guard — the control that
       matters most, and it passes before this diff too.** Given a diff of 70,652
       bytes with no generated file in it at all, assert it is still refused at the

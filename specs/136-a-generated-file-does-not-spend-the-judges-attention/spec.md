@@ -104,7 +104,7 @@ fixes:
 # WHAT CHANGED. (i) FR-004's pin route stopped one hop short of the dispatch the
 # schedule actually fires: `EpicInput` is constructed at three sites and the trio
 # named only the CLI's, never `factory/roadmap/workflow.py:1303` inside
-# `factory/roadmap/workflow.py:1170` — `_dispatch`. An implementer copying the
+# `factory/roadmap/workflow.py:1247` — `_dispatch`. An implementer copying the
 # route "exactly" would have wired hand-started epics and left every
 # roadmap-dispatched one measuring as it does today — trap 11's own failure
 # shape. FR-004, US1-S5, plan § "The pin", trap 10, § Sizing and T005/T012 now
@@ -150,7 +150,7 @@ The chain is six steps:
    escape.
 2. That patch is read twice, by two callers, with no pathspec on either:
    `factory/verify/diffcheck.py:376` — `judge_input` for the size check, and
-   `factory/activities/agent_activities.py:718` — `read_worktree_diff` for the
+   `factory/activities/agent_activities.py:739` — `read_worktree_diff` for the
    judge's prompt. Both reach `worktrees.diff` directly
    (`factory/verify/diffcheck.py:390` and
    `factory/activities/agent_activities.py:735`).
@@ -166,9 +166,16 @@ The chain is six steps:
    `factory/verify/judge.py:501`, which splits the allowance in proportion to
    size. A generated file therefore takes a proportional share of the judge's
    attention away from the source under judgement.
-5. No exemption exists anywhere in the tree. The only exclusion list is
-   `factory/workgraph/detector.py:70` and `factory/workgraph/detector.py:73`,
-   and it governs the runtime-root snapshot rather than the diff.
+5. No exemption exists anywhere in the tree — and as of epic 130 there is no
+   exclusion list of any kind left to extend. The pair that used to sit in
+   `factory/workgraph/detector.py` (`EXCLUDED_DIR_NAMES`, `EXCLUDED_SUFFIXES`)
+   governed the runtime-root snapshot rather than the diff, and 130 US3 FR-006
+   deleted it as "a Python-shaped guess about someone else's repository"
+   (`factory/workgraph/detector.py:35`). That deletion is now asserted by
+   `tests/test_us3_no_language_shaped_list.py:183` —
+   `test_detector_defines_no_generated_path_exclusion_list`. The tree is
+   therefore not merely silent about generated files: it has already ruled
+   against the one shape of answer an implementer would reach for first.
 6. And there is no opting out: a v2 manifest that declares a `verify:` list
    without `diff_check` is refused at `factory/verify/factory_yaml.py:958-963`,
    and a manifest that declares no `verify:` block at all gets the default order
@@ -310,13 +317,13 @@ from a repository declaring the key and read the patterns off the pinned input.
    fires and a route wired only through `factory/cli/nouns/build.py:951` would
    leave every scheduled epic carrying the empty default — which is the half-done
    wiring this scenario exists to catch. Reading the patterns back off
-   `factory/verify/factory_yaml.py:1068` — `load_loop_config` or off
-   `factory/activities/roadmap_activities.py:821` — `ReadLoopConfigResult` does
+   `factory/verify/factory_yaml.py:1134` — `load_loop_config` or off
+   `factory/activities/roadmap_activities.py:822` — `ReadLoopConfigResult` does
    not satisfy this scenario: both sit upstream of the fork, and the fork is
    where the wiring can be half-done. The models are
-   `tests/test_023_us2_dispatch_pin.py:731` — `test_roadmap_dispatch_reads_config_per_child`,
+   `tests/test_023_us2_dispatch_pin.py:756` — `test_roadmap_dispatch_reads_config_per_child`,
    which captures the child `EpicInput` the roadmap dispatched, and
-   `tests/test_023_us2_dispatch_pin.py:380` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`.
+   `tests/test_023_us2_dispatch_pin.py:389` — `test_cli_dispatch_v2_manifest_pins_declared_caps_and_order`.
 6. **Given** this repository's own `ergane.yaml`, **When** a committed test
    parses it, **Then** it declares no `generated_paths` and resolves to the empty
    declaration — the mirror of
@@ -335,7 +342,7 @@ from a repository declaring the key and read the patterns off the pinned input.
    declaration is the only source of the answer. The scope is part of the
    assertion and the test says why: `npm` is already written fifteen times
    elsewhere in `factory/` — counted at 602a92c across four files — in a cache
-   example at `factory/verify/factory_yaml.py:738`, in
+   example at `factory/verify/factory_yaml.py:804`, in
    the stack packs at `factory/stack_packs.py:45` and in gate prose at
    `factory/verify/gates.py:834`, and none of those is a classification rule. A
    grep of all of `factory/` fails today, before any change, and this scoped one
@@ -447,7 +454,7 @@ read the verdict and the record, both in memory and after a store round trip.
    round-trips the row the way `tests/test_092_abridged_is_recorded.py:148`
    round-trips the abridgement record — a disclosure that exists only in memory
    reaches no operator, because every operator-facing reader works from a loaded
-   row (`factory/cli/nouns/build.py:1446`), and a measurement that left something
+   row (`factory/cli/nouns/build.py:1625`), and a measurement that left something
    out and did not say so is the omission Principle VIII refuses.
 3. **Given** a diff of 70,652 bytes with no generated file in it at all, **When**
    the output check runs at the same threshold, **Then** it is still refused,
@@ -504,7 +511,7 @@ read the verdict and the record, both in memory and after a store round trip.
   measurement.
 - **FR-004**: The declared patterns MUST be pinned at dispatch by the same read
   that pins the ladder and the refusal threshold
-  (`factory/verify/factory_yaml.py:1068` — `load_loop_config`) and carried onto
+  (`factory/verify/factory_yaml.py:1134` — `load_loop_config`) and carried onto
   the epic input beside `diff_refusal_bytes` on **every** path that starts an
   epic — the roadmap's own child start at `factory/roadmap/workflow.py:1303` as
   well as the hand-started CLI's at `factory/cli/nouns/build.py:951` — and no
@@ -604,7 +611,7 @@ and every story refused today still refused, at one stated cost: the abridgement
 record shares `factory/verify/diffbounds.py:137` — `assembled`, whose measurement
 US2 does not change, so between US2 merging and US3 merging a pattern-declaring
 repository records a total above the attention limit for a prompt that was not
-abridged, and `factory/cli/nouns/build.py:1446` renders that row as abridged.
+abridged, and `factory/cli/nouns/build.py:1625` renders that row as abridged.
 That is 092 FR-007's disclosure, wrong, for one story's duration; FR-011 closes
 it by construction, which is why it is written into US3 rather than left to be
 noticed. US3 alone is worse than a wrong record: the refusal would let through a

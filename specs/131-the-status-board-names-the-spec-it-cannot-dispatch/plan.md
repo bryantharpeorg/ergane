@@ -7,10 +7,10 @@ that has moved; re-read before editing.
 ## What already exists, and where
 
 **The park listing is already on the wire; two `len()` calls are the whole
-defect.** `_park` (`factory/roadmap/workflow.py:1323` — `RoadmapWorkflow._park`)
-writes a `ParkedFinding` (`factory/roadmap/workflow.py:285` — `ParkedFinding`)
+defect.** `_park` (`factory/roadmap/workflow.py:1433` — `RoadmapWorkflow._park`)
+writes a `ParkedFinding` (`factory/roadmap/workflow.py:351` — `ParkedFinding`)
 with three fields — `spec_dir`, `check`, `detail` — and `roadmap_status`
-(`factory/roadmap/workflow.py:659` — `RoadmapWorkflow.roadmap_status`) returns
+(`factory/roadmap/workflow.py:725` — `RoadmapWorkflow.roadmap_status`) returns
 the list of them, typed `parked: list[ParkedFinding]` at
 `factory/roadmap/workflow.py:443`. `_disposition` (`factory/cli/status.py:511` —
 `_disposition`) receives that document and, at `factory/cli/status.py:554`, does
@@ -135,27 +135,27 @@ plan got one of them wrong:
 
 **The roadmap calls `compute_readiness` TWICE, and both calls are fed the same
 run-local resolver.** The scheduling pass calls it at
-`factory/roadmap/workflow.py:851`, inside `factory/roadmap/workflow.py:806` —
+`factory/roadmap/workflow.py:851`, inside `factory/roadmap/workflow.py:872` —
 `RoadmapWorkflow._run_inner`; the `roadmap_status` query calls it again at
-`factory/roadmap/workflow.py:687`, inside `factory/roadmap/workflow.py:659` —
+`factory/roadmap/workflow.py:687`, inside `factory/roadmap/workflow.py:725` —
 `RoadmapWorkflow.roadmap_status`. Both hand it `self._observed_resolver()`
-(`factory/roadmap/workflow.py:1331` — `RoadmapWorkflow._observed_resolver`),
+(`factory/roadmap/workflow.py:1441` — `RoadmapWorkflow._observed_resolver`),
 which reads `self._landed` — the children *this run* watched, declared at
-`factory/roadmap/workflow.py:558`. The dispatchable list is built immediately
+`factory/roadmap/workflow.py:624`. The dispatchable list is built immediately
 below the pass's call, at `factory/roadmap/workflow.py:864`, and the clause that
 strands a partially landed spec is `entry.spec_dir not in self._landed` at
 `factory/roadmap/workflow.py:870`.
 
 **How the drift precedent solves exactly this two-call-sites problem, and the
 shape US3 must copy.** `self._drift` is written once per pass at
-`factory/roadmap/workflow.py:850` — the comment two lines above it, at
+`factory/roadmap/workflow.py:916` — the comment two lines above it, at
 `factory/roadmap/workflow.py:848`, says "The same map is cached for the
 `roadmap_status` query" — consumed by the pass at
 `factory/roadmap/workflow.py:854` and read again by the query at
 `factory/roadmap/workflow.py:690`. That instance cache is *why* the query and the
 dispatch loop already agree about `amended`. The landed answer needs the same
 treatment, and the cheapest way to get it is to teach
-`factory/roadmap/workflow.py:1331` — `RoadmapWorkflow._observed_resolver` to
+`factory/roadmap/workflow.py:1441` — `RoadmapWorkflow._observed_resolver` to
 answer from the cached read as well as from `self._landed`: one change, and both
 call sites follow.
 
@@ -179,9 +179,9 @@ use.** `factory/roadmap/models.py:592` — `compute_readiness` defaults
 `collect_floor` supplies none at all (`factory/cli/status.py:292`);
 `factory/roadmap/cli.py:46` — `render_command` supplies one that always answers
 `False` and no `landed_for`; and the workflow supplies
-`self._drift.get(spec_dir, False)`, a map `factory/roadmap/workflow.py:1411` —
+`self._drift.get(spec_dir, False)`, a map `factory/roadmap/workflow.py:1508` —
 `RoadmapWorkflow._compute_drift` fills for `SpecState.LANDED` entries only, with
-`factory/roadmap/workflow.py:1369` — `RoadmapWorkflow._drift_resolver` short-
+`factory/roadmap/workflow.py:1455` — `RoadmapWorkflow._drift_resolver` short-
 circuiting any non-`landed` spec to `False` a second time. Every one of them
 would answer "not drifted" for a `ready` spec that is drifted. FR-015 is the
 rule that makes that safe: the built determination requires an answer that was
@@ -192,27 +192,27 @@ rule that makes that safe: the built determination requires an answer that was
 and the landing branch and hands back the observed-landed resolver; the drift
 resolver belongs beside it, injected at the same call
 (`factory/cli/status.py:292`). Its body is the comparison
-`factory/activities/roadmap_activities.py:511` — `_drift_from_git` makes, out of
+`factory/activities/roadmap_activities.py:512` — `_drift_from_git` makes, out of
 two public functions: `factory/workgraph/landed.py:407` — `fingerprint` pins a
 story at its landing commit, and `factory/workgraph/delta.py:48` —
 `fingerprint_for` computes the same digest from the spec text on disk. Different
 digests for any story means drifted.
 
 **The precedent US3 copies, in full.** Drift is the same problem already solved:
-`_compute_drift` (`factory/roadmap/workflow.py:1398` —
+`_compute_drift` (`factory/roadmap/workflow.py:1508` —
 `RoadmapWorkflow._compute_drift`) awaits one activity per candidate spec and
 injects the result into the same `compute_readiness` call; the activity is
-`drift_for_spec` (`factory/activities/roadmap_activities.py:495` —
-`drift_for_spec`) over `DriftInput` (`factory/activities/roadmap_activities.py:481`
+`drift_for_spec` (`factory/activities/roadmap_activities.py:496` —
+`drift_for_spec`) over `DriftInput` (`factory/activities/roadmap_activities.py:482`
 — `DriftInput`), with a module-level test seam at
 `factory/activities/roadmap_activities.py:491` so scheduler tests need no real
-clone, a blocking half at `factory/activities/roadmap_activities.py:511` —
+clone, a blocking half at `factory/activities/roadmap_activities.py:512` —
 `_drift_from_git`, and a registration line at `factory/worker.py:192`.
 
 **The cost US3 removes, and the backstop it must not remove.** `_dispatch`
-(`factory/roadmap/workflow.py:1170` — `RoadmapWorkflow._dispatch`) runs
+(`factory/roadmap/workflow.py:1247` — `RoadmapWorkflow._dispatch`) runs
 `clone_target` at `factory/roadmap/workflow.py:1187` and `onboard_target` at
-`factory/roadmap/workflow.py:1257` before reaching:
+`factory/roadmap/workflow.py:1334` before reaching:
 
 ```python
         if not graph.nodes:
@@ -235,7 +235,7 @@ operator verification below rather than searching the corpus for one.
 (126's three stories). 057's four landings between the drafting commit and
 `602a92c` touch `factory/cli/init.py`, `factory/constitution.py`,
 `factory/stack_packs.py` and `factory/mergequeue/onboard.py`; the last of those
-adds `_standards_finding` to `factory/mergequeue/onboard.py:417` —
+adds `_standards_finding` to `factory/mergequeue/onboard.py:479` —
 `evaluate_init_facts`. That finding cannot reach a roadmap park, but **not**
 because `onboard_target_repo` is off the roadmap's path — it is on it:
 `onboard_target` delegates to `factory/activities/merge_activities.py:785` —
@@ -281,7 +281,7 @@ edge from the other park causes. It cannot: every `self._park(...)` call site in
 `preflight:<check>`, `onboarding`, `manifest`, `collision` — grep them and count
 — and an unsatisfied edge never parks, it renders as `blocked by:` on the queue
 line at `factory/cli/status.py:810` — `_queue_lines`. Count from the call sites,
-not from the record: the docstring on `factory/roadmap/workflow.py:285` —
+not from the record: the docstring on `factory/roadmap/workflow.py:351` —
 `ParkedFinding` is itself stale, listing five checks and omitting `manifest`, so
 an implementer who reads the class while carrying its three fields gets five and
 may conclude this spec invented a park class. An implementer who tries to
@@ -322,14 +322,14 @@ attestation, rather than as dispatchable work"). Assert the exact string.
 **Trap 7 — THE WORKFLOW'S LANDED RESOLVER IS EMPTY ON A SCHEDULED RUN, SO US2
 ALONE CHANGES NOTHING INSIDE THE ROADMAP.** FR-009. This is the trap that decides
 whether US3 is real work or a green no-op. `factory/roadmap/workflow.py:851`
-hands `compute_readiness` the resolver at `factory/roadmap/workflow.py:1331` —
+hands `compute_readiness` the resolver at `factory/roadmap/workflow.py:1441` —
 `RoadmapWorkflow._observed_resolver`, which answers only for specs *this run*
 watched a child of; the schedule starts a fresh run every five minutes, so on the
 run that pays the clone that map is empty and `landed` is always None. An
 implementer who "guards the early exit on the distinction US2 introduces" inside
 `_dispatch` guards on a fact that is never true, watches every test pass, and
 changes nothing on a real floor. US3's work is a landed read *of the roadmap's
-own*, mirroring `factory/roadmap/workflow.py:1398` —
+own*, mirroring `factory/roadmap/workflow.py:1508` —
 `RoadmapWorkflow._compute_drift`, reaching `compute_readiness` as `landed_for`
 and merged with the existing `_landed` answer so a spec the run itself watched
 still resolves. The guard then costs nothing: the spec is simply absent from the
@@ -346,13 +346,13 @@ An implementer who notices the change and narrows the resolver to the entry's ow
 
 **Trap 8 — AN `async` ACTIVITY MAY NOT SHELL GIT ON THE LOOP.** FR-012. This is
 not hypothetical and the incident is written into the tree: the comment on
-`factory/activities/roadmap_activities.py:511` — `_drift_from_git` records that
+`factory/activities/roadmap_activities.py:512` — `_drift_from_git` records that
 on 2026-08-26 this body ran directly on the worker's event loop, `landed_facts`
 held it for 5m12s through a 300-second git timeout, and Temporal killed a node
 that was working correctly with 138 insertions on disk — recurring every five
 minutes until the schedule was paused. The new activity must be `async def` with
 the git work behind `asyncio.to_thread`, exactly as
-`factory/activities/roadmap_activities.py:495` — `drift_for_spec` does.
+`factory/activities/roadmap_activities.py:496` — `drift_for_spec` does.
 
 **Trap 9 — AN ACTIVITY NOT IN THE WORKER'S LIST DOES NOT EXIST.** FR-012.
 `factory/worker.py:192` is the registration line for `drift_for_spec`; the new
@@ -373,7 +373,7 @@ which is *why* the built-but-`ready` window is real and lasts days — and an
 implementer holding a spec the code now knows is finished will reach for the
 obvious close: write `state: landed` into that spec's frontmatter and drop the
 third word as redundant. The address that invites it is
-`factory/roadmap/workflow.py:1110` — `RoadmapWorkflow._apply_promotions`, which
+`factory/roadmap/workflow.py:1187` — `RoadmapWorkflow._apply_promotions`, which
 already rewrites a spec's state for readiness — and that function's own docstring
 is the answer: it rewrites the *in-memory* entry only, because "the file is the
 authority of record". Reproduce the boundary before editing:
@@ -405,18 +405,18 @@ query keeps reporting `ready` and `dispatchable=True` for a spec the dispatch
 loop has already excluded, so `ergane status specs` and `ergane roadmap status`
 disagree about the same spec — precisely the failure this story exists to
 prevent. The tree already contains the answer for the sibling fact: `self._drift`
-is written once at `factory/roadmap/workflow.py:850`, read by the pass at
+is written once at `factory/roadmap/workflow.py:916`, read by the pass at
 `factory/roadmap/workflow.py:854` and by the query at
 `factory/roadmap/workflow.py:690`, and the comment at
 `factory/roadmap/workflow.py:848` says the cache exists for exactly this reason.
 Cache the landed read on the instance the same way and let
-`factory/roadmap/workflow.py:1331` — `RoadmapWorkflow._observed_resolver` answer
+`factory/roadmap/workflow.py:1441` — `RoadmapWorkflow._observed_resolver` answer
 from both maps, so one change serves both call sites and they cannot drift apart
 later. Do **not** add an activity call inside the query: a Temporal query is
 read-only and cannot execute activities.
 
 There is a second read in that query the resolver does **not** reach, and it is
-the one an operator looks at. `factory/roadmap/workflow.py:706` —
+the one an operator looks at. `factory/roadmap/workflow.py:725` —
 `RoadmapWorkflow.roadmap_status` reads `own = self._landed.get(entry.spec_dir)`
 directly to fill `RoadmapSpecStatus.landed`, and the per-spec board prints it at
 `factory/cli/roadmap.py:508` as `[ ] <spec>: <state> (landed=..., promoted=...)`.
@@ -476,7 +476,7 @@ determination must require an answer that was actually supplied; test it by
 calling `compute_readiness` with `landed_for` only and asserting nothing changed.
 
 **Trap 19 — BOUND BOTH ROADMAP READS BY DECLARED STATE, OR THE COST STORY ADDS
-COST.** FR-009, US3-S7. `factory/roadmap/workflow.py:1411` —
+COST.** FR-009, US3-S7. `factory/roadmap/workflow.py:1508` —
 `RoadmapWorkflow._compute_drift` bounds itself with `if entry.state is
 SpecState.LANDED`, and it already awaits one activity per landed spec — 102 of
 the 141 in this corpus — on every tick. "Once per candidate spec" is not a bound:
@@ -485,7 +485,7 @@ minutes, on the story whose whole purpose is to stop paying a per-tick git cost.
 The mirror of `_compute_drift`'s `LANDED` is `READY`, and the drift half is
 narrower still — only the `ready` specs the landed read reported landed need a
 drift answer at all, which is one spec on this floor today. Note that the
-existing `factory/roadmap/workflow.py:1369` —
+existing `factory/roadmap/workflow.py:1455` —
 `RoadmapWorkflow._drift_resolver` refuses any non-`landed` spec before it reaches
 the activity, so widening `_compute_drift`'s bound alone changes nothing; both
 gates move together or neither does. And *widening* is the whole word:
@@ -498,7 +498,7 @@ control.
 
 **Trap 20 — `ergane status specs` MUST NOT FETCH TO ANSWER A QUESTION.** FR-016.
 `factory/workgraph/landed.py:130` — `landed_facts` defaults `fetch=True`, and
-`factory/activities/roadmap_activities.py:511` — `_drift_from_git` takes that
+`factory/activities/roadmap_activities.py:512` — `_drift_from_git` takes that
 default because it decides what an epic builds. A reporting command may not: the
 rest of `factory/cli/status.py` already passes `fetch=False` and says on its own
 output that the answer was read without fetching. A drift resolver copied from
@@ -516,7 +516,7 @@ workflow an answer is *always* supplied and the `.get(..., False)` default makes
 "nobody computed one" and "not drifted" the same value — the exact collapse
 FR-015 forbids one layer down, reproduced where FR-015 cannot reach. Today
 `self._drift` is populated only for `SpecState.LANDED` at
-`factory/roadmap/workflow.py:1411`, and `factory/roadmap/workflow.py:1369` —
+`factory/roadmap/workflow.py:1508`, and `factory/roadmap/workflow.py:1455` —
 `RoadmapWorkflow._drift_resolver` short-circuits every non-`landed` spec to
 `False` a second time, so a `ready` spec always reads back not-drifted. An
 implementer who adds `_compute_landed` and stops there ships a story that passes
@@ -529,7 +529,7 @@ every other bound in this story is an upper one that zero drift reads satisfy.
 The second half is an ordering rather than a predicate, and it fails the same
 way. Await `_compute_landed` **before**
 `self._drift = await self._compute_drift(request)` at
-`factory/roadmap/workflow.py:850`: the widened drift gate asks which `ready`
+`factory/roadmap/workflow.py:916`: the widened drift gate asks which `ready`
 specs the landed read reported landed, so in the reverse order that gate reads an
 empty landed map, no `ready` spec gets a drift entry,
 `factory/roadmap/workflow.py:854` answers `False`, and the amended spec is
@@ -537,6 +537,32 @@ dropped from the dispatchable list at `factory/roadmap/workflow.py:864` — the
 same regression, arriving through order instead of through the rule. Reproduce
 it: script the landed read landed and the drift read drifted, run one pass, and
 assert the spec is still dispatched.
+
+**Trap 22 — A NEW PRODUCER OF PARKS LANDED AFTER THIS PLAN WAS WRITTEN, AND IT
+ROUTES THROUGH THE SURFACE THIS SPEC FIXES.** Spec 156 US2 landed as `1c96876`
+on 2026-09-08, adding `factory/roadmap/workflow.py:209` — `_skew_park_detail`
+and a `self._park(spec_dir, "dispatch", refusal)` call in
+`factory/roadmap/workflow.py:1397` — `RoadmapWorkflow._dispatch`. Its own comment
+says the refusal "renders through the same park-reason surface every other park
+uses" — which is, today, the bare integer this spec exists to replace.
+
+Two consequences, and neither is optional. **First, the enumeration of park
+reasons in this plan is not closed.** Count the `_park(` call sites in
+`factory/roadmap/workflow.py` when you start, rather than trusting a list
+written before 156 landed; a renderer that names four reasons and meets five
+prints the same silence for the fifth. **Second, the headline scenario now has a
+cheap reproduction that costs no epic**: restart the worker onto a revision the
+tree does not match, let one roadmap tick fire, and every ready spec parks with
+a skew reason `ergane status specs` will not print. That is the demonstration to
+run before you believe the fix, and it is faster than the onboarding refusal the
+original evidence came from.
+
+Note also that this file moved by +78 to +135 lines on 2026-09-08. Every anchor
+in this document was re-resolved against `1c96876` and none is older. If 156's
+successors land before this spec dispatches, re-run `ergane spec validate` — and
+do not read a green result as proof, because the symbol tier does not see an
+anchor whose path and symbol are split across two lines.
+
 
 ## Sizing
 
@@ -561,20 +587,20 @@ the story, about twenty lines over two public helpers
 are the bulk.
 
 US3 touches `factory/roadmap/workflow.py` (a `_compute_landed` beside
-`factory/roadmap/workflow.py:1398` — `RoadmapWorkflow._compute_drift`, bounded
+`factory/roadmap/workflow.py:1508` — `RoadmapWorkflow._compute_drift`, bounded
 to `SpecState.READY` exactly as that one is bounded to `SpecState.LANDED` at
-`factory/roadmap/workflow.py:1411`; the two drift gates at
-`factory/roadmap/workflow.py:1411` and `factory/roadmap/workflow.py:1369` widened
+`factory/roadmap/workflow.py:1508`; the two drift gates at
+`factory/roadmap/workflow.py:1508` and `factory/roadmap/workflow.py:1455` widened
 together — widened, not moved: every `landed` entry keeps its drift read — to
 cover the `ready` specs the landed read reported landed, and awaited in that
 order (trap 21); the
 injection at `factory/roadmap/workflow.py:851`; the cached read consumed by the
 query at `factory/roadmap/workflow.py:687`; the own-landed field at
-`factory/roadmap/workflow.py:706`; and the seam at
-`factory/roadmap/workflow.py:1331` — `RoadmapWorkflow._observed_resolver` that
+`factory/roadmap/workflow.py:725`; and the seam at
+`factory/roadmap/workflow.py:1441` — `RoadmapWorkflow._observed_resolver` that
 lets one change serve both call sites),
 `factory/activities/roadmap_activities.py` (a new input record, activity and
-blocking half, mirroring `factory/activities/roadmap_activities.py:481` onwards)
+blocking half, mirroring `factory/activities/roadmap_activities.py:482` onwards)
 and one line at `factory/worker.py:192`. It opens neither sibling's file: the
 board line at `factory/cli/roadmap.py:508` follows from the query's answer and
 needs no edit.
@@ -608,7 +634,7 @@ and one named live instance of the defect:
    Then, before this spec is flipped `ready`: capture 057's queue lines — step 4
    needs the before-and-after — and **attest 057**, writing `state: landed` into
    its frontmatter, and signal the running roadmap to rescan
-   (`factory/roadmap/workflow.py:611` — `RoadmapWorkflow.rescan`). 057 is the
+   (`factory/roadmap/workflow.py:677` — `RoadmapWorkflow.rescan`). 057 is the
    only `state: ready` spec in the corpus and sorts before 131, and the open
    critical finding this spec deliberately does not fix
    (`roadmap/a-landed-but-unattested-spec-parks-the-line-and-the-floor-idles-until-an-operator-attests`)

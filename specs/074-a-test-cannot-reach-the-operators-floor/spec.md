@@ -162,8 +162,8 @@ fixes:
 # closing the notify finding's agent-suite half. The ledger row records that
 # tuple as already `("PATH", "LANG", "TERM")` on 2026-08-17 when the leak was
 # measured, so it is the allow-list, not the fix; the mechanism is `--clearenv`
-# at `factory/workgraph/adapter.py:491` — `_build_argv`, launched with no `env=`
-# at `factory/workgraph/adapter.py:694` — `launch`. The conclusion stands — the
+# at `factory/workgraph/adapter.py:522` — `_build_argv`, launched with no `env=`
+# at `factory/workgraph/adapter.py:738` — `launch`. The conclusion stands — the
 # agent half is closed and US3 closes the operator-suite half — only the line an
 # operator would re-read was wrong. `workgraph.json` beside this file is still
 # the stale 2026-08-20 five-story artefact; this run is not permitted to write or
@@ -254,7 +254,7 @@ steps, and each one is a line in this tree:
 | site | guarded under pytest |
 | --- | --- |
 | `factory/roadmap/schedule.py:165` — `_default_schedule_client` | **yes** — `factory/roadmap/schedule.py:156-162` |
-| `factory/workgraph/cli.py:969` — `_connect` | no |
+| `factory/workgraph/cli.py:977` — `_connect` | no |
 | `factory/cli/nouns/__init__.py:54` — `_open_client` | no |
 | `factory/cli/roadmap.py:205` — `_connect` | no |
 | `factory/cli/repo.py:85` — `_open_client` | no |
@@ -262,7 +262,7 @@ steps, and each one is a line in this tree:
 | `factory/doctor/probes.py:603` — `_closed_epics_from_temporal` | no |
 | `factory/controlplane/verify.py:193` — `_temporal_client_factory` | no |
 | `factory/notify/service.py:1048` — `main` | no |
-| `factory/worker.py:342` — `main` | no |
+| `factory/worker.py:351` — `main` | no |
 | `factory/supervision/deploy.py:749` — `asked` | no |
 
 The last row landed on 2026-08-22, after this spec was drafted, in a file the
@@ -359,7 +359,7 @@ module. It invents nothing.
   (2 occurrences). A leaked probe workflow was named `epic-capacity-can-3d2bb231`,
   minted by `tests/test_live_capacity.py:176` — `_probe_id`. The production worker
   fails its tasks — the class is not registered — and
-  `factory/activities/roadmap_activities.py:774` — `_list_open_epics` counts it as
+  `factory/activities/roadmap_activities.py:775` — `_list_open_epics` counts it as
   an open epic, so a leaked test artefact silently consumes a concurrency slot the
   operator cannot see. A second reader of the same grammar landed since:
   `factory/supervision/units.py:1302` — `listed`.
@@ -420,7 +420,7 @@ choke point's seam bound to a fake and read what they do.
    namespace and the seam the test should bind instead — proven by a committed
    test asserting all three strings, modelled on
    `factory/roadmap/schedule.py:156-162`.
-2. **Given** the four callers `factory/workgraph/cli.py:969` — `_connect`,
+2. **Given** the four callers `factory/workgraph/cli.py:977` — `_connect`,
    `factory/cli/nouns/__init__.py:54` — `_open_client`,
    `factory/cli/roadmap.py:205` — `_connect` and `factory/cli/repo.py:85` —
    `_open_client`, **When** each needs a client, **Then** each obtains it from the
@@ -476,10 +476,10 @@ choke point's seam bound to a fake and read what they do.
    2, in which each rebound caller returns the fake it was given. The refusal of
    scenario 1 fires before `Client.connect` is reached, so a fake left there is
    never consulted and its test goes red rather than loose.
-8. **Given** the landed CLI guard sweep `tests/test_ergane_status.py:1702` —
+8. **Given** the landed CLI guard sweep `tests/test_ergane_status.py:1716` —
    `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal`, which
    derives its module set from every file under `factory/cli/` that awaits and
-   mentions Temporal (`tests/test_ergane_status.py:1586` —
+   mentions Temporal (`tests/test_ergane_status.py:1600` —
    `_cli_python_modules`) and then compares it, function by function and `except`
    clause by `except` clause, against the table at
    `tests/test_ergane_status.py:1516`, **When** the choke point is written and
@@ -584,7 +584,7 @@ read the failure.
    least `tests/test_live_notify.py` and `tests/test_live_capacity.py` by name,
    and fails naming any module that decides on a credential alone. Without the
    non-empty assertion a marker-to-module walk that resolves nothing passes
-   forever — the vacuity `tests/test_ergane_status.py:1733` —
+   forever — the vacuity `tests/test_ergane_status.py:1747` —
    `test_the_discovered_module_set_contains_status_and_build` exists to close for
    the sweep beside it.
 6. **Given** the six marker registrations at `pyproject.toml:89-96`, **When** they
@@ -676,7 +676,7 @@ readers and read the counts, then read the query each reader sent.
 3. **Given** the visibility query the reader sends, **When** it is captured from a
    fake client, **Then** it carries a `WorkflowType = "EpicWorkflow"` clause beside
    the existing `ExecutionStatus` clause, and the pinned type name equals the type
-   Temporal registers for `factory/workgraph/workflow.py:752` — `EpicWorkflow` —
+   Temporal registers for `factory/workgraph/workflow.py:763` — `EpicWorkflow` —
    proven by a committed test that asserts the query string and compares the pinned
    name against the registered definition, so a second grammar cannot drift from
    the first. The precedent is `factory/escalation/client.py:52-59`, whose comment
@@ -739,7 +739,7 @@ outside pytest.
 2. **Given** the seven callers `factory/doctor/probes.py:491` — `_gather_async`,
    `factory/doctor/probes.py:603` — `_closed_epics_from_temporal`,
    `factory/controlplane/verify.py:193` — `_temporal_client_factory`,
-   `factory/notify/service.py:1048` — `main`, `factory/worker.py:342` — `main`,
+   `factory/notify/service.py:1048` — `main`, `factory/worker.py:351` — `main`,
    `factory/supervision/deploy.py:749` — `asked` and
    `factory/roadmap/schedule.py:165` — `_default_schedule_client`, **When** each
    needs a client, **Then** each obtains it from the choke point — proven by a
@@ -750,7 +750,7 @@ outside pytest.
    from there only once a mutation has removed the first — proven by a committed
    test asserting that module still refuses under `PYTEST_CURRENT_TEST` with its
    own message.
-3. **Given** the worker entrypoint `factory/worker.py:333` — `main`, **When** it
+3. **Given** the worker entrypoint `factory/worker.py:351` — `main`, **When** it
    runs with `PYTEST_CURRENT_TEST` unset, **Then** it connects exactly as it does
    today — proven by a committed test that binds the seam and asserts the
    entrypoint is not refused. The worker is production; the guard is about the
@@ -804,7 +804,7 @@ outside pytest.
   fixes where, and says which landed contract decides it. Exclusivity is not this
   requirement: FR-002 and FR-023 migrate the callers and FR-003 is the test that
   proves no second constructor survives.
-- **FR-002**: The four CLI callers — `factory/workgraph/cli.py:969` — `_connect`,
+- **FR-002**: The four CLI callers — `factory/workgraph/cli.py:977` — `_connect`,
   `factory/cli/nouns/__init__.py:54` — `_open_client`,
   `factory/cli/roadmap.py:205` — `_connect` and `factory/cli/repo.py:85` —
   `_open_client` — MUST be migrated to that choke point, and each MUST keep its
@@ -880,7 +880,7 @@ outside pytest.
   reason — and the reader MUST also drop any listed execution whose workflow type
   is not that one, so a supplied listing decides the exclusion without a server.
   The pinned type name MUST be proven equal to the type Temporal registers for
-  `factory/workgraph/workflow.py:752` — `EpicWorkflow`. The epic id grammar MUST
+  `factory/workgraph/workflow.py:763` — `EpicWorkflow`. The epic id grammar MUST
   NOT be narrowed.
 - **FR-021**: Listing open epics MUST count real epic ids exactly as it does
   today.
@@ -892,7 +892,7 @@ outside pytest.
 - **FR-023**: The seven remaining callers — `factory/doctor/probes.py:491` —
   `_gather_async`, `factory/doctor/probes.py:603` — `_closed_epics_from_temporal`,
   `factory/controlplane/verify.py:193` — `_temporal_client_factory`,
-  `factory/notify/service.py:1048` — `main`, `factory/worker.py:342` — `main`,
+  `factory/notify/service.py:1048` — `main`, `factory/worker.py:351` — `main`,
   `factory/supervision/deploy.py:749` — `asked` and
   `factory/roadmap/schedule.py:165` — `_default_schedule_client` — MUST be migrated
   to the choke point. `factory/supervision/deploy.py:749` — `asked` is not in the
@@ -976,7 +976,7 @@ outside pytest.
   whose emptiness is what keeps the worker's start-up imports acyclic. Every
   migrated CLI caller MUST keep awaiting and MUST keep the `except` clause tuple
   pinned for it at `tests/test_ergane_status.py:1516`, and neither that table nor
-  `tests/test_ergane_status.py:1702` —
+  `tests/test_ergane_status.py:1716` —
   `test_the_guard_sweep_discovers_every_cli_module_that_awaits_temporal` MAY be
   edited: that sweep derives its module set from every file under `factory/cli/`
   that awaits and mentions Temporal, so a choke point placed there is a new
@@ -1055,8 +1055,8 @@ kind of reason: both slices name `factory/roadmap/schedule.py`, but US2 only rea
 it — it is the exemplar FR-007 is modelled on — while US6 migrates its connect, so
 serialising them would buy nothing. US5 also keeps `concurrent_with: [US4]` because
 both slices name `factory/cli/nouns/build.py` and neither edits it — US4 reaches the teardown
-route through `factory/cli/nouns/build.py:1897` — `_reset_epic` and US5 imports the
-constant at `factory/cli/nouns/build.py:188` — so the inferred contention edge
+route through `factory/cli/nouns/build.py:2332` — `_reset_epic` and US5 imports the
+constant at `factory/cli/nouns/build.py:196` — so the inferred contention edge
 would serialise two stories that share no production write. Beyond that shared test
 file, US3, US4 and US5 touch nothing in common: US3 is `tests/` and
 `pyproject.toml`, US4 is `factory/workgraph/worktree.py`, US5 is the two epic
