@@ -31,10 +31,7 @@
         "FR-005",
         "FR-006",
         "FR-007",
-        "FR-008",
-        "FR-011",
-        "FR-015",
-        "FR-016"
+        "FR-011"
       ],
       "depends_on": [],
       "depends_on_merged": [],
@@ -49,16 +46,57 @@
         "US3",
         "FR-009",
         "FR-010",
+        "FR-014"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us4"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us4",
+      "story_key": "US4",
+      "persona": "implementer",
+      "spec_ref": "131-the-status-board-names-the-spec-it-cannot-dispatch:US4",
+      "requirement_keys": [
+        "US4",
+        "FR-008",
+        "FR-015",
+        "FR-016"
+      ],
+      "depends_on": [],
+      "depends_on_merged": [
+        "us2",
+        "us1"
+      ],
+      "timeout_override_s": null
+    },
+    {
+      "id": "us5",
+      "story_key": "US5",
+      "persona": "implementer",
+      "spec_ref": "131-the-status-board-names-the-spec-it-cannot-dispatch:US5",
+      "requirement_keys": [
+        "US5",
         "FR-012",
-        "FR-014",
         "FR-017"
       ],
       "depends_on": [],
       "depends_on_merged": [
-        "us2"
+        "us3"
       ],
       "timeout_override_s": null
     }
   ],
-  "inferred_edges": []
+  "inferred_edges": [
+    {
+      "node_id": "us4",
+      "depends_on_merged": "us1",
+      "shared_files": [
+        "factory/cli/status.py"
+      ],
+      "reason": "inferred, not declared: US4's task slice and US1's both name `factory/cli/status.py`, and the spec declares no ordering between them. Raced, whichever lands second is rejected for the other's change, so US4 \u2014 the later-declared of the two \u2014 waits for US1 to merge. Declare `concurrent_with: [US1]` on US4 to run them together anyway (069-US2 FR-007)"
+    }
+  ]
 }

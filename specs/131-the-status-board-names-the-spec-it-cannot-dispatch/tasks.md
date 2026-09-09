@@ -41,9 +41,11 @@ without it touch a region an earlier task in the same phase is already editing.
       with a roadmap document carrying two parked entries and assert each parked
       spec directory appears with the check that refused it and the detail
       verbatim, not only a count.
+
 - [ ] T002 [P] [US1] (spec US1-S2, FR-002) Assert the `ergane status specs`
       `--json` payload carries, per parked spec, the directory, the check and the
       detail as separate fields rather than an integer.
+
 - [ ] T003 [P] [US1] (spec US1-S3, FR-003, trap 3) Assert an entry parked with
       check `onboarding` and one parked with check `derive` and the empty-delta
       detail are told apart on both surfaces by the fields the roadmap recorded.
@@ -53,10 +55,12 @@ without it touch a region an earlier task in the same phase is already editing.
       Count them from the eight `self._park(...)` call sites, not from the
       record: the `ParkedFinding` docstring is itself stale and lists five,
       omitting `manifest` (plan trap 3 anchors both).
+
 - [ ] T004 [P] [US1] (spec US1-S4, FR-004, trap 13) **The control.** With a
       document carrying no parked entries, assert the human roadmap block is
       byte-identical to today's — the `parked: 0` line included — and that the
       added JSON field is present and empty rather than absent.
+
 - [ ] T005 [P] [US1] (spec US1-S5, FR-013, trap 15) In
       `tests/test_131_us1_roadmap_status_names_the_spec.py`, call
       `factory/cli/roadmap.py:484` — `_render_status` with a `RoadmapStatus`
@@ -79,10 +83,12 @@ without it touch a region an earlier task in the same phase is already editing.
       needs no second renderer. **Do not build a durable park store, a sidecar
       file or a history scan**: the listing has exactly the lifetime the count has
       today, and giving it another is days of work and a write on a read path.
+
 - [ ] T007 [US1] (FR-001, FR-004, trap 13) In `factory/cli/status.py:753` —
       `_roadmap_lines`, print the named entries under the existing
       `parked: <n>` line at `factory/cli/status.py:780` rather than in place of
       it, so the zero case renders byte-for-byte as it does today.
+
 - [ ] T008 [US1] (FR-013, trap 15) In `factory/cli/roadmap.py:484` —
       `_render_status`, print the same three fields under the second count at
       `factory/cli/roadmap.py:501`, which today collapses the identical
@@ -114,10 +120,12 @@ without it touch a region an earlier task in the same phase is already editing.
       dispatchable. Reproduce the inverse first — today that same injection still
       yields `dispatchable=True` — because it is the cheapest possible proof this
       story landed.
+
 - [ ] T011 [P] [US2] (spec US2-S2, FR-006, trap 4) Assert the spec's rendered
       state is a third word, distinct from **both** `ready` and `landed`.
       Rendering it `landed` asserts an attestation nobody made, and attestation
       is the operator act the state exists to prompt.
+
 - [ ] T012 [P] [US2] (spec US2-S3, FR-011, trap 6) Assert the human queue line
       for that spec carries the third state and the literal string
       `awaiting attestation`, and does **not** contain the word `dispatchable`.
@@ -127,37 +135,10 @@ without it touch a region an earlier task in the same phase is already editing.
       `factory/roadmap/models.py`-only change, which is the point of it — and a
       change that merely deletes the word leaves the operator a line that says
       nothing.
+
 - [ ] T013 [P] [US2] (spec US2-S4, FR-007) **The control.** Given a `ready` spec
       some of whose stories have not landed, assert it is dispatchable and its
       rendered state is still `ready`, exactly as today.
-- [ ] T014 [P] [US2] (spec US2-S5, FR-008, trap 5) **The control.** Assert
-      `compute_readiness` reaches the landed fact and the drift fact only through
-      the injected resolvers: supply both from lambdas, pass no repository, and
-      assert the answer is correct — a git read added inside
-      `factory/roadmap/models.py` would make this case fail or hang.
-- [ ] T015 [P] [US2] (spec US2-S6, FR-015, trap 17) **The control that decides
-      whether this story is a fix or a regression.** Given a `ready` spec whose
-      every story is observed landed and whose `drifted_for` answers True, assert
-      it is **dispatchable** and renders `ready`, exactly as today. That is an
-      amended spec the operator flipped back to `ready` to have rebuilt: its
-      stories all have landing commits, and only the fingerprint answer separates
-      it from a finished one. Write this test before T010's implementation, not
-      after; the whole rule is wrong without it.
-- [ ] T016 [P] [US2] (spec US2-S7, FR-015, trap 18) **The control.** Given that
-      same landed spec and **no** `drifted_for` argument at all, assert it is
-      dispatchable and renders `ready`. `factory/roadmap/models.py:592` —
-      `compute_readiness` defaults the resolver to a lambda returning False, so a
-      built determination that reads the default as "not drifted" silently
-      changes every caller that supplies none.
-- [ ] T017 [P] [US2] (spec US2-S8, FR-016, traps 17 and 20) In
-      `tests/test_131_us2_status_supplies_drift.py`, assert the drift resolver
-      `ergane status specs` supplies compares each story's fingerprint pinned at
-      its landing commit against the fingerprint of the spec text on disk, and
-      answers True when they differ. Assert it asks git **without fetching** —
-      `factory/workgraph/landed.py:130` — `landed_facts` defaults `fetch=True`
-      and a reporting command may not take that default — and that it is
-      consulted only for a `ready` spec the landed read already reported landed,
-      so the corpus does not pay a fingerprint comparison per spec.
 
 ### Implementation for this story
 
@@ -172,6 +153,7 @@ without it touch a region an earlier task in the same phase is already editing.
       git read; both resolvers are injected on purpose and
       `factory/roadmap/models.py:587` — `compute_readiness` says why in its own
       docstring.
+
 - [ ] T019 [US2] (FR-006, trap 4) Carry the fact as a field on
       `factory/roadmap/models.py:516` — `SpecReadiness`, exactly as `drifted` is
       carried, and add the second branch and its constant to
@@ -184,18 +166,7 @@ without it touch a region an earlier task in the same phase is already editing.
       and `dispatchable` into every queue entry, so the `ergane status specs`
       queue follows with no edit; the offline `factory/roadmap/cli.py:92` —
       `_render_roadmap` does **not** and must not be made to (trap 16).
-- [ ] T020 [US2] (FR-016, traps 17 and 20) Add the drift resolver
-      `ergane status specs` supplies beside `factory/cli/status.py:378` —
-      `_readiness_basis`, which already resolves the repository and the landing
-      branch, and inject it at the `compute_readiness` call on
-      `factory/cli/status.py:292`. Build it from two public helpers rather than a
-      third fingerprint implementation: `factory/workgraph/landed.py:407` —
-      `fingerprint` pins a story at its landing commit and
-      `factory/workgraph/delta.py:48` — `fingerprint_for` computes the same
-      digest from the spec text on disk; any story whose digests differ means
-      drifted. Pass `fetch=False`, and consult it lazily — only for a `ready`
-      spec the landed read already reported landed. Touch no other function in
-      that file: US1 is editing the roadmap-disposition half of it concurrently.
+
 - [ ] T021 [US2] (FR-011, trap 6) In `factory/cli/status.py:810` —
       `_queue_lines`, decide the word `dispatchable` from the entry's computed
       flag rather than from the absence of blockers, and print
@@ -211,7 +182,60 @@ without it touch a region an earlier task in the same phase is already editing.
       for a spec whose stories are all landed but whose text was edited after
       they landed, which must read `ready  dispatchable` both times.
 
-## Phase 3: User Story 3 — The roadmap stops paying for a spec it will never dispatch
+## Phase 3: User Story 4 — Readiness reaches its facts only through the resolvers it is given
+
+Split out of US2 on 2026-09-08 for size. Merges after US2, before US3.
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T014 [P] [US4] (spec US4-S1, FR-008, trap 5) **The control.** Assert
+      `compute_readiness` reaches the landed fact and the drift fact only through
+      the injected resolvers: supply both from lambdas, pass no repository, and
+      assert the answer is correct — a git read added inside
+      `factory/roadmap/models.py` would make this case fail or hang.
+
+- [ ] T015 [P] [US4] (spec US4-S2, FR-015, trap 17) **The control that decides
+      whether this story is a fix or a regression.** Given a `ready` spec whose
+      every story is observed landed and whose `drifted_for` answers True, assert
+      it is **dispatchable** and renders `ready`, exactly as today. That is an
+      amended spec the operator flipped back to `ready` to have rebuilt: its
+      stories all have landing commits, and only the fingerprint answer separates
+      it from a finished one. Write this test before T010's implementation, not
+      after; the whole rule is wrong without it.
+
+- [ ] T016 [P] [US4] (spec US4-S3, FR-015, trap 18) **The control.** Given that
+      same landed spec and **no** `drifted_for` argument at all, assert it is
+      dispatchable and renders `ready`. `factory/roadmap/models.py:592` —
+      `compute_readiness` defaults the resolver to a lambda returning False, so a
+      built determination that reads the default as "not drifted" silently
+      changes every caller that supplies none.
+
+- [ ] T017 [P] [US4] (spec US4-S4, FR-016, traps 17 and 20) In
+      `tests/test_131_us2_status_supplies_drift.py`, assert the drift resolver
+      `ergane status specs` supplies compares each story's fingerprint pinned at
+      its landing commit against the fingerprint of the spec text on disk, and
+      answers True when they differ. Assert it asks git **without fetching** —
+      `factory/workgraph/landed.py:130` — `landed_facts` defaults `fetch=True`
+      and a reporting command may not take that default — and that it is
+      consulted only for a `ready` spec the landed read already reported landed,
+      so the corpus does not pay a fingerprint comparison per spec.
+
+### Implementation for this story
+
+- [ ] T020 [US4] (FR-016, traps 17 and 20) Add the drift resolver
+      `ergane status specs` supplies beside `factory/cli/status.py:378` —
+      `_readiness_basis`, which already resolves the repository and the landing
+      branch, and inject it at the `compute_readiness` call on
+      `factory/cli/status.py:292`. Build it from two public helpers rather than a
+      third fingerprint implementation: `factory/workgraph/landed.py:407` —
+      `fingerprint` pins a story at its landing commit and
+      `factory/workgraph/delta.py:48` — `fingerprint_for` computes the same
+      digest from the spec text on disk; any story whose digests differ means
+      drifted. Pass `fetch=False`, and consult it lazily — only for a `ready`
+      spec the landed read already reported landed. Touch no other function in
+      that file: US1 is editing the roadmap-disposition half of it concurrently.
+
+## Phase 4: User Story 3 — The roadmap stops paying for a spec it will never dispatch
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -223,6 +247,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `onboard_target` was executed on its account. This is the real cost — up to
       288 cycles a day per such spec at a five-minute schedule — not a rebuild,
       which is already refused.
+
 - [ ] T024 [P] [US3] (spec US3-S2, FR-014, trap 14) After that same pass, query
       `roadmap_status` on the same workflow instance and assert it reports for
       that spec the `rendered_state` and the `dispatchable` flag the pass
@@ -234,20 +259,18 @@ without it touch a region an earlier task in the same phase is already editing.
       `factory/roadmap/workflow.py:725` from a map the resolver does not touch,
       so an incomplete change leaves the per-spec board calling a spec built and
       saying its stories did not land.
+
 - [ ] T025 [P] [US3] (spec US3-S3, FR-009) **The control.** Given a spec with
       genuine outstanding work, assert it is cloned, onboarded and dispatched
       exactly as today.
+
 - [ ] T026 [P] [US3] (spec US3-S4, FR-010, trap 10) **The control.** Given a spec
       whose delta is empty for some other reason, assert the existing zero-node
       refusal at `factory/roadmap/workflow.py:1269` still parks it with the same
       detail. This story adds an earlier guard; removing the backstop because one
       of its cases became unreachable is how the other cases start dispatching.
-- [ ] T027 [P] [US3] (spec US3-S5, FR-012, traps 8 and 9) Assert the new activity
-      performs its git work off the event loop — the same split
-      `factory/activities/roadmap_activities.py:512` — `_drift_from_git` makes —
-      and that it is present in the worker's registered activity list at
-      `factory/worker.py:192`.
-- [ ] T028 [P] [US3] (spec US3-S6, FR-009, trap 7) **The control on the widening.**
+
+- [ ] T028 [P] [US3] (spec US3-S5, FR-009, trap 7) **The control on the widening.**
       Given a `ready` spec whose `depends_on_landed` names a spec the roadmap's
       landed read reports as built but whose frontmatter is not `landed`, assert
       the dependent is dispatchable rather than blocked on that edge. This is a
@@ -255,48 +278,9 @@ without it touch a region an earlier task in the same phase is already editing.
       first consequence, and it makes the roadmap agree with what
       `ergane status specs` has computed all along. Assert it so a later reader
       cannot mistake it for an accident and narrow the resolver back.
-- [ ] T029 [P] [US3] (spec US3-S7, FR-009, trap 19) **The cost control.** Given a
-      corpus with specs in every declared state, assert the landed read is
-      executed only for the entries whose declared state is `ready` — count the
-      activity calls — and that the drift read is executed only for those of them
-      the landed read reported landed. Unbounded, this story adds one git scan
-      per corpus entry every five minutes to the story whose purpose is removing
-      a per-tick cost. Both assertions here are *upper* bounds, which zero reads
-      satisfy; T036 supplies the lower bound that the drift read actually ran.
-
-- [ ] T036 [P] [US3] (spec US3-S8, FR-017, trap 21) **The control that decides
-      whether this story is a fix or a regression.** Run one scheduling pass with
-      the roadmap's landed read scripted to report a `ready` spec as landed and
-      its drift read scripted to report a changed fingerprint, and assert the
-      spec **is** in the dispatchable list, that it is cloned, onboarded and
-      dispatched exactly as today, and — the part no other scenario here can
-      state — that the drift read was **executed** for that spec. Inside the
-      roadmap `drifted_for` is always supplied
-      (`factory/roadmap/workflow.py:854` and `factory/roadmap/workflow.py:690`),
-      so `self._drift.get(spec_dir, False)` answers False whether the read ran or
-      not: without this positive bound, a US3 that widens the landed read alone
-      passes T023 through T029 and stops the floor rebuilding an amended spec.
-- [ ] T037 [P] [US3] (spec US3-S9, FR-009, trap 19) **The control on the bound.**
-      Given a spec whose frontmatter reads `landed` and one of whose stories'
-      fingerprints has changed, assert the pass and the `roadmap_status` query
-      both still report it drifted and rendering `amended`, exactly as today. The
-      drift read is widened, never narrowed: the bound at
-      `factory/roadmap/workflow.py:1508` must go on covering every `landed`
-      entry, and 102 of this corpus's 141 specs are `landed`.
 
 ### Implementation for this story
 
-- [ ] T030 [US3] (FR-012, traps 8 and 9) In
-      `factory/activities/roadmap_activities.py`, add the landed read as an
-      `async def` activity mirroring
-      `factory/activities/roadmap_activities.py:496` — `drift_for_spec`: an input
-      record beside `factory/activities/roadmap_activities.py:482` — `DriftInput`,
-      a module-level scripted seam beside
-      `factory/activities/roadmap_activities.py:491` so scheduler tests need no
-      real clone, and the blocking git work behind `asyncio.to_thread` as
-      `factory/activities/roadmap_activities.py:512` — `_drift_from_git` does.
-      Register it at `factory/worker.py:192`; unregistered, every scheduled tick
-      fails and it reads as a Temporal problem.
 - [ ] T031 [US3] (FR-009, FR-014, traps 7, 14 and 19) In
       `factory/roadmap/workflow.py`, add a `_compute_landed` beside
       `factory/roadmap/workflow.py:1508` — `RoadmapWorkflow._compute_drift` that
@@ -338,6 +322,7 @@ without it touch a region an earlier task in the same phase is already editing.
       called for it and neither is its clone. Do not call the activity from
       inside the query: a Temporal query is read-only and cannot execute
       activities.
+
 - [ ] T032 [US3] (FR-010, trap 10) Leave `factory/roadmap/workflow.py:1269`
       exactly as it stands. The guard is at selection; the refusal is the
       backstop for every other empty-delta cause.
@@ -351,6 +336,63 @@ without it touch a region an earlier task in the same phase is already editing.
       work, and a query answer that agrees with the pass — including its own
       `landed` field. Paste those lines only — a whole workflow history spends
       the story's diff limit on evidence.
+
+## Phase 5: User Story 5 — The drift read is bounded, and paid for once
+
+Split out of US3 on 2026-09-08 for size. Merges last.
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T027 [P] [US5] (spec US5-S1, FR-012, traps 8 and 9) Assert the new activity
+      performs its git work off the event loop — the same split
+      `factory/activities/roadmap_activities.py:512` — `_drift_from_git` makes —
+      and that it is present in the worker's registered activity list at
+      `factory/worker.py:192`.
+
+- [ ] T029 [P] [US5] (spec US5-S2, FR-009, trap 19) **The cost control.** Given a
+      corpus with specs in every declared state, assert the landed read is
+      executed only for the entries whose declared state is `ready` — count the
+      activity calls — and that the drift read is executed only for those of them
+      the landed read reported landed. Unbounded, this story adds one git scan
+      per corpus entry every five minutes to the story whose purpose is removing
+      a per-tick cost. Both assertions here are *upper* bounds, which zero reads
+      satisfy; T036 supplies the lower bound that the drift read actually ran.
+
+- [ ] T036 [P] [US5] (spec US5-S3, FR-017, trap 21) **The control that decides
+      whether this story is a fix or a regression.** Run one scheduling pass with
+      the roadmap's landed read scripted to report a `ready` spec as landed and
+      its drift read scripted to report a changed fingerprint, and assert the
+      spec **is** in the dispatchable list, that it is cloned, onboarded and
+      dispatched exactly as today, and — the part no other scenario here can
+      state — that the drift read was **executed** for that spec. Inside the
+      roadmap `drifted_for` is always supplied
+      (`factory/roadmap/workflow.py:854` and `factory/roadmap/workflow.py:690`),
+      so `self._drift.get(spec_dir, False)` answers False whether the read ran or
+      not: without this positive bound, a US3 that widens the landed read alone
+      passes T023 through T029 and stops the floor rebuilding an amended spec.
+
+- [ ] T037 [P] [US5] (spec US5-S4, FR-009, trap 19) **The control on the bound.**
+      Given a spec whose frontmatter reads `landed` and one of whose stories'
+      fingerprints has changed, assert the pass and the `roadmap_status` query
+      both still report it drifted and rendering `amended`, exactly as today. The
+      drift read is widened, never narrowed: the bound at
+      `factory/roadmap/workflow.py:1508` must go on covering every `landed`
+      entry, and 102 of this corpus's 141 specs are `landed`.
+
+### Implementation for this story
+
+- [ ] T030 [US5] (FR-012, traps 8 and 9) In
+      `factory/activities/roadmap_activities.py`, add the landed read as an
+      `async def` activity mirroring
+      `factory/activities/roadmap_activities.py:496` — `drift_for_spec`: an input
+      record beside `factory/activities/roadmap_activities.py:482` — `DriftInput`,
+      a module-level scripted seam beside
+      `factory/activities/roadmap_activities.py:491` so scheduler tests need no
+      real clone, and the blocking git work behind `asyncio.to_thread` as
+      `factory/activities/roadmap_activities.py:512` — `_drift_from_git` does.
+      Register it at `factory/worker.py:192`; unregistered, every scheduled tick
+      fails and it reads as a Temporal problem.
+
 
 ## Verification
 

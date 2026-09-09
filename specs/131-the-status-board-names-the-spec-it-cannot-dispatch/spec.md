@@ -556,39 +556,21 @@ then flip the drift answer and read them again.
 1. **Given** a spec whose frontmatter reads `ready`, whose every story is
    observed landed, and whose supplied drift answer reports no changed
    fingerprint, **When** readiness is computed, **Then** it is not dispatchable.
+
 2. **Given** the same spec, **When** the `ergane status specs` queue entry is
    built, **Then** its state is a third word, distinct from both `ready` and
    `landed`, because the operator's outstanding act is attestation and printing
    `landed` would assert an attestation nobody made.
+
 3. **Given** the same spec and no unsatisfied dependency, **When** the human queue
    line is built, **Then** the line carries that third state and the words
    `awaiting attestation` in place of the word `dispatchable`, because the word
    follows the computed flag rather than the absence of blockers, and the
    operator's outstanding act belongs on the line.
+
 4. **Given** a spec whose frontmatter reads `ready` and some of whose stories have
    **not** landed, **When** readiness is computed, **Then** it is dispatchable and
    its rendered state is `ready`, exactly as today.
-5. **Given** readiness computation, **When** it runs, **Then** it performs no git
-   read of its own and reaches the landed fact and the drift fact only through
-   the injected resolvers — proven by a committed test that supplies both facts
-   and no repository.
-6. **Given** a spec whose frontmatter reads `ready` and whose every story is
-   observed landed, but whose supplied drift answer reports a changed
-   fingerprint, **When** readiness is computed, **Then** it is dispatchable and
-   its rendered state is `ready`, exactly as today, because an amended spec the
-   operator flipped back to `ready` has real work the delta will re-open —
-   proven by a committed test.
-7. **Given** that same landed spec and no drift resolver supplied at all,
-   **When** readiness is computed, **Then** it is dispatchable and renders
-   `ready`, because an answer nobody gave is not a negative answer — proven by a
-   committed test that passes no `drifted_for`.
-8. **Given** `ergane status specs` reading a repository, **When** its readiness
-   basis is assembled, **Then** it supplies a drift resolver that compares each
-   story's fingerprint pinned at its landing commit against the fingerprint of
-   the spec text on disk, asks git without fetching, and is consulted only for a
-   `ready` spec its landed read already reported landed — proven by a committed
-   test.
-
 ### User Story 3 - The roadmap stops paying for a spec it will never dispatch (Priority: P3)
 
 As an operator, a built-but-unattested spec does not cost a clone and an onboard
@@ -609,47 +591,114 @@ answer not-drifted, count the activities executed for that spec, and query
    roadmap's own landed read reports as landed, **When** the scheduling pass
    builds its dispatchable list, **Then** that spec is absent from it and neither
    `clone_target` nor `onboard_target` is executed on its account.
+
 2. **Given** the same pass has run, **When** the `roadmap_status` query answers —
    which calls `compute_readiness` a second time, at
    `factory/roadmap/workflow.py:687`, not the pass's call at
    `factory/roadmap/workflow.py:851` — **Then** it reports for that spec the same
    `rendered_state` and the same `dispatchable` flag the pass computed, so the
    two answers cannot disagree about why nothing happened.
+
 3. **Given** a spec with genuine outstanding work, **When** the pass runs, **Then**
    it is cloned, onboarded and dispatched exactly as today.
+
 4. **Given** a spec whose delta is empty for some other reason, **When** it is
    dispatched, **Then** the zero-node refusal at
    `factory/roadmap/workflow.py:1269` still parks it with the same detail, because
    this story adds an earlier guard and does not replace the backstop.
-5. **Given** the roadmap's landed read, **When** the activity runs, **Then** the
-   git work is performed off the event loop, in the same split
-   `factory/activities/roadmap_activities.py:512` — `_drift_from_git` makes —
-   proven by a committed test.
-6. **Given** a `ready` spec whose `depends_on_landed` names a spec that is built
+
+5. **Given** a `ready` spec whose `depends_on_landed` names a spec that is built
    but unattested, **When** the scheduling pass computes readiness, **Then** the
    dependent is dispatchable rather than blocked on that edge, because the
    roadmap now satisfies it from the same landed answer `ergane status specs`
    already uses — proven by a committed test that scripts the dependency's
    landed read.
-7. **Given** a corpus of specs in every declared state, **When** the pass runs,
+
+### User Story 4 - Readiness reaches its facts only through the resolvers it is given (Priority: P2)
+
+As an operator, the predicate that decides whether a spec is dispatchable asks
+nobody on its own — it is handed the landed fact and the drift fact — and an
+amended spec I flipped back to `ready` is still dispatchable.
+
+**Why this priority**: P2, and it is the second half of US2, split out on
+2026-09-08 because the pair ran to thirteen tasks and no story above eleven has
+landed on this floor. US2 makes a built spec render as built; this story is the
+contract that keeps that predicate honest — no git read of its own, drift means
+dispatchable, and an answer nobody gave is not a negative answer. It merges after
+US2 and before US3, which consumes the finished predicate.
+
+**Independent Test**: Compute readiness with both facts supplied and no
+repository; then with a drift answer reporting a changed fingerprint; then with
+no drift resolver supplied at all, and read the flag each time.
+
+**Acceptance Scenarios**:
+
+1. **Given** readiness computation, **When** it runs, **Then** it performs no git
+   read of its own and reaches the landed fact and the drift fact only through
+   the injected resolvers — proven by a committed test that supplies both facts
+   and no repository.
+
+2. **Given** a spec whose frontmatter reads `ready` and whose every story is
+   observed landed, but whose supplied drift answer reports a changed
+   fingerprint, **When** readiness is computed, **Then** it is dispatchable and
+   its rendered state is `ready`, exactly as today, because an amended spec the
+   operator flipped back to `ready` has real work the delta will re-open —
+   proven by a committed test.
+
+3. **Given** that same landed spec and no drift resolver supplied at all,
+   **When** readiness is computed, **Then** it is dispatchable and renders
+   `ready`, because an answer nobody gave is not a negative answer — proven by a
+   committed test that passes no `drifted_for`.
+
+4. **Given** `ergane status specs` reading a repository, **When** its readiness
+   basis is assembled, **Then** it supplies a drift resolver that compares each
+   story's fingerprint pinned at its landing commit against the fingerprint of
+   the spec text on disk, asks git without fetching, and is consulted only for a
+   `ready` spec its landed read already reported landed — proven by a committed
+   test.
+### User Story 5 - The drift read is bounded, and paid for once (Priority: P3)
+
+As an operator, the read that decides a spec is finished costs one bounded git
+question per spec per pass, not a clone, and the activity that answers it is the
+only place that asks.
+
+**Why this priority**: P3, and it is the second half of US3, split out on
+2026-09-08 for the same reason — thirteen tasks. US3 stops the roadmap
+dispatching a built spec; this story is the cost discipline around the read that
+lets it decide, and the controls that keep a future widening from turning one
+bounded question back into a clone. It merges last because it constrains code US3
+writes.
+
+**Independent Test**: Run one scheduling pass and count the activities executed
+for the spec, and assert the bound on what the drift read may ask.
+
+**Acceptance Scenarios**:
+
+1. **Given** the roadmap's landed read, **When** the activity runs, **Then** the
+   git work is performed off the event loop, in the same split
+   `factory/activities/roadmap_activities.py:512` — `_drift_from_git` makes —
+   proven by a committed test.
+
+2. **Given** a corpus of specs in every declared state, **When** the pass runs,
    **Then** the roadmap's landed read is executed only for the entries whose
    declared state is `ready`, as
    `factory/roadmap/workflow.py:1508` — `RoadmapWorkflow._compute_drift` already
    restricts its own read to `landed` — proven by a committed test that counts
    the activity calls.
-8. **Given** a `ready` spec whose every story the roadmap's own landed read
+
+3. **Given** a `ready` spec whose every story the roadmap's own landed read
    reports as landed but whose own drift read reports a changed fingerprint,
    **When** the scheduling pass builds its dispatchable list, **Then** the spec
    is in it and is cloned, onboarded and dispatched exactly as today, **and**
    the roadmap's drift read was executed for that spec rather than defaulted —
    proven by a committed test that scripts both reads and asserts the drift
    activity ran for it.
-9. **Given** a spec whose frontmatter reads `landed` and one of whose stories'
+
+4. **Given** a spec whose frontmatter reads `landed` and one of whose stories'
    fingerprints has changed, **When** the pass runs and the `roadmap_status`
    query answers, **Then** it is reported drifted and renders `amended`, exactly
    as it does today, because the drift read is widened and never narrowed —
    proven by a committed test.
-
 ## Functional Requirements
 
 - **FR-001**: `ergane status specs` MUST name each parked spec directory, with the
@@ -753,12 +802,26 @@ US1:
 US2:
   depends_on: []
   concurrent_with: [US1]
-  implements: [FR-005, FR-006, FR-007, FR-008, FR-011, FR-015, FR-016]
-US3:
+  implements: [FR-005, FR-006, FR-007, FR-011]
+US4:
   depends_on: []
   depends_on_merged: [US2]
-  implements: [FR-009, FR-010, FR-012, FR-014, FR-017]
+  implements: [FR-008, FR-015, FR-016]
+US3:
+  depends_on: []
+  depends_on_merged: [US4]
+  implements: [FR-009, FR-010, FR-014]
+US5:
+  depends_on: []
+  depends_on_merged: [US3]
+  implements: [FR-012, FR-017]
 ```
+
+**The 2026-09-08 split.** US2 and US3 each ran to thirteen tasks, above anything
+that has landed on this floor, so each was cut in two: US2 -> US2 + **US4**, and
+US3 -> US3 + **US5**. The new numbers are labels appended at the end; the edges
+are the order, and they read US2 -> US4 -> US3 -> US5, with US1 concurrent. What
+previously waited on the whole of US2 now waits on US4.
 
 US1 and US2 both edit `factory/cli/status.py`, and the `concurrent_with` on US2 is
 the author's declaration that they may race anyway (069-US2 FR-007): US1 works on
