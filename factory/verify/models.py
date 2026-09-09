@@ -45,7 +45,7 @@ import re
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from functools import lru_cache
-from typing import Sequence
+from typing import Mapping, Sequence
 
 # Imported for real, not named in a string. `EscalationRecord.check_evidence`
 # used to annotate `tuple["factory.mergequeue.models.CheckFailure", ...]` in a
@@ -1180,6 +1180,41 @@ def loop_summary(
     judge = "judge present" if "judge" in verify_order else "no judge"
     gates = ", ".join(gate_names) if gate_names else "no gates"
     return f"schema v{schema_version}; gates [{gates}]; order [{steps}]; {ladder}; {judge}"
+
+
+def gate_watchdog_basis(
+    gate_names: Sequence[str],
+    declared_timeouts: Mapping[str, int],
+    default_timeout_s: int,
+) -> int:
+    """The widest effective deadline the declared gates give a gate, in seconds.
+
+    One gate's own deadline is `_resolve_timeout`'s question (163's incident:
+    the manifest reached the subprocess, dispatch pinned the default anyway);
+    this is the *verification activity's* question, and it is the largest of
+    the effective deadlines — the runner's per-gate resolution, folded across
+    every gate the manifest declares, so the activity's heartbeat can outlast
+    the slowest window the manifest declared. Both dispatch readers pin it into
+    `EpicInput.config.gate_timeout_s` at dispatch; the field's default is the
+    deployment knob `VerificationConfig.gate_timeout_s`, unchanged (FR-003).
+
+    The default participates only where the runner would fall back to it: for a
+    gate whose deadline the manifest omitted, and for no gates at all. A
+    manifest whose every declared gate names its own shorter window is not
+    silently raised to the default — the runner would honour each one, and the
+    widest of them is what the epic's verification must outlast. Timeouts for
+    gates the manifest does not declare are refused by the parser before this
+    read, so the names scanned here are exactly the gates that will run.
+
+    Pure, over the parsed manifest's own data, so both dispatch paths share one
+    derivation and neither re-derives it (FR-002). Lives beside the loop
+    helpers rather than in `factory_yaml` or `gates`: both import this module,
+    and neither is imported by it.
+    """
+    effective = [
+        declared_timeouts.get(name, default_timeout_s) for name in gate_names
+    ]
+    return max(effective) if effective else default_timeout_s
 
 
 # Ladder entities (pure) -----------------------------------------------------

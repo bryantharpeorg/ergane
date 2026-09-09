@@ -339,12 +339,26 @@ async def _captured_epic_input(
 
 
 def _manifest_text(*, version: int, timeouts: dict[str, int]) -> str:
+    """One manifest's text, declaring every gate its timeouts name.
+
+    The parser refuses a timeout for a gate the manifest does not declare, so a
+    matrix row naming `lint` or `typecheck` declares those gates beside it —
+    the parser's own validation is part of the shape under test, never worked
+    around (163 plan trap 3).
+    """
+    commands = {
+        "test": "uv run pytest -q",
+        "lint": "echo lint",
+        "typecheck": "echo typecheck",
+    }
     body = [
         f"version: {version}",
         "runtime: bwrap",
         "gates:",
-        "  test: uv run pytest -q",
     ]
+    declared = ["test"] + [n for n in timeouts if n != "test"]
+    for name in declared:
+        body.append(f"  {name}: {commands[name]}")
     if timeouts:
         body.append("timeouts:")
         for name, seconds in timeouts.items():
