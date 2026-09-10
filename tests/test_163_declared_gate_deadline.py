@@ -778,10 +778,28 @@ async def _roadmap_child_input(
         "tree_revision": getattr(roadmap_activities, "_tree_revision_runner", None),
         "aliases": roadmap_activities.check_aliases,
         "preflight_aliases": preflight_module.check_aliases,
+        # `RoadmapWorld.restore` *deletes* a runner seam whose pre-world value
+        # was None, so "absent" is a state a prior test can leave the module
+        # in. Distinguish it from None here, and put it back exactly as found.
+        "tree_revision_present": hasattr(
+            roadmap_activities, "_tree_revision_runner"
+        ),
+        "read_loop_config_present": hasattr(
+            roadmap_activities, "_read_loop_config_runner"
+        ),
+        "read_loop_config": getattr(
+            roadmap_activities, "_read_loop_config_runner", None
+        ),
     }
     roadmap_activities._clone_runner = lambda _: _clone_answer(str(target))
     roadmap_activities._derive_runner = _derive_runner
     roadmap_activities._drift_runner = lambda request: False
+    # The module attribute, not its value, is the seam's presence: the activity
+    # reads the module global at call time, so a prior test's restore that
+    # deleted it (no pre-world value) would NameError the read mid-flight.
+    # Ensure it exists — None is "no runner, read the manifest for real" —
+    # before this run sets its own answer beside it.
+    roadmap_activities._read_loop_config_runner = None
     roadmap_activities._tree_revision_runner = lambda _: HARNESS_REVISION
     roadmap_activities._preflight_registry = lambda: {}
     roadmap_activities._preflight_client = _preflight_client_answer
@@ -857,13 +875,24 @@ async def _roadmap_child_input(
         roadmap_activities._open_epics_provider = saved["open_epics"]
         roadmap_activities.check_aliases = saved["aliases"]
         preflight_module.check_aliases = saved["preflight_aliases"]
-        if saved["tree_revision"] is not None:
-            roadmap_activities._tree_revision_runner = saved["tree_revision"]
-        else:
+        if not saved["tree_revision_present"]:
             try:
                 delattr(roadmap_activities, "_tree_revision_runner")
             except AttributeError:
                 pass
+        elif saved["tree_revision"] is not None:
+            roadmap_activities._tree_revision_runner = saved["tree_revision"]
+        else:
+            roadmap_activities._tree_revision_runner = None
+        if not saved["read_loop_config_present"]:
+            try:
+                delattr(roadmap_activities, "_read_loop_config_runner")
+            except AttributeError:
+                pass
+        else:
+            roadmap_activities._read_loop_config_runner = saved.get(
+                "read_loop_config", None
+            )
         _SCRIPT.statuses = {}
         _SCRIPT.on_dispatch = None
         _SCRIPT.on_complete = None
