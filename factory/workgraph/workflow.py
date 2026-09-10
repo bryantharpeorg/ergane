@@ -114,6 +114,7 @@ from temporalio.exceptions import (
     ActivityError,
     ApplicationError,
     TimeoutError as ActivityTimeoutError,
+    TimeoutType,
 )
 
 with workflow.unsafe.imports_passed_through():
@@ -491,6 +492,17 @@ _ADAPTER_GRACE_S = 120
 _AGENT_HEARTBEAT_TIMEOUT_FLOOR = timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
 _AGENT_HEARTBEAT_TIMEOUT_CEILING = timedelta(seconds=120)
 
+#: How long Temporal may hold a scheduled `run_agent_attempt` before reporting
+#: that no worker accepted it. This is a dedicated-queue availability bound,
+#: not a work deadline: the same value applies to a twelve-second and a
+#: four-hour attempt. Temporal says this option is for worker-specific task
+#: queues, which is exactly this deployment — one `build_worker` serves the
+#: `workgraph` queue, so a restart, outage or retirement can leave a task
+#: accepted by nobody. The expiry is non-retryable at the server, so this is
+#: deliberately well past a ten-second unit restart and the ordinary minutes
+#: an operator needs to stop, land, and restart; a shorter bound would turn a
+#: routine restart into a launch fault.
+_AGENT_SCHEDULE_TO_START_TIMEOUT = timedelta(minutes=45)
 
 def _agent_heartbeat_timeout(timeout_s: float) -> timedelta:
     """Heartbeat timeout for one attempt: half its deadline, within both bounds.
@@ -531,6 +543,35 @@ def _failure_detail(exc: BaseException) -> str:
             detail = text
         cause = cause.__cause__
     return detail
+
+
+# The two workflow-internal faults that reach `_LaunchFailed`, named so one
+# reason producer can tell an adapter that could not fork the agent from a
+# scheduled task that no worker accepted.
+_AGENT_LAUNCH_FAULT = AGENT_LAUNCH_FAILED
+_NO_AGENT_STARTED = "NO_AGENT_STARTED"
+
+
+def _launch_failed_reason(exc: _LaunchFailed, failures: int) -> str:
+    """One operator-facing reason for the two pre-first-token endings."""
+    if exc.fault == _NO_AGENT_STARTED:
+        return (
+            f"launch failed {failures} time(s) "
+            f"({_NO_AGENT_STARTED}: schedule-to-start timeout): {exc}"
+        )
+    return (
+        f"launch failed {failures} time(s) "
+        f"({_AGENT_LAUNCH_FAULT}): {exc}"
+    )
+
+
+def _launch_failed_summary(exc: _LaunchFailed, failures: int) -> str:
+    """The same reason, expanded with the evidence the operator needs."""
+    return (
+        f"{_launch_failed_reason(exc, failures).capitalize()}\n\n"
+        f"The agent could not be started after {failures} attempt(s). No node "
+        f"attempt was recorded and no ordinary attempt was consumed."
+    )
 
 
 @dataclass(frozen=True)
@@ -752,6 +793,12 @@ class _LaunchFailed(Exception):
     is a workflow-internal signal, not an activity error to propagate: it tells
     `_run_node` to treat the node as launch-failed, outside the ordinary ladder.
     """
+
+    fault: str = _AGENT_LAUNCH_FAULT
+
+    def __init__(self, message: str, *, fault: str) -> None:
+        super().__init__(message)
+        self.fault = fault
 
 
 # 082-US1: an epic finishes on the code it started with. PINNED means every
@@ -2269,19 +2316,15 @@ class EpicWorkflow:
                 # Exceeding the bound ends the node rather than looping forever.
                 if record.launch_failures >= request.config.max_launch_retries:
                     action = NextAction.KILLED
-                    record.terminal_reason = (
-                        f"launch failed {record.launch_failures} time(s) "
-                        f"(AGENT_LAUNCH_FAILED): {exc}"
+                    record.terminal_reason = _launch_failed_reason(
+                        exc, record.launch_failures
                     )
                     # FR-006: surface the launch failure as an operator-facing
                     # condition at the time it happens, not after the ladder exhausts.
                     # The escalation history names the launch fault and carries no
                     # verification results, because no attempt ever ran.
-                    launch_summary = (
-                        f"Agent launch failure (AGENT_LAUNCH_FAILED): {exc}\n\n"
-                        f"The agent could not be started after "
-                        f"{record.launch_failures} attempt(s). No node attempt "
-                        f"was recorded and no ordinary attempt was consumed."
+                    launch_summary = _launch_failed_summary(
+                        exc, record.launch_failures
                     )
                     escalation = await self._escalate(
                         graph,
@@ -2477,6 +2520,7 @@ class EpicWorkflow:
             start_to_close_timeout=timedelta(
                 seconds=context.timeout_s + _ADAPTER_GRACE_S
             ),
+            schedule_to_start_timeout=_AGENT_SCHEDULE_TO_START_TIMEOUT,
             heartbeat_timeout=_agent_heartbeat_timeout(context.timeout_s),
             retry_policy=_AGENT_RETRIES,
         )
@@ -2504,7 +2548,9 @@ class EpicWorkflow:
                 isinstance(cause, ApplicationError)
                 and cause.type == AGENT_LAUNCH_FAILED
             ):
-                raise _LaunchFailed(cause.message) from exc
+                raise _LaunchFailed(
+                    cause.message, fault=_AGENT_LAUNCH_FAULT
+                ) from exc
             return self._attempt_timeout(record, exc)
         record.last_snapshot = result.last_snapshot
         return result
@@ -2526,16 +2572,32 @@ class EpicWorkflow:
         timeout = exc.cause
         snapshot: UsageSnapshot | None = None
         if isinstance(timeout, ActivityTimeoutError):
-            details = list(timeout.last_heartbeat_details)
-            if details and isinstance(details[0], dict):
-                # The heartbeat payload round-trips as a dict on the workflow
-                # side, not as the dataclass (the activity encoded it, the
-                # workflow decodes to the JSON shape).
-                payload = details[0]
-                snapshot = UsageSnapshot(
-                    spend_usd=payload["spend_usd"],
-                    captured_at=payload["captured_at"],
-                )
+            candidates = [timeout]
+            current = timeout.__cause__
+            for _ in range(_CAUSE_DEPTH):
+                if current is None:
+                    break
+                if isinstance(current, ActivityTimeoutError):
+                    candidates.append(current)
+                current = current.__cause__
+            for candidate in candidates:
+                details = list(candidate.last_heartbeat_details)
+                if details and isinstance(details[0], dict):
+                    # The heartbeat payload round-trips as a dict on the workflow
+                    # side, not as the dataclass (the activity encoded it, the
+                    # workflow decodes to the JSON shape). Temporal can retain it
+                    # either on the retry timeout itself or beneath its cause.
+                    payload = details[0]
+                    snapshot = UsageSnapshot(
+                        spend_usd=payload["spend_usd"],
+                        captured_at=payload["captured_at"],
+                    )
+                    break
+            if snapshot is None and timeout.type == TimeoutType.SCHEDULE_TO_START:
+                raise _LaunchFailed(
+                    "no worker accepted the scheduled attempt",
+                    fault=_NO_AGENT_STARTED,
+                ) from exc
         record.last_snapshot = snapshot
         # No transcript: the worker died before the adapter could archive one,
         # so `transcript_path` stays its empty default rather than this module
@@ -4051,6 +4113,10 @@ class EpicWorkflow:
         )
         record.last_snapshot = None
 
+        # Bound before the bracket so a raise out of `_attempt` still reaches
+        # the finally with a defined key ending instead of becoming an
+        # `UnboundLocalError` that leaks the lease.
+        termination = Termination.KILLED
         try:
             adapter_result = await self._attempt(
                 record,
@@ -4108,6 +4174,12 @@ class EpicWorkflow:
                 )
             )
             return result if result.verdict == OverallVerdict.PASS else None
+        except _LaunchFailed:
+            # A task nobody accepted produced no result and no attempt. Return
+            # `None` like every other failed recovery cycle so its caller
+            # escalates the landing normally rather than letting the raise
+            # escape to the reaper.
+            return None
         finally:
             # The recovery key is closed on every exit, raise included, exactly
             # once per lease (FR-007/FR-008).
