@@ -679,6 +679,7 @@ async def _run_roadmap(
             roadmap_activities.clone_target,
             roadmap_activities.derive_spec,
             roadmap_activities.drift_for_spec,
+            roadmap_activities.landed_for_spec,
             roadmap_activities.preflight_spec,
             roadmap_activities.onboard_target,
             roadmap_activities.count_open_epics,

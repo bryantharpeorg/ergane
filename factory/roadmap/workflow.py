@@ -92,6 +92,7 @@ with workflow.unsafe.imports_passed_through():
         CountOpenInput,
         DeriveInput,
         DriftInput,
+        LandedInput,
         OnboardInput,
         PreflightInput,
         ReadLoopConfigInput,
@@ -100,6 +101,7 @@ with workflow.unsafe.imports_passed_through():
         count_open_epics,
         derive_spec,
         drift_for_spec,
+        landed_for_spec,
         onboard_target,
         preflight_spec,
         read_loop_config,
@@ -641,6 +643,10 @@ class RoadmapWorkflow:
         #: US4 drift cache: spec_dir -> bool, refreshed each pass so the
         #: `roadmap_status` query can report drift without executing activities.
         self._drift: dict[str, bool] = {}
+        #: US3's roadmap-owned landed cache: spec_dir -> LandedStatus. It is
+        #: refreshed once per pass, only for ready specs, and serves both the
+        #: dispatch loop and the read-only status query from the same answer.
+        self._computed_landed: dict[str, LandedStatus] = {}
         #: US3 operator surface (FR-008). `pause_roadmap` parks dispatch
         #: between epics — the in-flight child finishes (the epic pause
         #: contract, one level up); `promote_spec` records a draft the
@@ -747,9 +753,9 @@ class RoadmapWorkflow:
                 paused=self._paused,
             )
         # The query is read-only and runs without a request in scope, so it
-        # cannot execute activities. It reports the drift computed on the last
-        # scheduling pass (cached in `self._drift`) so the operator sees the same
-        # `amended` state the dispatch loop saw (FR-009).
+        # cannot execute activities. It reports the landed and drift answers
+        # computed on the last scheduling pass so the operator sees the same
+        # built state the dispatch loop saw (FR-009, FR-014).
         readiness = compute_readiness(
             roadmap,
             landed_for=self._observed_resolver(),
@@ -770,6 +776,8 @@ class RoadmapWorkflow:
             # itself, so an attested-landed spec reports `landed=True` with
             # `landed_kind=ATTESTED` and an observed one reports `OBSERVED`.
             own = self._landed.get(entry.spec_dir)
+            if own is None:
+                own = self._computed_landed.get(entry.spec_dir)
             if own is not None:
                 # Observed facts are the stronger signal (FR-003). A child that
                 # completed without landing is reported finished-but-not-landed
@@ -911,8 +919,11 @@ class RoadmapWorkflow:
             self._roadmap = self._apply_promotions(self._roadmap)
             # US4: drift is read-only and repo-authoritative, but `compute_readiness`
             # is a pure synchronous function, so the async drift activity is awaited
-            # here and the boolean result is injected (FR-009). The same map is cached
-            # for the `roadmap_status` query.
+            # here and the boolean result is injected (FR-009). The same maps are
+            # cached for the `roadmap_status` query. The landed read precedes the
+            # widened drift gate, because that gate asks which ready specs the
+            # landed read reported landed.
+            self._computed_landed = await self._compute_landed(request)
             self._drift = await self._compute_drift(request)
             readiness = compute_readiness(
                 self._roadmap,
@@ -1448,7 +1459,9 @@ class RoadmapWorkflow:
         """
 
         def resolve(spec_dir: str) -> LandedStatus | None:
-            return self._landed.get(spec_dir)
+            if spec_dir in self._landed:
+                return self._landed[spec_dir]
+            return self._computed_landed.get(spec_dir)
 
         return resolve
 
@@ -1476,7 +1489,13 @@ class RoadmapWorkflow:
             entry = next(
                 (e for e in self._roadmap.entries if e.spec_dir == spec_dir), None
             )
-            if entry is None or entry.state is not SpecState.LANDED:
+            landed_answer = self._computed_landed.get(spec_dir)
+            covers = entry.state is SpecState.LANDED or (
+                entry.state is SpecState.READY
+                and landed_answer is not None
+                and landed_answer.landed
+            )
+            if entry is None or not covers:
                 cached[spec_dir] = False
                 return False
             spec_text = await self._spec_text(request.specs_root, spec_dir)
@@ -1510,17 +1529,62 @@ class RoadmapWorkflow:
 
         Drift is repo-authoritative and read-only: `drift_for_spec` shells git in an
         activity, so workflow code awaits the boolean result and injects it into the
-        synchronous `compute_readiness` (FR-009). Only `state: landed` specs can drift;
-        every other spec is reported as not drifted.
+        synchronous `compute_readiness` (FR-009). Every `landed` entry keeps its
+        drift read, and a ready entry the landed read reported landed is added to
+        that same bound; no other entry is read.
         """
         if self._roadmap is None:
             return {}
         drift: dict[str, bool] = {}
         resolver = self._drift_resolver(request)
         for entry in self._roadmap.entries:
-            if entry.state is SpecState.LANDED:
+            landed_answer = self._computed_landed.get(entry.spec_dir)
+            if entry.state is SpecState.LANDED or (
+                entry.state is SpecState.READY
+                and landed_answer is not None
+                and landed_answer.landed
+            ):
                 drift[entry.spec_dir] = await resolver(entry.spec_dir)
         return drift
+
+    async def _compute_landed(
+        self, request: RoadmapInput
+    ) -> dict[str, LandedStatus | None]:
+        """Refresh the roadmap's observed-landed cache for ready specs only.
+
+        This is the roadmap's own answer to the same question `ergane status
+        specs` asks from landing history. It is deliberately bounded to ready
+        entries: a landed read for every spec would add a git scan per spec per
+        pass, while the facts a child observed this run are already held in
+        `_landed`. The query consumes this cache; it never executes activities.
+        """
+        if self._roadmap is None:
+            return {}
+        landed: dict[str, LandedStatus] = {}
+        for entry in self._roadmap.entries:
+            if entry.state is not SpecState.READY or entry.spec_dir in self._landed:
+                continue
+            spec_text = await self._spec_text(request.specs_root, entry.spec_dir)
+            try:
+                landed[entry.spec_dir] = await workflow.execute_activity(
+                    landed_for_spec,
+                    LandedInput(
+                        target_repo=request.target_repo,
+                        spec_dir=entry.spec_dir,
+                        spec_text=spec_text,
+                    ),
+                    **_FAST,
+                )
+            except FailureError as exc:
+                # A failed read is doubt, not a negative answer: fall through to
+                # attestation and let the existing failure channel say why.
+                failure_text = self._roadmap_failure_message(exc)
+                await self._report_roadmap_failure(
+                    request,
+                    f"landed_for_spec({entry.spec_dir}) failed: {failure_text}",
+                )
+                landed[entry.spec_dir] = None
+        return landed
 
     @staticmethod
     def _landed_status_for(status: EpicStatus) -> LandedStatus:

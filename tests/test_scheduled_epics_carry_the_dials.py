@@ -105,6 +105,7 @@ def _worker(
         count_open_epics,
         derive_spec,
         drift_for_spec,
+        landed_for_spec,
         onboard_target,
         preflight_spec,
         read_loop_config,
@@ -120,6 +121,7 @@ def _worker(
             clone_target,
             derive_spec,
             drift_for_spec,
+            landed_for_spec,
             preflight_spec,
             onboard_target,
             count_open_epics,
@@ -643,4 +645,3 @@ def test_an_impossible_dial_is_refused_at_the_roadmap_command(
 # `poll_interval_s` or `idle_rescan_s` either, so *every* operator overlay on a
 # roadmap reaches it through `ergane roadmap start` today. Moving them onto the
 # manifest is a manifest change (`RoadmapDials`), which US2 does not make.
-

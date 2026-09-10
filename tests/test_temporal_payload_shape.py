@@ -416,6 +416,11 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.activities.roadmap_activities.DriftInput": (
         "target_repo", "spec_dir", "spec_text"
     ),
+    # 131-US3: kind 1 — the target repo and spec dir address the landing
+    # history, and the spec text is the record's substance.
+    "factory.activities.roadmap_activities.LandedInput": (
+        "target_repo", "spec_dir", "spec_text"
+    ),
     "factory.activities.roadmap_activities.OnboardInput": ("target_repo", "spec_dir",),
     "factory.activities.roadmap_activities.PreflightInput": (
         "graph", "proxy_url", "spec_dir"
