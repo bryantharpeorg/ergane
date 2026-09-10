@@ -136,3 +136,17 @@ def test_a_pending_activity_state_changes_the_node_line() -> None:
 
     assert scheduled != started
     assert "SCHEDULED" in scheduled
+
+
+def test_a_live_figure_is_printed_with_the_time_it_was_measured() -> None:
+    """US2-S3/FR-010: retained spend is dated, not mistaken for a fresh read."""
+    figure = _live("STARTED")[NODE]
+    figure["spend_usd"] = SNAPSHOT.spend_usd
+    figure["captured_at"] = CAPTURED_AT
+
+    line = render_status(
+        "epic-us2", _document(), "RUNNING", live_spend={NODE: figure}
+    ).splitlines()[-1]
+
+    assert f"${SNAPSHOT.spend_usd:.2f}" in line
+    assert CAPTURED_AT in line
