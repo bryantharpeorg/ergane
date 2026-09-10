@@ -47,7 +47,7 @@ message from older node-home rollouts and startup-only failures.
 **Acceptance Scenarios**:
 
 1. **Given** a prior rollout exists and a new Codex launch fails before `thread.started`, **When** the new attempt is classified and archived, **Then** it says no current turn occurred and does not copy or cite the prior rollout as this attempt's evidence — proven by a persistent-home regression test.
-2. **Given** a fresh process emits only an error event and no agent message, **When** it exits, **Then** the raw stream is archived but `agent_took_a_turn` and final-message evidence remain false/absent — proven by a fixture process test.
+2. **Given** a fresh process emits startup bookkeeping, diagnostic items, and a fatal error but no model-authored activity, including a credential refusal after `thread.started` and `turn.started`, **When** it exits, **Then** the raw stream and protocol identity are archived but `agent_took_a_turn` and final-message evidence remain false/absent — proven by fixture process tests.
 3. **Given** a normal, timed-out, or cancelled process has started a current thread, **When** archival runs, **Then** stdout/stderr, JSONL, final message if any, thread id, termination, and attempt identity land in exactly this attempt's archive even when finalization is retried — proven by parameterized archive tests.
 4. **Given** existing neutral consumers and the Claude adapter, **When** Codex switches to JSONL, **Then** they continue receiving plain final-message evidence and the same `AdapterResult` contract rather than raw JSON events — proven by adapter conformance tests.
 5. **Given** valid stdout JSONL and ordinary stderr diagnostics interleaved in time, **When** host and bwrap backends launch Codex, **Then** only stdout feeds `codex-events.jsonl` and the decoder, stderr feeds `codex-stderr.log`, and Claude retains its existing combined-log policy — proven by production-backend launch tests.
@@ -64,7 +64,7 @@ agent messages from the current attempt.
 
 **Acceptance Scenarios**:
 
-1. **Given** a non-authentication nonzero exit whose reasoning or tool output quotes a historical 401 refusal, **When** classification runs, **Then** it remains an ordinary agent failure and retains all credential provenance — proven by quoted-marker controls.
+1. **Given** a non-authentication nonzero exit whose reasoning, tool output, or non-authentication fatal error body quotes a historical 401 refusal, **When** classification runs, **Then** it remains an ordinary agent failure and retains all credential provenance — proven by quoted-marker controls.
 2. **Given** a current fatal authentication event with surrounding diagnostics, **When** classification runs, **Then** it becomes the stable pre-agent authentication refusal once, with the typed event retained and no coding rung charged — proven by an actual-event fixture.
 3. **Given** an operator-question marker appears in reasoning, tool output, a test fixture, or an agent message that does not end with the marker contract, **When** question detection runs, **Then** the node does not park; only the current final agent message satisfying the landed marker grammar can ask — proven by controls for every item type.
 4. **Given** classification reconstructs an `AdapterResult`, **When** any failure class changes, **Then** every unrelated field, including existing session identity, credential source, usage, archive path, final message, and raw-event provenance, remains byte-equivalent and newly added fields are covered automatically — proven by a field-enumerating preservation test.
@@ -95,7 +95,7 @@ provenance and completeness, while dollar cost remains unavailable on subscripti
 - **FR-003**: Unknown or malformed events MUST remain in the raw archive and MUST NOT fabricate a turn, message, refusal, question, or usage value.
 - **FR-004**: Orchestration-facing event evidence MUST be redacted and bounded; raw events MUST remain host-local.
 - **FR-005**: Rollout files predating the current process MUST NOT count as current-attempt evidence or be copied as such.
-- **FR-006**: Error-only execution MUST NOT set `agent_took_a_turn` or fabricate a final message.
+- **FR-006**: Error-only execution MUST NOT set `agent_took_a_turn` or fabricate a final message; thread/turn startup bookkeeping and diagnostic error items alone MUST NOT prove model-authored activity.
 - **FR-007**: Normal, timeout, cancellation, and retry-finalization archives MUST retain exactly one current attempt identity.
 - **FR-008**: The neutral `AdapterResult` and Claude conformance MUST remain compatible.
 - **FR-009**: Authentication refusal classification MUST consume typed fatal current events, not substrings in combined output.

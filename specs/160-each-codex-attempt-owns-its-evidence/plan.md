@@ -11,6 +11,26 @@
 - `factory/activities/usage_activities.py:536` — `_record_for` currently writes subscription unknowns honestly.
 - Official source: https://learn.chatgpt.com/docs/non-interactive-mode . With `--json`, stdout is JSONL; documented events include thread/turn/item/error types, item subtypes, and turn usage. Plain mode reserves stdout for the final message.
 
+### Measured CLI contract, not an invented error schema
+
+[The installed-CLI qualification](../../docs/codex-jsonl-contract-qualification-2026-09-10.md)
+records Codex0.154.0 against a credential-free synthetic peer in an isolated
+network namespace. Use its measured shapes for offline fixtures. A401 or
+missing provider key still emits thread/turn starts without model-authored
+activity; an invalid provider configuration exits before any JSONL. Protocol
+startup and Ergane's `agent_took_a_turn` are distinct facts.
+
+The measured top-level error and matching `turn.failed.error` contain a
+`message`, not a separate numeric HTTP status. Normalize only recognized fatal
+message forms inside current typed error evidence; do not invent a required
+status field or search arbitrary text for401. A400 response can wrap a quoted
+401 inside its non-authentication error body. Preserve it as an ordinary
+failure. Diagnostic `item.completed`/`item.type=error` also occurs before the
+request and is not a fatal-auth event. A matching error/failed pair describes
+one failure, not two terminals, refusals, or spent attempts. Normal item events
+need not repeat the initial thread identifier; conflicting explicit identities
+remain invalid. Retain raw events locally, not in committed evidence.
+
 ## Proposed interfaces
 
 Add `factory/workgraph/codex_events.py` with a streaming decoder that accepts raw
@@ -80,6 +100,8 @@ derive dollar value from subscription tokens.
 12. **Claude is the conformance control.** No Claude event parser or question behavior changes.
 13. **Final-message output is a compatibility value.** Existing question and transcript consumers must never receive raw JSONL.
 14. **Stderr is not JSONL.** Both production backends currently combine it with stdout, so the invocation seam must change before decoding.
+15. **Protocol startup is not model activity.** A current thread/turn start can precede a local missing-key failure with zero HTTP requests; retain identity without setting `agent_took_a_turn`.
+16. **A typed error can quote another error.** A non-authentication fatal body containing401 remains non-authentication; recognizing the event family is necessary but not sufficient.
 
 ## Verification
 
