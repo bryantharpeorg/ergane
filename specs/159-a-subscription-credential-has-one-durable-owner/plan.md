@@ -1,5 +1,10 @@
 # Implementation Plan: a subscription credential has one durable owner
 
+Accounting interface refinement: 2026-09-10 against buildout
+`60943a0ce3cb618ff6cfb19fd0d2df7b85ce6466`, including landed PR487.
+The trio remains draft; implementation readiness and real-account/private-pilot
+holds are unchanged. Revalidate all seams against the eventual dispatch base.
+
 ## Current seams and official contract
 
 - `factory/workgraph/adapter.py:943` — `discover_codex_credential` checks existence and may fall back from `CODEX_HOME` to the operator's default home.
@@ -83,6 +88,17 @@ Generalize `CredentialStatus` by runner and route, then make install, preflight,
 and build status consume it. Stable status codes, not prose parsing, allow 112
 and 161 to reuse the result.
 
+Keep credential readiness separate from usage acquisition. PR487's
+`factory/usage/models.py:131` — `UsageRecord` already carries `usage_source`,
+`usage_status` and `cost_basis`; subscription teardown can retain measured tokens
+without a LiteLLM record. Reuse these fields and the supported source contract,
+including160's typed Codex evidence when landed, rather than infer unavailable
+tokens from gateway absence or add a second reader. Complete token totals do
+not certify optional cache/request dimensions. Render known partial subtotals
+with coverage, unknown metrics as unknown, and subscription dollars unavailable.
+Neither structural credential eligibility nor an actual login supplies usage
+measurements. Preserve Claude's existing acquisition and status behavior.
+
 ## Traps
 
 1. **Existence is not authenticity.** An API-key-shaped `auth.json` currently passes.
@@ -103,6 +119,7 @@ and 161 to reuse the result.
 16. **No account-backed run in this story.** Real qualification belongs to 161 after the private pilot is named.
 17. **Owner state is host-global, not target runtime.** Two targets must not manufacture independent owners for the same declared identity.
 18. **Filesystem identity can change.** Recheck ownership, mode, and symlinks at every admission.
+19. **No gateway row is not no subscription measurement.** Test complete, partial and absent runner evidence independently of auth readiness; preserve landed provenance and never manufacture a free monetary cost.
 
 ## Verification
 

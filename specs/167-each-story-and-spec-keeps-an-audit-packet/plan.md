@@ -1,6 +1,7 @@
 # Implementation Plan: each story and spec keeps an audit packet
 
-Drafted 2026-09-10 against buildout `a654fca272c34d017888f6dc9281b4654be8f469`.
+Refined 2026-09-10 against buildout `60943a0ce3cb618ff6cfb19fd0d2df7b85ce6466`,
+including the landed PR487 accounting interfaces.
 Spec134 artifact carriage and spec160 current-attempt usage are planned
 dependencies, not APIs claimed to exist at this revision. Re-read their landed
 interfaces and revalidate this trio before dispatch. Spec135 is coordinated
@@ -11,9 +12,11 @@ confirmation flag in a packet. The user approved the complete packet feature in
 ## Current mechanisms inspected
 
 - `factory/usage/models.py:72` — `KeyLease` and `factory/usage/models.py:131` — `UsageRecord`: no dispatch/invocation dimension; persona separates builder and judge but not repeated executions.
-- `factory/activities/usage_activities.py:237` — `key_alias_for`: four-part alias; the ledger upserts on it. Merely adding dispatch to a packet cannot recover an overwritten usage row.
-- `factory/activities/usage_activities.py:251` — `issue_attempt_key`: gateway, subscription and legacy direct branches; metadata and key recovery belong here, not in the report assembler.
-- `factory/activities/usage_activities.py:473` — `teardown_attempt` and `factory/activities/usage_activities.py:536` — `_record_for`: final usage acquisition and ledger write; preserve key revocation on all paths.
+- `factory/activities/usage_activities.py:238` — `key_alias_for`: four-part alias; the ledger upserts on it. Merely adding dispatch to a packet cannot recover an overwritten usage row.
+- `factory/activities/usage_activities.py:252` — `issue_attempt_key`: gateway, subscription and legacy direct branches; metadata and key recovery belong here, not in the report assembler.
+- `factory/activities/usage_activities.py:474` — `teardown_attempt` and `factory/activities/usage_activities.py:581` — `_record_for`: final usage acquisition and ledger write; preserve key revocation on all paths.
+- `factory/usage/ledger.py:427` — `_coverage`: read-only measured subtotals, missing/partial/legacy row coverage, sources and cost bases; these summaries do not establish invocation identity or completeness of optional metrics.
+- `factory/usage/runner.py:147` — `archive_execution_usage` and `factory/usage/runner.py:193` — `read_attempt_usage`: existing subscription archive acquisition, including cancellation. Spec160 replaces Codex's evidence source with its current typed contract; preserve the independent Claude behavior.
 - `factory/workgraph/workflow.py:578` — `EpicInput`: frozen execution configuration; packet policy must arrive through normal entry points, not be read from the host environment during replay.
 - `factory/workgraph/workflow.py:1794` — `EpicWorkflow._run_node`: launches, questions and attempt charging; a launch identity is not a ladder slot.
 - `factory/workgraph/workflow.py:2658` — `EpicWorkflow._verify`: phase verification persistence. Earlier failures can reach teardown without a verification result.
@@ -56,8 +59,17 @@ available authoritative request IDs/model/usage while available; missing source
 telemetry is explicit. Spec160 corroboration is consumed through its landed
 typed contract, not by rescanning raw CLI rollouts.
 
-Represent completeness per metric/source; the current aggregate can contain a
-partial sum even when its confirmation flag is true. Include observed-source
+Reuse `UsageRecord.usage_source`, `usage_status` and `cost_basis` from PR487;
+extend the existing provenance vocabulary rather than introduce synonymous
+fields. Its additive schema-v3 defaults leave historical rows explicitly legacy.
+Preserve read-only access to schema-v2 stores without migration, and test both
+legacy payload defaults and populated old rows. New invocation attribution must
+not assign a guessed dispatch to those rows or rewrite historical measurements.
+
+Represent completeness per metric/source. A new aggregate marked complete has
+complete token totals but may still have unknown cache or request counts; legacy
+confirmed rows can also contain missing token fields. Neither `usage_status`
+nor `final_usage_confirmed` certifies every packet dimension. Include observed-source
 coverage and unknown-contributor counts. Gateway ledger remains authoritative
 for money; retain raw legacy monetary evidence with its source and uncertainty,
 never rewrite historical zero/nonzero values in this story. CLI token evidence
