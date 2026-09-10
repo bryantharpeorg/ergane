@@ -83,3 +83,47 @@ def test_unchanged_owned_entries_are_removed_without_unrelated_loss(
     assert not manifest_path(home).exists()
     assert unrelated_file.read_text(encoding="utf-8") == "operator data\n"
     assert unrelated_empty.exists()
+
+
+def test_modified_canonical_and_retargeted_alias_entries_are_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = make_home(tmp_path, monkeypatch)
+    install()
+    canonical = home.root / CANONICAL_SKILLS_ROOT / "floor-status" / "SKILL.md"
+    alias = home.root / COMPATIBILITY_SKILLS_ROOT / "away-mode"
+    canonical.write_text("operator changed this\n", encoding="utf-8")
+    alias.unlink()
+    alias.symlink_to("../../operator/away-mode")
+    before = snapshot(home.root)
+    expected_manifest_digest = read_manifest(home)["entries"][str(
+        canonical.relative_to(home.root)
+    )]["digest"]
+
+    result = skills_teardown()
+
+    assert result.preserved == (
+        ".agents/skills/floor-status/SKILL.md",
+        ".claude/skills/away-mode",
+    )
+    after = snapshot(home.root)
+    canonical_relative = str(canonical.relative_to(home.root))
+    alias_relative = str(alias.relative_to(home.root))
+    assert after[canonical_relative] == before[canonical_relative]
+    assert after[alias_relative] == before[alias_relative]
+    assert after.keys() == {
+        canonical_relative,
+        alias_relative,
+        ".agents",
+        ".claude",
+        ".agents/skills",
+        ".agents/skills/floor-status",
+        ".claude/skills",
+    }
+    manifest = read_manifest(home)
+    assert set(manifest["entries"]) == {
+        ".agents/skills/floor-status/SKILL.md",
+        ".claude/skills/away-mode",
+    }
+    assert manifest["entries"][".agents/skills/floor-status/SKILL.md"]["digest"] == expected_manifest_digest
+    assert os.readlink(alias) == "../../operator/away-mode"
