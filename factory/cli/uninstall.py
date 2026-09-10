@@ -59,6 +59,14 @@ Two refusals are teardown's own, taken before the commands are:
   containment test against them, before any step acts, with no flag to override
   it. This *bounds* teardown; it does not close
   `install/restarting-the-worker-deletes-the-operator-cli`.
+
+**Skills have one narrow state-purge exception.** Their ownership manifest is read
+before the skill step acts. Exact digest matches and declared aliases are removed;
+modified files and retargeted aliases are kept, and the manifest is rewritten to
+explain only those kept paths. When that record survives, the later state step
+removes its sibling state but not the manifest or its parent directories. A
+missing manifest, an empty one, or one whose kept entries are all gone returns
+the step to the ordinary purge contract.
 """
 
 from __future__ import annotations
@@ -77,6 +85,11 @@ from typing import Any, Callable, Iterable, NoReturn, Sequence
 from temporalio.service import RPCError
 
 from factory import registry
+from factory.cli.skills import (
+    ManifestError,
+    perform_skills_teardown,
+    survey_skills_teardown,
+)
 from factory.cli.errors import EXIT_OK, EXIT_TRANSPORT, EXIT_USER, OperatorError
 from factory.cli.nouns import _open_client
 from factory.cli.repo import repo_forget_command
@@ -122,6 +135,7 @@ PAUSE_DISPATCH = "pause dispatch"
 FORGET_REPOSITORIES = "forget repositories"
 STOP_ENGINE_CONTAINER = "stop the engine container"
 STOP_AND_REMOVE_UNITS = "stop and remove units"
+SKILL_TEARDOWN = "skill teardown"
 CLEAR_STATE = "clear state"
 ACCOUNT_FOR_REFS = "account for git refs"
 
@@ -154,6 +168,9 @@ class TeardownRequest:
     #: the refs those repositories carry. `None` means "not read yet";
     #: `run_teardown` fills it in before the loop starts.
     repositories: tuple[Path, ...] | None = None
+    #: The skill manifest a prior step kept because modified entries remain.
+    #: `None` means no such exception is in force.
+    retained_skill_manifest: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -177,6 +194,7 @@ class StepSurvey:
     nothing_to_do: bool = False
     refusal: str | None = None
     notes: tuple[str, ...] = ()
+    retained_skill_manifest: Path | None = None
 
 
 def _removes_nothing(_request: TeardownRequest) -> tuple[Path, ...]:
@@ -604,6 +622,9 @@ REMOVED = "removed"
 _WHY_CONFIG = "the control-plane config; teardown never removes it"
 _WHY_SECRET = "beside the config, so treated as a secret"
 _WHY_STATE = "state; --purge removes it"
+_WHY_SKILL_OWNERSHIP = (
+    "modified skill entries remain; this is the retained ownership evidence"
+)
 
 
 def _kept(path: Path | str, why: str) -> str:
@@ -720,6 +741,9 @@ def _lock_siblings(paths: Iterable[Path]) -> tuple[Path, ...]:
 def _survey_state(request: TeardownRequest) -> StepSurvey:
     state_home = _state_home()
     contents = _state_contents(state_home)
+    retained_manifest = request.retained_skill_manifest
+    if retained_manifest is not None and not retained_manifest.is_file():
+        retained_manifest = None
     config = resolve_config_path()
 
     # Only what is actually there: a kept line for a file nobody has is the same
@@ -734,6 +758,8 @@ def _survey_state(request: TeardownRequest) -> StepSurvey:
         # The same paths the purge run removes, wearing the other label. That
         # symmetry is FR-013: told apart by the label, not by absence.
         notes = [_kept(path, _WHY_STATE) for path in contents] + kept
+        if retained_manifest is not None:
+            notes.append(_kept(retained_manifest, _WHY_SKILL_OWNERSHIP))
         return StepSurvey(
             plan=(
                 f"nothing to do: --purge was not given, so nothing under "
@@ -744,8 +770,11 @@ def _survey_state(request: TeardownRequest) -> StepSurvey:
         )
 
     locks = _config_locks()
+    subjects = _state_removal_subjects(state_home, retained_manifest)
     notes = kept + ([disclosure] if disclosure else [])
-    if not contents and not locks:
+    if retained_manifest is not None:
+        notes.append(_kept(retained_manifest, _WHY_SKILL_OWNERSHIP))
+    if not subjects and not locks:
         return StepSurvey(
             plan=f"nothing to do: {state_home} holds nothing to remove",
             notes=tuple(notes),
@@ -753,17 +782,51 @@ def _survey_state(request: TeardownRequest) -> StepSurvey:
         )
     return StepSurvey(
         plan=(
-            f"remove {len(contents)} entr{'y' if len(contents) == 1 else 'ies'} under "
+            f"remove {len(subjects)} entr{'y' if len(subjects) == 1 else 'ies'} under "
             f"{state_home} and {len(locks)} lock "
             f"file{'' if len(locks) == 1 else 's'} beside {config}; "
             "the config itself is kept"
         ),
-        subjects=tuple(str(path) for path in contents + locks),
+        subjects=tuple(str(path) for path in subjects + locks),
         notes=tuple(notes),
     )
 
 
-def _perform_state(_request: TeardownRequest, survey: StepSurvey) -> tuple[str, ...]:
+def _state_removal_subjects(
+    state_home: Path,
+    retained: Path | None,
+) -> tuple[Path, ...]:
+    """Every purge subject, with the retained manifest subtree pruned around it."""
+
+    def collect(path: Path) -> tuple[Path, ...]:
+        if (
+            not path.is_dir()
+            or path.is_symlink()
+            or (
+                retained is not None
+                and retained not in path.parents
+                and not retained.is_relative_to(path)
+            )
+        ):
+            return (path,)
+        result: list[Path] = []
+        for child in sorted(path.iterdir()):
+            if child == retained:
+                continue
+            result.extend(collect(child))
+        if retained is None or (
+            retained not in path.parents and not retained.is_relative_to(path)
+        ):
+            result.append(path)
+        return result
+
+    subjects: list[Path] = []
+    for path in _state_contents(state_home):
+        subjects.extend(collect(path))
+    return tuple(subjects)
+
+
+def _perform_state(request: TeardownRequest, survey: StepSurvey) -> tuple[str, ...]:
     """Empty the state home and sweep the locks; name every path as it goes.
 
     The state home itself survives its contents: FR-014 removes what is *in* it,
@@ -773,7 +836,13 @@ def _perform_state(_request: TeardownRequest, survey: StepSurvey) -> tuple[str, 
     said: list[str] = []
     for subject in survey.subjects:
         path = Path(subject)
-        if path.is_dir() and not path.is_symlink():
+        retained = request.retained_skill_manifest
+        if retained is not None and path in retained.parents:
+            if path.is_dir() and not path.is_symlink():
+                path.rmdir()
+            else:
+                path.unlink(missing_ok=True)
+        elif path.is_dir() and not path.is_symlink():
             shutil.rmtree(path)
         else:
             path.unlink(missing_ok=True)
@@ -791,6 +860,34 @@ def _state_removal_targets(request: TeardownRequest) -> tuple[Path, ...]:
     nothing, so it offers the guard nothing to test.
     """
     return (_state_home(),) if request.purge else ()
+
+
+# --- step five: skill teardown --------------------------------------------------
+
+
+def _survey_skills(_request: TeardownRequest) -> StepSurvey:
+    """Read ownership and classify every declared skill entry."""
+
+    try:
+        plan = survey_skills_teardown()
+    except ManifestError as refusal:
+        from factory.cli.errors import EXIT_USER
+
+        raise OperatorError(str(refusal), code=EXIT_USER) from None
+    return StepSurvey(
+        plan=plan.plan,
+        subjects=plan.subjects,
+        notes=plan.notes,
+        nothing_to_do=plan.nothing_to_do,
+        retained_skill_manifest=plan.retained_manifest,
+    )
+
+
+def _perform_skills(
+    _request: TeardownRequest,
+    _survey: StepSurvey,
+) -> tuple[str, ...]:
+    return perform_skills_teardown()
 
 
 # --- step six: account for the git refs ----------------------------------------
@@ -945,6 +1042,7 @@ STEPS: tuple[Step, ...] = (
         perform=_perform_units,
         removal_targets=_unit_removal_targets,
     ),
+    Step(name=SKILL_TEARDOWN, survey=_survey_skills, perform=_perform_skills),
     Step(
         name=CLEAR_STATE,
         survey=_survey_state,
@@ -1071,6 +1169,12 @@ def run_teardown(
             _stop(table, index, str(refusal), done, code=refusal.code)
         if survey.refusal is not None:
             _stop(table, index, survey.refusal, done)
+
+        if survey.retained_skill_manifest is not None:
+            request = replace(
+                request,
+                retained_skill_manifest=survey.retained_skill_manifest,
+            )
 
         print(f"{index}/{total} {step.name}: {survey.plan}")
         for note in survey.notes:

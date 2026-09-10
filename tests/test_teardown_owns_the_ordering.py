@@ -61,6 +61,7 @@ from factory.cli.uninstall import (
     CLEAR_STATE,
     FORGET_REPOSITORIES,
     PAUSE_DISPATCH,
+    SKILL_TEARDOWN,
     STEPS,
     STOP_AND_REMOVE_UNITS,
     STOP_ENGINE_CONTAINER,
@@ -133,7 +134,7 @@ def drive(request: TeardownRequest, steps: Sequence[Step] | None = None) -> Run:
 
 
 def plan_lines(stdout: str) -> list[str]:
-    """The `N/6 <step>: <plan>` lines — what `--check` prints and a run repeats."""
+    """The `N/7 <step>: <plan>` lines — what `--check` prints and a run repeats."""
     return [line for line in stdout.splitlines() if line[:1].isdigit() and "/" in line[:4]]
 
 
@@ -258,9 +259,12 @@ def test_the_step_table_declares_the_order_the_spec_does() -> None:
         # writing to, and dispatch and the registry come first for the reasons
         # they always did. An insert renumbers the printed plan, which is why
         # this list is read for its order and never for its indices.
-        STOP_ENGINE_CONTAINER,
-        STOP_AND_REMOVE_UNITS,
-        # 083-US4 appended two: state and config, then the refs teardown reports
+            STOP_ENGINE_CONTAINER,
+            STOP_AND_REMOVE_UNITS,
+            # 087-US4 inserts skill teardown before state, while ownership is
+            # still readable and can retain evidence for modified paths.
+            SKILL_TEARDOWN,
+            # 083-US4 appended two: state and config, then the refs teardown reports
         # on but does not own.
         CLEAR_STATE,
         ACCOUNT_FOR_REFS,
@@ -288,15 +292,15 @@ def test_teardown_performs_its_steps_in_the_declared_order(host: Host) -> None:
     assert plan_lines(result.stdout) == [
         line
         for line in result.stdout.splitlines()
-        if line.startswith(("1/6", "2/6", "3/6", "4/6", "5/6", "6/6"))
+        if line[:3] in {f"{index}/7" for index in range(1, 8)}
     ]
-    assert f"1/6 {PAUSE_DISPATCH}" in result.stdout
-    assert f"2/6 {FORGET_REPOSITORIES}" in result.stdout
+    assert f"1/7 {PAUSE_DISPATCH}" in result.stdout
+    assert f"2/7 {FORGET_REPOSITORIES}" in result.stdout
     # This host runs no engine container, so step three has nothing to do and
     # says so — and `stop and remove units` is now the fourth line, which is the
     # whole visible cost of the insert (104 plan, trap 12).
-    assert f"3/6 {STOP_ENGINE_CONTAINER}: nothing to do:" in result.stdout
-    assert f"4/6 {STOP_AND_REMOVE_UNITS}" in result.stdout
+    assert f"3/7 {STOP_ENGINE_CONTAINER}: nothing to do:" in result.stdout
+    assert f"4/7 {STOP_AND_REMOVE_UNITS}" in result.stdout
 
     # The acts themselves landed: no schedule, no entry, no unit files.
     assert host.schedules.schedules == {}
@@ -337,6 +341,7 @@ def test_check_reaches_no_acting_half(host: Host) -> None:
         FORGET_REPOSITORIES,
         STOP_ENGINE_CONTAINER,
         STOP_AND_REMOVE_UNITS,
+        SKILL_TEARDOWN,
         CLEAR_STATE,
         ACCOUNT_FOR_REFS,
     )
@@ -348,7 +353,7 @@ def test_check_reaches_no_acting_half(host: Host) -> None:
     assert acted == [], "a --check run reached a step's acting half"
     assert surveyed == list(names)
     assert plan_lines(result.stdout) == [
-        f"{index}/6 {name}: would {name}" for index, name in enumerate(surveyed, start=1)
+        f"{index}/7 {name}: would {name}" for index, name in enumerate(surveyed, start=1)
     ]
 
 
@@ -413,12 +418,15 @@ def test_a_step_with_nothing_to_do_says_so_by_name(
             FORGET_REPOSITORIES,
             STOP_ENGINE_CONTAINER,
             STOP_AND_REMOVE_UNITS,
+            # 087-US4 inserts skill teardown before state, while ownership is
+            # still readable and can retain evidence for modified paths.
+            SKILL_TEARDOWN,
             CLEAR_STATE,
             ACCOUNT_FOR_REFS,
         ),
         start=1,
     ):
-        assert f"{index}/6 {name}: nothing to do:" in result.stdout
+        assert f"{index}/7 {name}: nothing to do:" in result.stdout
     assert "no repository is registered" in result.stdout
     assert "no engine container project at" in result.stdout
     assert "no file this engine wrote is still here" in result.stdout
@@ -439,7 +447,7 @@ def test_a_refused_step_stops_the_verb_and_names_what_was_done(host: Host) -> No
     result = drive(host.request(open_epics=lambda: ("epic-011-agent-sandbox",)))
 
     assert result.code == EXIT_USER
-    assert f"teardown stopped at step 4 of 6, {STOP_AND_REMOVE_UNITS}" in result.stderr
+    assert f"teardown stopped at step 4 of 7, {STOP_AND_REMOVE_UNITS}" in result.stderr
     assert "epic-011-agent-sandbox is in flight" in result.stderr
     # The engine-container step is counted among what was already done, wearing
     # the `(nothing to do)` tag this host earns: FR-012's "what has already been
@@ -482,7 +490,7 @@ def test_dispatch_with_no_owner_is_a_refusal_not_a_skipped_step(
     result = drive(host.request())
 
     assert result.code == EXIT_USER
-    assert f"teardown stopped at step 1 of 6, {PAUSE_DISPATCH}" in result.stderr
+    assert f"teardown stopped at step 1 of 7, {PAUSE_DISPATCH}" in result.stderr
     assert UNOWNED_RUN in result.stderr
     assert "no schedule" in result.stderr
     assert "already done: nothing" in result.stderr

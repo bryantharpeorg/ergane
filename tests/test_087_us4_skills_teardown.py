@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from dataclasses import dataclass
+from typing import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,8 @@ from factory.cli.skills import (
     install,
     skills_teardown,
 )
+from factory.cli.uninstall import CLEAR_STATE, STEPS, TeardownRequest, run_teardown
+from factory.supervision.units import resolve_layout
 
 
 @dataclass(frozen=True)
@@ -160,3 +163,138 @@ def test_repeated_partial_teardown_is_idempotent_and_states_are_distinct(
     )
     assert before == after
     assert unrelated.exists()
+
+
+class TeardownRun:
+    def __init__(self, code: int, stdout: str, stderr: str) -> None:
+        self.code = code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def drive(request: TeardownRequest, steps: Sequence = STEPS) -> TeardownRun:
+    import io
+    import sys
+
+    from factory.cli.errors import OperatorError
+
+    output = io.StringIO()
+    old_stdout = sys.stdout
+    try:
+        sys.stdout = output
+        code = run_teardown(request, steps=steps)
+    except OperatorError as refusal:
+        sys.stdout = old_stdout
+        return TeardownRun(refusal.code, output.getvalue(), str(refusal))
+    finally:
+        sys.stdout = old_stdout
+    return TeardownRun(code, output.getvalue(), "")
+
+
+def plan_lines(stdout: str) -> list[str]:
+    return [line for line in stdout.splitlines() if line[:1].isdigit() and "/" in line[:4]]
+
+
+def test_wide_uninstall_purge_preserves_only_needed_skill_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = make_home(tmp_path, monkeypatch)
+    install()
+    modified = home.root / CANONICAL_SKILLS_ROOT / "build-metrics" / "SKILL.md"
+    modified.write_text("operator changed this\n", encoding="utf-8")
+    unrelated_state = home.state / "ergane" / "operator-state.json"
+    unrelated_state.write_text("{}\n", encoding="utf-8")
+    (home.state / "ergane" / "unrelated").mkdir(parents=True)
+    (home.state / "ergane" / "unrelated" / "state").write_text("old\n", encoding="utf-8")
+    external: list[tuple] = []
+    layout = resolve_layout(
+        home=home.root,
+        generated_dir=home.state / "supervision",
+        temporal_mode="external",
+    )
+    request = TeardownRequest(
+        layout=layout,
+        purge=True,
+        run=lambda argv: external.append(tuple(argv)) or None,
+        open_epics=lambda: (),
+    )
+
+    first = drive(request)
+
+    assert first.code == 0, first.stderr
+    assert first.stdout.index("5/7 skill teardown") < first.stdout.index("6/7 clear state")
+    manifest = read_manifest(home)
+    assert set(manifest["entries"]) == {".agents/skills/build-metrics/SKILL.md"}
+    assert modified.read_text(encoding="utf-8") == "operator changed this\n"
+    assert not unrelated_state.exists()
+    assert not (home.state / "ergane" / "unrelated").exists()
+    assert manifest_path(home).is_file()
+    assert not (home.state / "ergane" / "repos.json").exists()
+
+    second = drive(request)
+
+    assert second.code == 0, second.stderr
+    assert "skill teardown" in second.stdout
+    assert "already absent: nothing to do" not in second.stdout
+    assert set(read_manifest(home)["entries"]) == {".agents/skills/build-metrics/SKILL.md"}
+
+
+def test_check_drives_real_skill_and_state_surveys_without_performs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = make_home(tmp_path, monkeypatch)
+    install()
+    modified = home.root / CANONICAL_SKILLS_ROOT / "build-metrics" / "SKILL.md"
+    modified.write_text("operator changed this\n", encoding="utf-8")
+    before = snapshot(home.root)
+    before_manifest = manifest_path(home).read_bytes()
+    performed: list[str] = []
+
+    def recording(step):
+        def perform(_request, _survey):
+            performed.append(step.name)
+            return ()
+
+        return perform
+
+    table = tuple(
+        type(step)(name=step.name, survey=step.survey, perform=recording(step))
+        for step in STEPS
+    )
+    layout = resolve_layout(
+        home=home.root,
+        generated_dir=home.state / "supervision",
+        temporal_mode="external",
+    )
+    result = drive(
+        TeardownRequest(layout=layout, check=True, open_epics=lambda: ()),
+        steps=table,
+    )
+
+    assert result.code == 0, result.stderr
+    assert performed == []
+    assert snapshot(home.root) == before
+    assert manifest_path(home).read_bytes() == before_manifest
+    assert result.stdout.index("5/7 skill teardown") < result.stdout.index("6/7 clear state")
+
+
+def test_malformed_manifest_refuses_before_the_wider_teardown_acts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = make_home(tmp_path, monkeypatch)
+    install()
+    manifest = read_manifest(home)
+    manifest["entries"]["../../escape"] = {"kind": "file", "digest": "0" * 64}
+    manifest_path(home).write_text(json.dumps(manifest), encoding="utf-8")
+    before = snapshot(home.root)
+
+    layout = resolve_layout(
+        home=home.root,
+        generated_dir=home.state / "supervision",
+        temporal_mode="external",
+    )
+    result = drive(TeardownRequest(layout=layout, open_epics=lambda: ()))
+
+    assert result.code == 1
+    assert "MANIFEST-PATH-OUT-OF-ROOT" in result.stderr
+    assert snapshot(home.root) == before

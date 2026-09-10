@@ -133,6 +133,18 @@ class SkillTeardownResult:
     already_absent: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class SkillTeardownPlan:
+    """The read-only plan built from the ownership manifest."""
+
+    manifest_path: Path
+    plan: str
+    subjects: tuple[str, ...]
+    notes: tuple[str, ...]
+    nothing_to_do: bool
+    retained_manifest: Path | None
+
+
 def _teardown_home() -> Path:
     home_value = os.environ.get("HOME")
     if not home_value:
@@ -240,11 +252,11 @@ def skills_teardown() -> SkillTeardownResult:
     preserved: list[str] = []
     already_absent: list[str] = []
     retained: dict[str, dict[str, Any]] = {}
-    removable: dict[str, Path] = {}
     for owned_path, owned_entry in sorted(entries.items()):
-        state, removable = _classify_teardown_entry(home, owned_path, owned_entry)
-        if state == "unchanged-owned" and removable is not None:
-            removable_path = removable
+        state, removable_path = _classify_teardown_entry(
+            home, owned_path, owned_entry
+        )
+        if state == "unchanged-owned" and removable_path is not None:
             removed.append(owned_path)
             removable_path.unlink(missing_ok=True)
         elif state == "already-absent":
@@ -264,6 +276,81 @@ def skills_teardown() -> SkillTeardownResult:
         preserved=tuple(preserved),
         already_absent=tuple(already_absent),
     )
+
+
+def survey_skills_teardown() -> SkillTeardownPlan:
+    """Classify manifest entries without changing the filesystem."""
+
+    home = _teardown_home()
+    path = manifest_path()
+    _, entries = _read_manifest(path)
+    if not entries:
+        return SkillTeardownPlan(
+            manifest_path=path,
+            plan="nothing to do: no skill ownership manifest is available",
+            subjects=(),
+            notes=(),
+            nothing_to_do=True,
+            retained_manifest=None,
+        )
+
+    removed: list[str] = []
+    preserved: list[str] = []
+    already_absent: list[str] = []
+    for owned_path, owned_entry in sorted(entries.items()):
+        state, _ = _classify_teardown_entry(home, owned_path, owned_entry)
+        if state == "unchanged-owned":
+            removed.append(owned_path)
+        elif state == "already-absent":
+            already_absent.append(owned_path)
+        else:
+            preserved.append(owned_path)
+
+    counts = []
+    if removed:
+        counts.append(f"remove {len(removed)} unchanged digest-owned entry")
+    if already_absent:
+        counts.append(f"{len(already_absent)} already absent")
+    if preserved:
+        counts.append(f"keep {len(preserved)} modified or unusable entry")
+    plan = (
+        "no skill ownership manifest is available"
+        if not counts
+        else "; ".join(counts)
+    )
+    notes: list[str] = [
+        f"already absent: {path}" for path in already_absent
+    ]
+    notes.extend(
+        f"kept: {path} (digest/target mismatch; manifest evidence retained)"
+        for path in preserved
+    )
+    return SkillTeardownPlan(
+        manifest_path=path,
+        plan=plan,
+        subjects=tuple(str(home / owned_path) for owned_path in removed),
+        notes=tuple(notes),
+        nothing_to_do=not removed,
+        retained_manifest=path if preserved else None,
+    )
+
+
+def perform_skills_teardown(
+    plan: SkillTeardownPlan | None = None,
+) -> tuple[str, ...]:
+    """Apply the survey's removal plan and report kept entries by name."""
+
+    result = skills_teardown()
+    said: list[str] = []
+    said.extend(f"removed: {path}" for path in result.removed)
+    said.extend(
+        f"already absent: {path}" for path in result.already_absent
+    )
+    said.extend(
+        f"kept: {path} (digest/target mismatch; manifest evidence retained)"
+        for path in result.preserved
+    )
+    return tuple(said)
 
 
 _CREDENTIAL_NAME_PATTERNS = (
