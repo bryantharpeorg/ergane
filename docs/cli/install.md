@@ -61,6 +61,19 @@ of those configure only and never reach an engine step.
 stray export, and why [`ergane env --sources`](env.md) reports the route not
 taken.
 
+## Agent runner and credential route
+
+The control-plane LLM mode is not an agent selector. Builder entries in the
+resolved persona registry declare the runner (`agent`, such as `codex` or
+`claude-code`), credential `route`, model and fallback. The judge has its own
+entry. Changing your operator client's model does not update these declarations
+or a running epic's frozen configuration.
+
+See [registry precedence](../getting-started.md#the-difference-that-will-bite-you)
+before editing a registry, and [Codex gateway setup](../codex-gateway-setup.md)
+for the Codex/Ollama path. Gateway setup does not require a ChatGPT login;
+subscription credential ownership and qualification are a separate workflow.
+
 ## The lock
 
 Two `ergane install` runs cannot write the config at once. `--lock-timeout`

@@ -2,7 +2,7 @@
 
 > start, watch and signal an epic
 
-Thirteen verbs over one object: the epic. Everything is keyed by the **epic id**,
+Verbs over one object: the epic. Everything is keyed by the **epic id**,
 which is the spec directory's name — `072-a-stale-anchor-fails-validate-not-the-attempt`,
 not a UUID and not a workflow run id.
 
@@ -64,7 +64,7 @@ Dispatch a graph that is already compiled.
 | `--stall-after-s` | `7200` | how long a landing may sit queued and unanswered before it classifies as stalled |
 | `--max-recovery-cycles` | `1` | how many times a rejected landing may be recovered before the node escalates |
 | `--max-free-rebases` | `3` | how many times a landing rejected for a moved base may be rebased and requeued for free |
-| `--halt-after-pass` | | stop a passing node at `PASSED` and do not attempt to land — for demos and dry runs |
+| `--halt-after-pass` | | stop a passing node at `PASSED` and do not attempt to land — a supervised execution trial, not a dry run |
 
 **`--max-concurrent-nodes` is not a free speedup.** It caps concurrent *agents*,
 and raising it interacts with every isolation layer beneath it. Before running
@@ -72,8 +72,9 @@ unattended above 1, check `ergane findings list` for open defects in that area
 and lower `--stall-after-s` so a wedged landing surfaces in the same session
 that caused it.
 
-**`--halt-after-pass` is the safe way to watch the machine work** without asking
-GitHub for anything.
+**`--halt-after-pass` stops before landing, not before execution.** Agents,
+gates and the judge still run and can incur model usage. Clone and preflight
+operations can still contact GitHub; passing nodes are not enqueued for merge.
 
 ---
 
@@ -84,11 +85,14 @@ GitHub for anything.
 The epic's node table: state, attempt number, branch, PR number, landing state,
 terminal reason, provenance, recovery cycles.
 
-`--json` prints the query result verbatim. Note it carries **no persona field** —
-the persona a node is running under is not in this document. It lives in the
-epic's own workflow start payload, which is also where a roadmap-dispatched
-epic's real graph lives; the on-disk `workgraph.json` is not rewritten by the
-roadmap and will disagree.
+Per-node status includes the current `persona` and `model_alias` when available.
+Use the epic's frozen workflow input and recorded dispatch for its runner and
+credential-route provenance; do not infer either from your operator client's
+model or a registry edited after dispatch. Legacy records can lack fields, so
+missing provenance is unknown, not a value to invent.
+
+The workflow start payload also owns a roadmap-dispatched epic's actual graph;
+an on-disk `workgraph.json` is not rewritten by the roadmap and can disagree.
 
 ### `ergane build attempts <epic-id>`
 

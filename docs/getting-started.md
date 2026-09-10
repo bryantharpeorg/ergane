@@ -5,6 +5,11 @@ epic. For the system overview and a first supervised trial, start with the
 [README](../README.md). The [installation reference](cli/install.md) covers the
 available model routes and engine deployment choices.
 
+For Codex CLI builders using Ollama Cloud through that gateway, follow the
+[Codex gateway setup](codex-gateway-setup.md) alongside this guide. Selecting
+Codex as a builder does not change the provider used by your operator session
+or the independent judge.
+
 Paths in commands and code spans below are relative to the repository root unless
 shown as absolute paths. Choose the installation and deployment path that fits
 your environment before running its commands.
@@ -30,9 +35,11 @@ it when the attempt ends. Those endpoints exist only when LiteLLM has a
 `POST /v1/chat/completions` perfectly and returns 404 for all of the rest — so it
 passes a casual smoke test and then fails at the first dispatch.
 
-**The proxy must serve every model alias the persona registry names.** That is
-every `model` and every `fallback` in `personas.yaml`, excluding personas
-declared `agent: none`, which have no model by construction. Run
+**The proxy must serve every gateway-routed alias the persona registry names.**
+That includes each `model` and non-null `fallback` in the selected
+`personas.yaml` for personas with `route: gateway`. Deterministic personas
+(`agent: none`) need no model; subscription-routed personas use a different
+credential path and do not turn their model names into gateway aliases. Run
 `ergane install --requirements` to print the exact set for your registry, or
 `ergane install --scan` to see what a candidate endpoint actually offers before
 you commit to it.
@@ -54,25 +61,27 @@ declare `llm.mode = "gateway"` unless you have decided to give them up.
   only under GitHub Enterprise Cloud. A user-owned repository cannot host one at
   any plan level, so make the target repository organization-owned before you
   wire it.
-- **Spec Kit's authoring skills, installed into your agent, not into this
-  repository.** Ergane's specs are Spec Kit documents — a numbered feature
-  directory under `specs/` holding its spec, plan and tasks files — and the
-  skills that write and check them (speckit-specify, speckit-plan, speckit-tasks
-  and the rest) come from <https://github.com/github/spec-kit>. Install them
-  globally, so every project sees them, or individually per repository; either
-  way they live outside this tree. Ergane's own layer of Spec Kit — the
-  templates, the shell scripts, and the constitution at
-  `.specify/memory/constitution.md` that every dispatched attempt is told to
-  obey — is committed here and needs no installation.
+- **A prepared Spec Kit trio.** Each numbered feature directory under `specs/`
+  holds its spec, plan and tasks files. You can author those documents directly
+  from the committed `.specify/templates/`; Ergane does not require an authoring
+  skill to be installed before it can parse them. Optional
+  [Spec Kit](https://github.com/github/spec-kit) helpers belong to your chosen
+  authoring client and need that client's installation instructions. This
+  repository's templates, shell scripts and standards at
+  `.specify/memory/constitution.md` are already committed.
 - `bwrap` on `PATH`, used by the default runtime to sandbox agent work.
 - `git` and `uv`.
 - Python 3.11 or newer.
-- A Node.js runtime, used by the agent CLI.
+- The selected agent CLI on the worker host, plus the target's toolchain.
+  Ergane's current sandbox toolchain also expects Node.js; a standalone Codex
+  executable does not by itself remove that requirement.
 - A systemd user session, if you want `ergane worker install` to run managed
   units under your user manager.
 
 See `factory/controlplane/config.py` for the exact control-plane schema, and
-`factory.yaml` for the gate and loop composition this repository declares.
+`ergane.yaml` for the gate and loop composition this repository declares.
+The legacy name `factory.yaml` remains compatibility context; use the manifest
+actually selected for your target.
 
 On Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1`
 denies user namespaces by default. The `apparmor=unconfined` option on the
@@ -122,16 +131,27 @@ uv pip install -e .
 
 ### The difference that will bite you
 
-The two paths resolve the persona registry from different places. An editable
-checkout reads the `personas.yaml` at the root of that checkout, so editing it
-takes effect immediately. A published install reads the copy packaged inside the
-distribution — so editing a `personas.yaml` in some directory you happen to be
-standing in changes nothing, and the file you want to edit is not obviously
-anywhere.
+The two install paths have different final registry fallbacks, but explicit
+configuration wins over both. Resolution order is:
 
-If you installed the published package and want your own registry, put it where
-the resolver looks rather than where you happen to be; `ergane install` reports
-the path it resolved, and that path is the answer.
+1. `ERGANE_PERSONAS_PATH` (or the legacy `FACTORY_PERSONAS_PATH`).
+2. The operator registry under the XDG config directory, normally
+   `/home/<operator>/.config/ergane/personas.yaml` on Linux (a host path,
+   not a file inside the repository).
+3. Packaged persona data, or the checkout's root `personas.yaml` when running
+   from source without packaged data.
+
+Initial registry seeding preserves an existing file; the interactive interview
+can update model choices you deliberately confirm. Replace placeholder model and fallback aliases
+with aliases your gateway serves. Editing a file in the current directory does
+not select it, and even an editable checkout can be overridden by an existing
+operator registry. `ergane install` reports the resolved registry path;
+`ergane env --sources` helps identify environment overrides.
+
+For a source checkout that should use its own registry, declare that choice
+explicitly in the environment used by both the CLI and the worker. Registry
+changes affect future dispatch configuration, not an already frozen epic;
+never edit a running node's copied configuration to switch its route.
 
 ## Configuring the control plane
 
@@ -165,6 +185,11 @@ ergane install --scan
 
 ## Installing the worker
 
+For native versioned workers, use an Ergane source checkout: the deploy command
+needs a Git commit to freeze, not only an installed wheel. A package-only
+installation can use the [container engine](container.md), with the engine
+image matching the CLI version.
+
 Put the bridge and probe under systemd user supervision, then put a worker
 version on the floor. Install writes a *versioned* unit template rather than a
 worker; `deploy` freezes a commit into a checkout of its own and starts an
@@ -172,7 +197,7 @@ instance serving it, so every epic finishes on the code it started with.
 
 ```bash
 ergane worker install
-ergane worker deploy
+ergane worker deploy <validated-commit-or-tag>
 ```
 
 On a host installed before versioning, `ergane worker migrate` retires the old
@@ -218,11 +243,27 @@ ergane repo onboard <target-repo-path>
 
 ## Dispatching your first epic
 
-Start a compiled workgraph:
+For the first supervised trial, validate and dispatch a prepared spec trio:
+
+```bash
+ergane spec validate specs/001-example --target-repo "$PWD"
+ergane build ship specs/001-example --target-repo "$PWD" --halt-after-pass
+```
+
+Replace the example directory with your own spec. `build ship` asks before
+dispatch; `--halt-after-pass` stops passing work before landing, not before
+agent execution or model cost. Both the target and specs paths must resolve
+on the worker host. Review the attempt, gates and judge before authorizing
+normal landing. The [build reference](cli/build.md) covers the full lifecycle.
+
+If you already have a freshly derived, validated graph, start it directly:
 
 ```bash
 ergane build start <workgraph.json>
 ```
+
+Do not edit a compiled graph by hand or reuse one after changing its source
+trio; derive it again through the supported spec commands.
 
 ## Asking the system about itself
 
