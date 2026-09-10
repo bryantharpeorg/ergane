@@ -5,9 +5,9 @@
 - `factory/workgraph/adapter.py:943` — `discover_codex_credential` checks existence and may fall back from `CODEX_HOME` to the operator's default home.
 - `factory/workgraph/adapter.py:1131` — `CredentialStage` has no lifecycle or finalization contract.
 - `factory/workgraph/adapter.py:1165` — `SharedAttemptPolicy` seeds before its attempt boundary has reaped every earlier candidate owner.
-- `factory/workgraph/adapter.py:1980` — `CodexAdapter._credential` accepts the discovered file without validating managed ChatGPT mode.
-- `factory/workgraph/adapter.py:2081` — `_seed_codex_config` writes gateway configuration only, so later route changes can inherit incompatible bytes.
-- `factory/workgraph/workflow.py:1455` — `_subscription_nodes_in_flight` is per epic and original persona, not credential-wide or effective-rung admission.
+- `factory/workgraph/adapter.py:1983` — `CodexAdapter._credential` accepts the discovered file without validating managed ChatGPT mode.
+- `factory/workgraph/adapter.py:2122` — `_seed_codex_config` writes gateway configuration only, so later route changes can inherit incompatible bytes.
+- `factory/workgraph/workflow.py:1502` — `_subscription_nodes_in_flight` is per epic and original persona, not credential-wide or effective-rung admission.
 - `factory/locking.py:53` — `exclusive_lock` is a useful short local transaction primitive; its polling wait must not become a long async activity wait.
 - `factory/workgraph/credential_status.py:44` — `_credential_runway` is Claude-only.
 - The synthetic auth document near the top of `tests/test_155_us3_codex_subscription.py` is API-key-shaped and therefore proves copying, not subscription authenticity.

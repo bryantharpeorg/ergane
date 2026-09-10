@@ -3,7 +3,7 @@
 ## Current seams
 
 - `.claude/skills/floor-status/SKILL.md` currently mixes observation with fetch and merge behavior and still tests the retired subscription sentinel.
-- `factory/cli/nouns/build.py:478` — `render_status`, `factory/cli/nouns/build.py:1173` — `status_command`, and `factory/cli/nouns/build.py:1531` — `render_attempts` are read surfaces to reuse rather than recreate.
+- `factory/cli/nouns/build.py:489` — `render_status`, `factory/cli/nouns/build.py:1201` — `status_command`, and `factory/cli/nouns/build.py:1559` — `render_attempts` are read surfaces to reuse rather than recreate.
 - `factory/cli/nouns/escalations.py:29` — `render` and the escalation query expose current options without choosing one.
 - `.claude/skills/build-metrics/scripts/rework.py:42` — `main` hardcodes old roots and lacks dispatch identity; `CLOC_URL` in `.claude/skills/build-metrics/scripts/loc.py` names executable code on mutable `master`.
 - `factory/spec/composition.py:64` — `validate_spec` is the one validation composition. `.claude/skills/spec-html/render.py:158` — `landed_map` currently converts a command failure into an empty mapping.
