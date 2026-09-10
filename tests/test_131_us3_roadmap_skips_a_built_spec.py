@@ -84,6 +84,36 @@ async def test_query_agrees_with_the_pass_about_a_built_spec(
     assert built.landed_kind is LandedKind.OBSERVED
 
 
+async def test_a_spec_with_outstanding_work_still_clones_onboards_and_dispatches(
+    env: WorkflowEnvironment,
+    tmp_path: Path,
+) -> None:
+    """US3-S3: the new guard does not swallow genuine work."""
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-real": dict(state=SpecState.READY)},
+    )
+    world = RoadmapWorld()
+    activity_names: list[str] = []
+    child_starts: list[str] = []
+
+    async with run_roadmap(
+        env,
+        world,
+        str(specs_root),
+        on_dispatch=child_starts.append,
+        interceptors=[_ActivityRecordingInterceptor(activity_names)],
+    ) as handle:
+        status = await handle.result()
+
+    assert child_starts == ["001-real"]
+    assert "clone_target" in activity_names
+    assert "onboard_target" in activity_names
+    real = next(spec for spec in status.specs if spec.spec_dir == "001-real")
+    assert real.dispatchable is False
+    assert real.landed is True
+
+
 async def test_built_ready_spec_never_reaches_clone_or_onboard(
     env: WorkflowEnvironment,
     tmp_path: Path,
