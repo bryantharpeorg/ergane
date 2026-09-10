@@ -103,7 +103,7 @@ mode, generation, runway, route configuration, and recovery.
 
 1. **Given** Claude subscription, Codex subscription, gateway, and no-runner personas, **When** credential status is requested, **Then** a runner-aware shared model reports only the checks applicable to the effective route and preserves Claude's landed token-only behavior — proven by table-driven tests.
 2. **Given** busy ownership, invalid current generation, recoverable staged generation, unsupported multi-host topology, or missing explicit source, **When** any readiness surface renders it, **Then** each uses the same stable code, redacted facts, and actionable remedy — proven by contract tests across install, preflight, and build status.
-3. **Given** a subscription attempt has no LiteLLM usage record, **When** readiness and status render, **Then** usage remains unavailable rather than free and credential readiness is not presented as usage evidence — proven by renderer tests.
+3. **Given** subscription attempts with complete, partial, or absent measurements from their supported runner evidence source and no LiteLLM usage record, **When** readiness and status render, **Then** measured token subtotals and their source/completeness are preserved, missing metrics and subscription dollars remain unavailable rather than free, and credential readiness is not presented as usage evidence — proven by renderer tests.
 
 **Why this priority**: A lifecycle is unsafe if dispatch and onboarding disagree about whether it is usable.
 
