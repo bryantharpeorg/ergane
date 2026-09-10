@@ -37,6 +37,18 @@ from tests.test_supervision_units import FakeSystemctl, texts, directive
 TEMPORAL_UNIT = "ergane-temporal.service"
 
 
+async def _start_local(options: dict[str, object]) -> object:
+    for _attempt in range(3):
+        options["port"] = _free_port()
+        try:
+            return await WorkflowEnvironment.start_local(**options)
+        except RuntimeError as failure:
+            if "Failed starting Temporal dev server" not in str(failure):
+                raise
+            await asyncio.sleep(0.05)
+    raise RuntimeError("Temporal dev server did not start after 3 attempts")
+
+
 #: The same path inside the operator's installation the generated unit will use.
 #: Persistence lives under the state home so a host reinstall does not silently
 #: discard history, and so the path is inside the operator's own installation.
@@ -49,6 +61,29 @@ def _free_port() -> int:
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+@pytest.mark.asyncio
+async def test_dev_server_start_retries_a_transient_port_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A released free-port probe is a hint, not an ownership guarantee."""
+
+    attempts = 0
+
+    async def start_local(**_kwargs: object) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("Failed starting Temporal dev server: connect refused")
+        return "started"
+
+    monkeypatch.setattr(WorkflowEnvironment, "start_local", start_local)
+
+    environment = await _start_local({"dev_server_database_filename": "db.sqlite"})
+
+    assert environment == "started"
+    assert attempts == 3
 
 
 @pytest.fixture(autouse=True)
@@ -169,15 +204,12 @@ async def test_managed_temporal_history_survives_restart(tmp_path: Path) -> None
 
     The generated unit will use `--db-filename`; this test proves that flag has
     the effect the criterion claims. `WorkflowEnvironment` is the supported
-    Python seam to a local dev server, but `port=0` fails to connect, so a free
-    port is pre-bound and passed explicitly.
+    Python seam to a local dev server, and an explicit retryable port avoids its
+    `port=0` target-reporting bug.
     """
     db = tmp_path / "temporal.sqlite"
-    first_port = _free_port()
-    env1 = await WorkflowEnvironment.start_local(
-        namespace="ergane",
-        port=first_port,
-        dev_server_database_filename=str(db),
+    env1 = await _start_local(
+        {"namespace": "ergane", "dev_server_database_filename": str(db)}
     )
     try:
         client1 = await Client.connect(env1._server.target, namespace="ergane")
@@ -190,11 +222,8 @@ async def test_managed_temporal_history_survives_restart(tmp_path: Path) -> None
     finally:
         await env1.shutdown()
 
-    second_port = _free_port()
-    env2 = await WorkflowEnvironment.start_local(
-        namespace="ergane",
-        port=second_port,
-        dev_server_database_filename=str(db),
+    env2 = await _start_local(
+        {"namespace": "ergane", "dev_server_database_filename": str(db)}
     )
     try:
         client2 = await Client.connect(env2._server.target, namespace="ergane")

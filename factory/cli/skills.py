@@ -43,6 +43,8 @@ SUPPORTED_CLIENTS: tuple[tuple[str, Path], ...] = (
     ("codex", CANONICAL_SKILLS_ROOT),
     ("claude", COMPATIBILITY_SKILLS_ROOT),
 )
+MIGRATION_RUNBOOK = "docs/codex-primary-operator-migration-runbook-2026-09-09.md"
+SHARED_DISCOVERY_GATE = "shared-discovery gate"
 
 
 class SkillPackagingError(Exception):
@@ -84,6 +86,33 @@ class InstallResult:
         return tuple(
             client for client, available in self.client_availability.items() if not available
         )
+
+
+@dataclass(frozen=True)
+class SkillStatusEntry:
+    """One filesystem comparison for a skill and supported client."""
+
+    client: str
+    skill: str
+    state: str
+    path: str
+    package_version: str | None
+    installed_version: str | None
+    remedy: str
+
+
+@dataclass(frozen=True)
+class SkillsStatus:
+    """The pure, read-only result of comparing packaged skills to destinations."""
+
+    package_version: str | None
+    manifest_status: str
+    manifest_schema: int | None
+    entries: tuple[SkillStatusEntry, ...]
+
+    @property
+    def rendered(self) -> str:
+        return render_status(self)
 
 
 @dataclass(frozen=True)
@@ -426,6 +455,29 @@ def _read_manifest(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]
     except (OSError, UnicodeError, json.JSONDecodeError) as failure:
         raise ManifestError(f"MANIFEST-UNREADABLE: {path}: {failure}") from failure
     return document, _validate_manifest(document)
+
+
+def _status_manifest(path: Path) -> tuple[str, int | None, str | None]:
+    if not path.exists():
+        return "unavailable-version", None, None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "unsupported-manifest", None, None
+    if not isinstance(document, dict):
+        return "unsupported-manifest", None, None
+    schema = document.get("schema")
+    schema_value = schema if isinstance(schema, int) and not isinstance(schema, bool) else None
+    installed = document.get("package_version")
+    if installed is None:
+        installed = document.get("source_version")
+    if installed is not None and not isinstance(installed, str):
+        installed = None
+    try:
+        _validate_manifest(document)
+    except ManifestError:
+        return "unsupported-manifest", schema_value, installed
+    return "available", schema_value, installed
 
 
 def _atomic_write_bytes(path: Path, content: bytes) -> None:
@@ -792,6 +844,215 @@ def render_install(result: InstallResult) -> str:
         )
     if result.unavailable_clients:
         lines.append("clients unavailable: " + ", ".join(result.unavailable_clients))
+    return "\n".join(lines)
+
+
+def _state_remedy(state: str) -> str:
+    remedies = {
+        "absent": "Run `ergane skills install`.",
+        "current-filesystem": (
+            "No repair needed; fresh client loading remains unqualified. "
+            f"Authorize fresh evidence through the {MIGRATION_RUNBOOK} "
+            f"{SHARED_DISCOVERY_GATE}."
+        ),
+        "stale": "Run `ergane skills install` after preserving desired local changes.",
+        "modified": "Preserve the local bytes; run install for any unmodified paths.",
+        "collided": "Preserve the conflicting path; resolve it deliberately before install.",
+        "broken-alias": (
+            "Run `ergane skills install` to replace the broken compatibility alias."
+        ),
+        "unavailable-version": "Install the packaged CLI to provide skill version metadata.",
+        "unsupported-manifest": (
+            "Back up and explicitly migrate or remove the unsupported manifest."
+        ),
+    }
+    return remedies[state]
+
+
+def _canonical_state(
+    skill: str,
+    records: Sequence[ResourceRecord],
+    payload: Mapping[str, bytes],
+    home: Path,
+    manifest_entries: Mapping[str, dict[str, Any]],
+) -> str:
+    selected = [record for record in records if record.path.split("/", 1)[0] == skill]
+    if not selected:
+        return "absent"
+    states: list[str] = []
+    for record in selected:
+        relative = PurePosixPath(CANONICAL_DESTINATION) / record.path
+        absolute = home / relative
+        if _parent_collision(home, relative) is not None:
+            states.append("collided")
+            continue
+        current = _lstat_kind(absolute)
+        if current is None:
+            states.append("absent")
+            continue
+        kind, current_digest, _ = current
+        if kind != "file" or current_digest is None:
+            states.append("collided")
+            continue
+        owned = manifest_entries.get(relative.as_posix())
+        if owned and owned.get("kind") == "file":
+            if current_digest == record.digest:
+                states.append("current")
+            elif current_digest == owned.get("digest"):
+                states.append("stale")
+            else:
+                states.append("modified")
+        elif current_digest == record.digest:
+            states.append("current")
+        else:
+            states.append("collided")
+    if "modified" in states:
+        return "modified"
+    if "collided" in states:
+        return "collided"
+    if any(state in {"absent", "stale"} for state in states):
+        return "stale" if "stale" in states else "absent"
+    return "current-filesystem"
+
+
+def _compatibility_state(
+    skill: str,
+    records: Sequence[ResourceRecord],
+    home: Path,
+    manifest_entries: Mapping[str, dict[str, Any]],
+    expected_digest: str,
+) -> str:
+    relative = PurePosixPath(COMPATIBILITY_DESTINATION) / skill
+    absolute = home / relative
+    if _parent_collision(home, relative) is not None:
+        return "collided"
+    current = _lstat_kind(absolute)
+    if current is None:
+        return "absent"
+    kind, _, current_target = current
+    target = f"../../{CANONICAL_DESTINATION}/{skill}"
+    if kind != "symlink" or current_target != target:
+        return "broken-alias"
+    current_digest = _current_skill_digest(
+        home / CANONICAL_SKILLS_ROOT, records, skill
+    )
+    if current_digest is None:
+        return "broken-alias"
+    owned = manifest_entries.get(relative.as_posix())
+    if owned and owned.get("kind") == "alias":
+        if current_digest == expected_digest:
+            return "current"
+        return "modified"
+    if current_digest == expected_digest:
+        return "current"
+    return "collided"
+
+
+def skills_status() -> SkillsStatus:
+    """Compare packaged skill resources to declared destinations without mutation."""
+
+    home_value = os.environ.get("HOME")
+    if not home_value:
+        raise SkillPackagingError("HOME-DECLARATION-MISSING: HOME")
+    home = Path(home_value)
+    path = manifest_path()
+    manifest_status, manifest_schema, installed_version = _status_manifest(path)
+    manifest_entries: dict[str, dict[str, Any]] = {}
+    if manifest_status == "available":
+        _, manifest_entries = _read_manifest(path)
+    records, payload = _packaged_payload()
+    package_version = _source_version()
+    if package_version is None:
+        manifest_status = "unavailable-version"
+        entries = tuple(
+            SkillStatusEntry(
+                client=client,
+                skill=skill,
+                state="unavailable-version",
+                path=(home / destination / skill).relative_to(home).as_posix(),
+                package_version=None,
+                installed_version=installed_version,
+                remedy=_state_remedy("unavailable-version"),
+            )
+            for skill in DECLARED_SKILLS
+            for client, destination in SUPPORTED_CLIENTS
+        )
+        return SkillsStatus(None, manifest_status, manifest_schema, entries)
+    if manifest_status == "unsupported-manifest":
+        entries = tuple(
+            SkillStatusEntry(
+                client=client,
+                skill=skill,
+                state="unsupported-manifest",
+                path=(home / destination / skill).relative_to(home).as_posix(),
+                package_version=package_version,
+                installed_version=installed_version,
+                remedy=_state_remedy("unsupported-manifest"),
+            )
+            for skill in DECLARED_SKILLS
+            for client, destination in SUPPORTED_CLIENTS
+        )
+        return SkillsStatus(package_version, manifest_status, manifest_schema, entries)
+
+    stale_installed = (
+        installed_version is not None
+        and package_version is not None
+        and installed_version != package_version
+    )
+    observed: list[SkillStatusEntry] = []
+    for skill in DECLARED_SKILLS:
+        for client, destination in SUPPORTED_CLIENTS:
+            state = (
+                _canonical_state(skill, records, payload, home, manifest_entries)
+                if destination == CANONICAL_SKILLS_ROOT
+                else _compatibility_state(
+                    skill,
+                    records,
+                    home,
+                    manifest_entries,
+                    _skill_digest(records, skill),
+                )
+            )
+            if state in {"current", "current-filesystem", "stale"} and stale_installed:
+                state = "stale"
+            elif state == "current":
+                state = "current-filesystem"
+            observed.append(
+                SkillStatusEntry(
+                    client=client,
+                    skill=skill,
+                    state=state,
+                    path=(home / destination / skill).relative_to(home).as_posix(),
+                    package_version=package_version,
+                    installed_version=installed_version,
+                    remedy=_state_remedy(state),
+                )
+            )
+    return SkillsStatus(package_version, manifest_status, manifest_schema, tuple(observed))
+
+
+def render_status(status: SkillsStatus) -> str:
+    """Render filesystem status without claiming fresh client discovery."""
+
+    package = status.package_version or "unavailable"
+    installed = next(
+        (entry.installed_version for entry in status.entries if entry.installed_version),
+        "unavailable",
+    )
+    schema = "unavailable" if status.manifest_schema is None else str(status.manifest_schema)
+    lines = [
+        f"skills status: package={package} installed={installed} "
+        f"manifest={status.manifest_status} schema={schema}",
+        (
+            "Filesystem status is not fresh client-loading evidence; client loading "
+            "remains unqualified until separately authorized."
+        ),
+    ]
+    lines.extend(
+        f"{entry.client} {entry.skill} {entry.path}: {entry.state}"
+        for entry in status.entries
+    )
+    lines.extend(f"remedy: {entry.remedy}" for entry in status.entries)
     return "\n".join(lines)
 
 
