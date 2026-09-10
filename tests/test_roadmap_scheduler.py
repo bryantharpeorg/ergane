@@ -695,6 +695,7 @@ async def run_roadmap(
         count_open_epics,
         derive_spec,
         drift_for_spec,
+        landed_for_spec,
         onboard_target,
         preflight_spec,
         read_loop_config,

@@ -54,6 +54,7 @@ from temporalio import activity
 
 from factory.config import Persona, load_personas
 from factory.mergequeue.models import TargetRepoProfile
+from factory.roadmap.models import LandedKind, LandedStatus
 from factory.usage.litellm_client import LiteLLMClient
 from factory.workgraph.derive import DerivationError
 from factory.workgraph.models import WorkGraph
@@ -490,6 +491,64 @@ class DriftInput:
 #: The drift seam — production computes from git; tests script a boolean so the
 #: scheduler tests do not need a real target clone at `TARGET_REPO`.
 _drift_runner: Callable[[DriftInput], bool] | None = None
+
+
+@dataclass(frozen=True)
+class LandedInput:
+    """Inputs for the roadmap's own observed-landed read."""
+
+    target_repo: str
+    spec_dir: str
+    spec_text: str
+
+
+#: The landed-read seam — production reads the landing branch; scheduler tests
+#: script an answer so they do not need a real target clone.
+_landed_runner: Callable[[LandedInput], LandedStatus | None] | None = None
+
+
+@activity.defn
+async def landed_for_spec(request: LandedInput) -> LandedStatus | None:
+    """Return the observed-landed answer for one ready spec, or None on doubt.
+
+    Read-only and repo-authoritative: the landing branch's committed history is
+    compared against the stories the spec currently declares. The blocking git
+    read runs on a worker thread for the same reason `drift_for_spec` does
+    (FR-012).
+    """
+    runner = _landed_runner
+    if runner is not None:
+        return runner(request)
+
+    return await asyncio.to_thread(_landed_from_git, request)
+
+
+def _landed_from_git(request: LandedInput) -> LandedStatus | None:
+    """The blocking half of the landed read: git history and declared stories."""
+    from factory.verify.criteria import RequirementKind, parse_spec
+    from factory.workgraph.landed import landed_facts
+
+    repo_path = Path(request.target_repo)
+    default = landing_branch(repo_path)
+    try:
+        facts = landed_facts(
+            request.target_repo,
+            request.spec_dir,
+            default_branch=default,
+            fetch=False,
+        )
+        declared = tuple(
+            requirement.key
+            for requirement in parse_spec(request.spec_text)
+            if requirement.kind is RequirementKind.STORY
+        )
+    except Exception:
+        return None
+    if not declared:
+        return None
+    if all(story_key in facts for story_key in declared):
+        return LandedStatus(landed=True, kind=LandedKind.OBSERVED)
+    return None
 
 
 @activity.defn
