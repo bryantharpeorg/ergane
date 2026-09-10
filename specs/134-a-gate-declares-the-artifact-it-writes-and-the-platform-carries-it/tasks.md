@@ -49,6 +49,10 @@ Tests are written first and must fail before the implementation that satisfies
 them. Every acceptance scenario is provable from the diff, which is all the judge
 sees; runtime evidence is committed as pasted output.
 
+The 2026-09-10 release refinement in plan.md supersedes earlier path-only safety
+and epic/node/attempt-only storage assumptions. Preserve the existing story IDs;
+use T053 through T060 in their phases below. Do not dispatch a stale workgraph.
+
 `[P]` marks tasks that may be written in parallel within their phase. Tasks
 without it touch a region an earlier task in the same phase is already editing.
 
@@ -65,12 +69,12 @@ without it touch a region an earlier task in the same phase is already editing.
       that set, assert refusal with the entry and the permitted types named.
 - [ ] T003 [P] [US1] (spec US1-S3, FR-002) Given an entry naming a gate the
       manifest does not declare, assert refusal naming the entry and the declared
-      gates, the way `_read_writes` (`factory/verify/factory_yaml.py:431` —
+      gates, the way `_read_writes` (`factory/verify/factory_yaml.py:443` —
       `_read_writes`) already refuses one.
 - [ ] T004 [P] [US1] (spec US1-S4, FR-012) Given an entry whose path is absolute,
       and one whose relative path escapes the repository root, assert each is
       refused with the path named at load time — the same discipline `_read_caches`
-      (`factory/verify/factory_yaml.py:694` — `_read_caches`) applies to a declared
+      (`factory/verify/factory_yaml.py:761` — `_read_caches`) applies to a declared
       bind.
 - [ ] T005 [P] [US1] (spec US1-S5, FR-003) **The control.** Given a manifest
       declaring no artifacts, assert the parsed configuration is equal, in every
@@ -80,13 +84,13 @@ without it touch a region an earlier task in the same phase is already editing.
       configuration cannot be written honestly.
 - [ ] T006 [P] [US1] (spec US1-S6, FR-003) **The control.** Given a v1 manifest
       declaring `artifacts:`, assert it is refused as an unknown top-level key by
-      `_reject_unknown_keys` (`factory/verify/factory_yaml.py:269` —
+      `_reject_unknown_keys` (`factory/verify/factory_yaml.py:281` —
       `_reject_unknown_keys`).
 - [ ] T007 [P] [US1] (spec US1-S7, FR-013, plan trap 5) Given a parsed
       configuration carrying artifact declarations, assert the parser's own CLI
       renders it as one JSON document whose entries carry path and type as
       strings. A `Path` or a plain `Enum` raises inside `json.dumps` at
-      `factory/verify/factory_yaml.py:1152` — `_main`, and the caller cannot tell
+      `factory/verify/factory_yaml.py:1239` — `_main`, and the caller cannot tell
       that from a crashed parser.
 - [ ] T052 [P] [US1] (spec US1-S8, FR-012, plan trap 3) Given an entry whose path
       is spelled `./coverage.xml` and another spelled `reports/../coverage.xml`,
@@ -103,9 +107,9 @@ without it touch a region an earlier task in the same phase is already editing.
 
 - [ ] T008 [US1] (FR-001, FR-003) Add `artifacts` — that literal spelling, which
       FR-001 fixes because every target repository's manifest will carry it
-      forever — to `_V2_TOP_LEVEL_KEYS` (`factory/verify/factory_yaml.py:134`), as
+      forever — to `_V2_TOP_LEVEL_KEYS` (`factory/verify/factory_yaml.py:144`), as
       a **sibling** top-level key and not a richer gate value: `_read_gates`
-      (`factory/verify/factory_yaml.py:328` — `_read_gates`) requires each gate's
+      (`factory/verify/factory_yaml.py:340` — `_read_gates`) requires each gate's
       value to be a non-empty string, and changing that grammar would touch every
       manifest in existence. Spec 128 is adding `boundary_only_gates` to the same
       tuple; expect a one-line conflict there if both epics run at once.
@@ -121,7 +125,7 @@ without it touch a region an earlier task in the same phase is already editing.
       and US3 reuses this enum on `GateArtifact` rather than spelling the set a
       second time.
 - [ ] T010 [US1] (FR-001, FR-002, FR-012) Write the reader modelled on
-      `_read_caches` (`factory/verify/factory_yaml.py:694` — `_read_caches`):
+      `_read_caches` (`factory/verify/factory_yaml.py:761` — `_read_caches`):
       entry-is-a-mapping, unknown-key-inside-an-entry, empty-list and path-bound
       refusals, each naming the entry. **Invert that model's bound and keep yours
       lexical**: `_read_caches` refuses a *relative* path, expands it, calls
@@ -224,7 +228,7 @@ without it touch a region an earlier task in the same phase is already editing.
       and that the stored location holds the bytes the gate wrote. **Do not route
       this through `expected_artifacts`** — that field is the anti-rubber-stamp
       check for read-scope nodes and its one production caller passes `[]` at
-      `factory/workgraph/workflow.py:2615` — `_verify`. Use a git-ignored path in
+      `factory/workgraph/workflow.py:2714` — `_verify`. Use a git-ignored path in
       this fixture, so the test also proves collection reads from disk and not from
       `worktree_writes`.
 - [ ] T023 [P] [US3] (spec US3-S2, FR-007, plan trap 11) Given a declared artifact
@@ -269,15 +273,19 @@ without it touch a region an earlier task in the same phase is already editing.
       admitting an artifact there is a constitutional change that belongs in its
       own spec with its own decision entry.
 
+- [ ] T053 [US3] (US3-S10, FR-020) Before the collector change, add failing real-file tests for escaping/substituted symlinks, hardlink aliases, FIFO/special files, bounded reads and explicit refusal without gate-verdict change.
+- [ ] T054 [US3] (US3-S11, FR-022) Add failing before/after capture tests distinguishing unchanged preexisting report, newly produced bytes and mutation during collection; no stale-as-fresh or inconsistent snapshot claim.
+
 ### Implementation for this story
 
 - [ ] T031 [US3] (FR-006, FR-008) Add the `GateArtifact` record and `artifacts:
       tuple[GateArtifact, ...] = ()` on `GateResult`
-      (`factory/verify/models.py:362` — `GateResult`), defaulted so every caller and
+      (`factory/verify/models.py:374` — `GateResult`), defaulted so every caller and
       every stored row written before this story reads back unchanged. Type the
       record's type field with the `ArtifactType` `StrEnum` US1 defined — do not
       mint a second spelling of the four names, or the refusal message US1 emits
       and the record US3 writes can drift apart.
+- [ ] T055 [US3] (FR-020, FR-022) Implement handle-based safe collection and freshness/status metadata in `factory/verify/gates.py` and `factory/verify/models.py`; keep output references bounded and never execute/interpret report bytes. T053/T054 run before this implementation.
 - [ ] T032 [US3] (FR-006, FR-018, plan trap 8) Thread the destination across all
       four frames, defaulted empty and meaning "collect nothing" — `run_gates`
       (`factory/verify/gates.py:1225` — `run_gates`), `_run_gate_list`
@@ -318,7 +326,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `$HOME/code/ergane/.factory`, git-ignored, with the node worktrees under it,
       so that assertion is green only on a tmp root (trap 15).
 - [ ] T036 [P] [US5] (spec US5-S2, FR-017, plan trap 7) Assert the input `_verify`
-      (`factory/workgraph/workflow.py:2601` — `_verify`) **constructs** carries the
+      (`factory/workgraph/workflow.py:2700` — `_verify`) **constructs** carries the
       epic id, the node id and the attempt, and sets no filesystem path but the
       worktree — assert over that instance, not over `RunGatesInput`'s field list,
       which also declares `factory_yaml_path` and which this call site leaves at
@@ -350,6 +358,8 @@ without it touch a region an earlier task in the same phase is already editing.
       result equal, in every field that existed before this story, to what the same
       attempt stored before it.
 
+- [ ] T056 [US5] (US5-S7, FR-021) Before identity persistence changes, add failing real-store tests for two dispatches/captures sharing ordinals, identical redelivery and conflicting bytes; old artifact-free rows remain readable.
+
 ### Implementation for this story
 
 - [ ] T041 [US5] (FR-017) Add the epic id, node id and attempt to `RunGatesInput`
@@ -360,7 +370,7 @@ without it touch a region an earlier task in the same phase is already editing.
       (`factory/activities/verify_activities.py:634` — `_store_path`): resolve the
       root through `resolve_factory_root` (`factory/workgraph/worktree.py:191` —
       `resolve_factory_root`) the way `factory_root`
-      (`factory/activities/agent_activities.py:188` — `factory_root`) does, make it
+      (`factory/activities/agent_activities.py:179` — `factory_root`) does, make it
       absolute, and scope it by epic, node and attempt. Take the *site* from
       `_store_path` and the *resolver* from `factory_root`, and do not copy
       `_store_path`'s own resolution: it calls `resolve_env_path`
@@ -372,8 +382,9 @@ without it touch a region an earlier task in the same phase is already editing.
       is git-ignored and routinely sits inside that clone, `RunGatesInput` carries
       no target-repository path to compare against, and a guard invented from one
       would refuse every gate run on this host (plan trap 15).
+- [ ] T057 [US5] (FR-021) Extend activity identity and gate JSON codecs with dispatch, immutable capture identity, digest/status/freshness; publish atomically outside the node worktree and preserve previous captures. Use deterministic workflow identity, never an ambient timestamp guess.
 - [ ] T042 [US5] (FR-017) Pass the attempt's identity — and no path — from `_verify`
-      (`factory/workgraph/workflow.py:2601` — `_verify`), which holds
+      (`factory/workgraph/workflow.py:2700` — `_verify`), which holds
       `request.graph.epic_id`, `node.id` and `attempt` already. Resolve nothing
       here and import nothing that reads the filesystem.
 - [ ] T043 [US5] (FR-019) Extend `_gate_to_dict` (`factory/verify/store.py:1091` —
@@ -404,6 +415,8 @@ without it touch a region an earlier task in the same phase is already editing.
 - [ ] T047 [P] [US4] (spec US4-S3, FR-010) **The control.** Given an attempt whose
       row carries no artifacts, assert an empty tuple rather than a raise.
 
+- [ ] T058 [US4] (US4-S4, FR-023) Before extending the reader, add failing read-only tests for explicit dispatch/capture selection, returned digest/status/freshness and refused ambiguous old-style requests.
+
 ### Implementation for this story
 
 - [ ] T048 [US4] (FR-010) Add the exported reader beside `node_history`
@@ -411,6 +424,7 @@ without it touch a region an earlier task in the same phase is already editing.
       (`factory/verify/store.py:944` — `attempt_timings`), attributing each
       artifact to the `GateResult` it came off. "A reader must exist or nothing can
       display it" is PR-3's central argument and this is it.
+- [ ] T059 [US4] (FR-023) Extend the same exported reader rather than adding a second artifact API; retain unambiguous legacy calls and empty-result controls.
 
 ### Verification for this story
 
@@ -419,6 +433,7 @@ without it touch a region an earlier task in the same phase is already editing.
 
 ## Verification
 
+- [ ] T060 Operator pre-dispatch: derive the refined five-node graph into a new isolated output, inspect FR-020 through FR-023 coverage, and reassess US3's code+tests+evidence size against64KiB; do not overwrite the user's stale untracked graph.
 - [ ] T050 The full gate command passes green.
 - [ ] T051 The operator sequence in `plan.md` § "Verification the operator will
       run" is executed end to end. **Step 1's "without changing anything else in

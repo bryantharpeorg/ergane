@@ -1,5 +1,13 @@
 # Tasks: a confirmed usage row carries what it confirmed
 
+0.6 coordination (2026-09-10):167 owns audit packet acquisition/identity and
+per-metric completeness. These tasks remain the existing three usage-correctness
+slices; they do not make a request-only confirmed row token-complete. Preserve
+160's eventual source-specific evidence when refining against its landed writer.
+US2's recorded spend-contract decision hold remains; do not ready/dispatch the
+whole trio without resolving it or explicitly splitting that slice. No live
+ledger repair is part of this specification update.
+
 Read `plan.md` before starting. Trap 1 is the test that pins this defect as
 intended behaviour and must be amended rather than reverted or deleted. Trap 2
 is the one-line fix that puts the change in the wrong function and silently
@@ -112,7 +120,7 @@ editing.
 - [ ] T006 [US1] (FR-001, FR-002, traps 2, 7 and 12) Add a module-level helper
       to `factory/activities/usage_activities.py` that takes the three count
       values as arguments and returns `True` when at least one of them is not
-      `None`, and at `factory/activities/usage_activities.py:585` — `_record_for`
+      `None`, and at `factory/activities/usage_activities.py:594` — `_record_for`
       replace `final_usage_confirmed=confirmed is not None` with a call to it
       over the three count values `_record_for` has already built into its
       `usage` dict — `usage["prompt_tokens"]`, `usage["completion_tokens"]`,
@@ -123,7 +131,7 @@ editing.
       which is what makes the flag and the spend unable to disagree (FR-002,
       trap 12). Do **not** write the call at line 585 against `aggregate`: it
       is bound only inside the `else` branch at
-      `factory/activities/usage_activities.py:566` — `_record_for` and raises
+      `factory/activities/usage_activities.py:575` — `_record_for` and raises
       `UnboundLocalError` on the other two paths. That is about this call
       site only — User Story 2 calls the same helper *with* `aggregate`'s
       three fields from inside that `else` branch, where it is bound, and
@@ -131,15 +139,15 @@ editing.
       values are `None` on the subscription and read-failure branches, so
       FR-004 falls out of the same expression. Take the rule itself from
       `factory/usage/aggregate.py:42-45`, which already states it. Do **not**
-      change `factory/activities/usage_activities.py:497` — `_read_final_usage`,
+      change `factory/activities/usage_activities.py:506` — `_read_final_usage`,
       whose `None` means "a read failed" and routes the row into the snapshot
       fallback. Do **not** confine the change to
-      `factory/activities/usage_activities.py:517` — `_is_subscription_lease`;
+      `factory/activities/usage_activities.py:526` — `_is_subscription_lease`;
       070-US4 fixed a different empty-usage case and the defective rows all
       have real keys.
 - [ ] T007 [US1] (FR-004) Leave the subscription branch at
-      `factory/activities/usage_activities.py:543` — `_record_for` and the
-      read-failure fallback at `factory/activities/usage_activities.py:554` — `_record_for`
+      `factory/activities/usage_activities.py:552` — `_record_for` and the
+      read-failure fallback at `factory/activities/usage_activities.py:563` — `_record_for`
       writing `final_usage_confirmed` false with the spend figures they write
       today. Both are already honest; the diff must show them unchanged.
 - [ ] T008 [US1] (FR-001) Leave the two cache metrics out of the predicate.
@@ -197,19 +205,19 @@ editing.
 ### Implementation for this story
 
 - [ ] T014 [US2] (FR-006, FR-007, traps 3 and 12) In the confirmed branch, at
-      `factory/activities/usage_activities.py:573-575` — `_record_for`, write
+      `factory/activities/usage_activities.py:582-584` — `_record_for`, write
       `None` for `spend_usd` when the aggregate is not a measurement **and**
       the key's counter is `0.0`, and keep the counter in every other case.
       Decide "not a measurement" by **calling User Story 1's module-level
       helper** with `aggregate.prompt_tokens`, `aggregate.completion_tokens`
       and `aggregate.request_count` — the names bound at
-      `factory/activities/usage_activities.py:566` — `_record_for`, which are
+      `factory/activities/usage_activities.py:575` — `_record_for`, which are
       the same three values the flag reads. Do not restate the predicate as a
       second expression, and do not reach for `usage["prompt_tokens"]` here:
       at this line the `usage` dict is still being built and that key does not
       exist yet, which is the mirror image of trap 12. Do not hoist a local
       above the dict either — that edit lands on
-      `factory/activities/usage_activities.py:585` — `_record_for`, the line
+      `factory/activities/usage_activities.py:594` — `_record_for`, the line
       trap 8's four control tests watch. The shared helper is what makes "the
       flag and the spend cannot disagree" a fact about the code rather than an
       instruction.

@@ -1,15 +1,18 @@
 # Story and spec audit packets — release brief
 
-Draft, 2026-09-10. Inspected against buildout
+Release scope approved 2026-09-10; implementation not yet delivered. Inspected against buildout
 `a654fca272c34d017888f6dc9281b4654be8f469`.
 
-The user requested downloadable attestation packets and prefers waiting for 0.6
-if the addition is reasonably bounded. The recommendation is to include the
-packet feature, not the entire general-purpose lifecycle-listener framework.
+The user explicitly approved downloadable story/spec attestation packets for
+0.6.0 on 2026-09-10 and requested the spec updates. Include the complete packet
+feature, not the entire general-purpose lifecycle-listener framework.
 The provisional estimate is 10–14 additional story-sized changes and roughly
 3–5 additional days including qualification, beyond the remaining migration and
 release work. This is not a measured throughput forecast or publication date;
-refinement may change it. This brief is neither a ready trio nor a dispatch.
+refinement may change it. The implementation contract is now the draft
+`specs/167-each-story-and-spec-keeps-an-audit-packet/` trio: six merge-ordered
+stories with required artifact/evidence dependencies 134 and 160. This brief is
+neither a ready-state change nor a dispatch.
 
 ## Problem Statement
 
@@ -86,7 +89,7 @@ packet revisions. The judge stays in the inner loop, never in CI.
 
 ## Implementation Decisions
 
-These are proposed module boundaries for refinement, not authorization to change
+These are the approved feature boundaries, not authorization to change
 the live worker, policy or storage destination.
 
 ### Evidence identity and acquisition
@@ -248,7 +251,16 @@ This is an audit packet, distinct from the glossary's **attested landing**, whic
 is a frontmatter-based reconciliation fact. Packet generation does not mark a
 spec landed, close findings or attest that an unobserved story was built.
 
-Next refinement must produce complete trios with explicit merge dependencies,
-current symbol-anchored reuse claims, test-first tasks and a normal validation
-report. The global roadmap remains paused; the active157 migration run is not
-interrupted by this draft. This brief changes no release artifact or public repo.
+The 167 trio now supplies explicit merge dependencies, current symbol-anchored
+reuse claims, test-first tasks and acceptance scenarios for the six packet
+slices.134 is refined for safe immutable capture;135 remains coordinated usage
+work with its existing spend-contract decision hold preserved.167 does not
+depend on that reversal: it reports source measurements and incompleteness
+without rewriting legacy values. Neither a true legacy confirmation flag nor
+135's future count predicate establishes complete token coverage.
+
+The global roadmap remains paused; the active157 migration run is not
+interrupted by these drafts. Publication still requires implementation, normal
+gates/judge/native queue, actual deployed packet qualification, documentation
+refresh and final release validation. No packet code, service or upload exists
+merely because these specs do.

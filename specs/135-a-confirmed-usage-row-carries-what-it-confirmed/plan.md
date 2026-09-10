@@ -1,5 +1,25 @@
 # Implementation Plan: a confirmed usage row carries what it confirmed
 
+## Release coordination — 2026-09-10
+
+Coordinated with explicitly approved0.6 packet spec167. Citation line hints
+outside spec frontmatter were mechanically mapped from unchanged source lines
+at602a92c to a654fca; the current usage writer was re-read. Historical
+measurements below remain dated observations, not new measurements.
+Keep the three existing
+story contracts and the US2 spend-decision hold: at inspected buildout a654fca,
+D-055 is latest and no entry authorizes the reversal. Historical397/795 figures
+below are dated observations, not current counts. Full anchor revalidation is
+still required before dispatch.
+
+The shared predicate means at least one count is measured, not that every token
+field is complete. A request-only row stays confirmed under US1 while a packet
+must show its tokens unknown.167 owns invocation/dispatch identity and richer
+per-source completeness; do not grow this small predicate/legacy-flag repair
+into that journal. Reconcile160's landed usage changes before touching the same
+writer, preserve its CLI corroboration and subscription behavior, and never
+backfill old execution/model identity from today's registry.
+
 Every `file:line` below was read from `ergane-buildout` at `602a92c` on
 2026-09-04 and verified to resolve to the symbol named. Do not trust an anchor
 that has moved; re-read before editing.
@@ -7,9 +27,9 @@ that has moved; re-read before editing.
 ## What already exists, and where
 
 **One assignment site, and it asks the wrong question.**
-`factory/activities/usage_activities.py:527` — `_record_for` builds the ledger
+`factory/activities/usage_activities.py:536` — `_record_for` builds the ledger
 row, and its last interesting line is
-`factory/activities/usage_activities.py:585` — `_record_for`:
+`factory/activities/usage_activities.py:594` — `_record_for`:
 
 ```python
     return UsageRecord(
@@ -29,8 +49,8 @@ row, and its last interesting line is
 
 `confirmed` is a `_ConfirmedUsage | None`. It is `None` for exactly two reasons,
 and `rows == []` is not one of them:
-`factory/activities/usage_activities.py:497` — `_read_final_usage`, whose body
-at `factory/activities/usage_activities.py:507-514` reads
+`factory/activities/usage_activities.py:506` — `_read_final_usage`, whose body
+at `factory/activities/usage_activities.py:516-523` reads
 
 ```python
     if client is None:
@@ -45,10 +65,10 @@ at `factory/activities/usage_activities.py:507-514` reads
 
 **The `usage` dict, not `aggregate`, is what the predicate can read.** All three
 branches of `_record_for` build the same six-key dict — the subscription branch
-at `factory/activities/usage_activities.py:543` — `_record_for`, the
-read-failure branch at `factory/activities/usage_activities.py:554` — `_record_for`,
+at `factory/activities/usage_activities.py:552` — `_record_for`, the
+read-failure branch at `factory/activities/usage_activities.py:563` — `_record_for`,
 and the confirmed branch, which binds `aggregate` at
-`factory/activities/usage_activities.py:566` — `_record_for` and then copies it
+`factory/activities/usage_activities.py:575` — `_record_for` and then copies it
 in. `aggregate` exists on one of those three paths; `usage` exists on all of
 them, and its three count keys are `None` on the two that are already honest.
 Trap 12, FR-002.
@@ -109,14 +129,14 @@ spend. FR-013 rewrites the paragraph once, in US1, phrased so that US2 does not
 have to come back to it.
 
 **The two branches that must not move.**
-`factory/activities/usage_activities.py:543` — `_record_for` is 070-US4's
+`factory/activities/usage_activities.py:552` — `_record_for` is 070-US4's
 subscription branch (NULL everything, flag false) and
-`factory/activities/usage_activities.py:554` — `_record_for` is the read-failure
+`factory/activities/usage_activities.py:563` — `_record_for` is the read-failure
 fallback (NULL tokens, snapshot spend, flag false). Both are already honest.
 FR-004.
 
 **The spend line and the contract it would reverse.**
-`factory/activities/usage_activities.py:573-575` — `_record_for`:
+`factory/activities/usage_activities.py:582-584` — `_record_for`:
 
 ```python
             # The key's own counter, not the row sum: `/key/info` is the
@@ -215,9 +235,9 @@ flag assertion and leaves the spend assertion alone; trap 11 is the other half.
 
 **Trap 2 — The one-line fix is in the wrong function and silently changes the
 dollar figure.** It is very tempting to write `if not rows: return None` inside
-`factory/activities/usage_activities.py:497` — `_read_final_usage`. That is
+`factory/activities/usage_activities.py:506` — `_read_final_usage`. That is
 wrong. `None` routes the attempt into the fallback branch at
-`factory/activities/usage_activities.py:554` — `_record_for`, which writes
+`factory/activities/usage_activities.py:563` — `_record_for`, which writes
 `snapshot.spend_usd` — the last heartbeat — instead of the key's counter, and
 writes `None` when there was never a snapshot. The flag would come out right and
 the spend would silently become a different number on 397 rows' worth of future
@@ -286,8 +306,8 @@ standing prohibition, and do not treat it as the fix either.
 **Trap 7 — 070-US4 is a decoy.** `git log --all --grep=final_usage_confirmed`
 returns two commits and they are the same work: `da44b6e`, the squashed 070-US4
 landing, and `8adde4b`, its pre-squash counterpart. What that work added is
-`factory/activities/usage_activities.py:517` — `_is_subscription_lease` and the
-branch at `factory/activities/usage_activities.py:543` — `_record_for`, which
+`factory/activities/usage_activities.py:526` — `_is_subscription_lease` and the
+branch at `factory/activities/usage_activities.py:552` — `_record_for`, which
 writes `final_usage_confirmed=False` for an empty key. It fixed a **different**
 empty-usage case and left this one. An implementer who greps the history will
 find those commits, conclude the flag was already fixed, and confine the change
@@ -371,9 +391,9 @@ unpinned assertion there would be one more line US2 had to come back and
 rewrite.
 
 **Trap 12 — `aggregate` does not exist at the line the predicate goes on.**
-`factory/activities/usage_activities.py:566` — `_record_for` binds `aggregate`
+`factory/activities/usage_activities.py:575` — `_record_for` binds `aggregate`
 inside the `else` branch only. A predicate written at
-`factory/activities/usage_activities.py:585` — `_record_for` as
+`factory/activities/usage_activities.py:594` — `_record_for` as
 `aggregate.request_count is not None` raises `UnboundLocalError` on the
 subscription and read-failure paths, and the implementer learns that from a
 stack trace rather than from this file. Read the three counts out of the `usage`
@@ -384,15 +404,15 @@ expression instead of needing a special case. FR-002.
 
 **And the mirror image, which is why FR-002 asks for a helper rather than an
 expression.** US2's branch goes twelve lines earlier, at
-`factory/activities/usage_activities.py:573-575` — `_record_for`, *inside* the
+`factory/activities/usage_activities.py:582-584` — `_record_for`, *inside* the
 dict literal that is still being built: `usage["prompt_tokens"]` does not exist
 there, and the only names in scope are `aggregate` — bound at
-`factory/activities/usage_activities.py:566` — `_record_for` — and `confirmed`.
+`factory/activities/usage_activities.py:575` — `_record_for` — and `confirmed`.
 So "reuse US1's predicate" is not an instruction an implementer can carry out
 unless US1 left something callable behind, and the two ways of improvising it
 are both bad: restate the expression over `aggregate` and the flag and the spend
 can drift apart, or hoist a local above the dict and the edit lands on
-`factory/activities/usage_activities.py:585` — `_record_for`, the one line trap
+`factory/activities/usage_activities.py:594` — `_record_for`, the one line trap
 8's four control tests watch. FR-002 therefore requires US1 to land a
 module-level helper over the three values, and FR-006 requires US2 to call that
 same helper with `aggregate.prompt_tokens`, `aggregate.completion_tokens` and
