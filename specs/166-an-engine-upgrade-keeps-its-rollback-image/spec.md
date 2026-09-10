@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 depends_on_landed:
   - 105-the-cli-and-the-image-share-one-version
   - 104-install-brings-the-container-up-configured
@@ -169,6 +169,6 @@ US3:
   implements: [FR-006, FR-007, FR-008, FR-009]
 ```
 
-The merge edges protect the shared upgrade module. Authoring this draft does not
+The merge edges protect the shared upgrade module. Readying this spec does not
 dispatch it or resume the global roadmap. Select a deliberate build slot within
 the approved release work and qualify the final image before publication.

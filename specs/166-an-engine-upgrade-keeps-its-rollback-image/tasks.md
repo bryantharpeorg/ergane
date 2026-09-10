@@ -3,6 +3,9 @@
 Read the complete trio and plan traps. Use real generated artifacts and identity
 files beneath temporary roots. Factory tests capture every child operation; no
 Docker daemon, operator login, worker mutation or production fault injection.
+The dependency check and readiness preflight are recorded in the plan; neither
+changes the three story slices below nor authorizes live upgrade qualification
+inside a factory gate. Reconcile the already-landed onboarding warnings in US3.
 
 ## User Story 1 — Bound image cleanup
 

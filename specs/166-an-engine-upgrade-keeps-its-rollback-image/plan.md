@@ -2,7 +2,10 @@
 
 ## Evidence and scope
 
-Read against buildout `a654fca272c34d017888f6dc9281b4654be8f469`. Original
+Revalidated against buildout `d7118c57e57c010db2b2ca1cbaf5b787ff159efd`.
+The four cited production modules and two cited test modules are byte-identical
+to the original qualification base `a654fca272c34d017888f6dc9281b4654be8f469`.
+Original
 container contracts are the landed 104/105 trios; their historical line numbers
 and statements about missing modules are not the current tree.
 
@@ -118,10 +121,23 @@ container installation, the identity schema, systemd deployment or configuration
    a small local regression. Gates, judge and native merge queue remain required.
 9. Keep evidence compact and story-local. Each diff, including evidence, remains
    below 64 KiB. Do not duplicate old evidence or rewrite landed 104/105 trios.
-10. The onboarding-refresh branch also edits `docs/container.md` and
+10. The onboarding refresh has landed in `docs/container.md` and
     `docs/cli/engine.md`. Reconcile its current qualification warnings at landing;
     do not overwrite unrelated onboarding edits or call a mocked gate a live
     image qualification. US3 alone owns upgrade documentation for this epic.
+
+## Readiness and dispatch boundary
+
+The explicit release repair approval covers these three merge-ordered stories.
+At the pinned buildout revision, all seven104 stories and all four105 stories
+have observed landing facts; no attestation fallback is needed. The complete
+trio passes all12 validation layers, including its three local finding keys,
+without skipped layers, refusals or evidence warnings. Ready is eligibility,
+not an automatic dispatch or a claim that the defects are repaired.
+
+Keep the current epic and worker unchanged. Select this repair's slot in the
+approved release sequence only after normal spec landing and final-base
+revalidation. Do not resume the global roadmap to dispatch it implicitly.
 
 ## Independent operator release qualification
 
