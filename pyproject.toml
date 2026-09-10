@@ -53,6 +53,20 @@ packages = ["factory"]
 # one does not ship either.
 exclude = ["**/*.py.base"]
 
+# The sdist is the portable build root for release validation: it has to carry
+# every canonical skill that the wheel force-include copies.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/.agents/skills/**",
+    "/.claude/skills/**",
+    "/container/**",
+    "/default_floor.md",
+    "/factory/**",
+    "/personas.example.yaml",
+    "/pyproject.toml",
+    "/README.md",
+]
+
 # The persona registry travels inside the package.
 #
 # Principle VII routes every node through `personas.yaml`, so an Ergane that
@@ -78,6 +92,12 @@ exclude = ["**/*.py.base"]
 # config but `test_every_shipped_pack_travels_in_the_wheel`, which reads a built
 # wheel — an exclusion added below would show up there and nowhere else.
 [tool.hatch.build.targets.wheel.force-include]
+".agents/skills/floor-status" = "factory/skills/floor-status"
+".agents/skills/escalation-triage" = "factory/skills/escalation-triage"
+".agents/skills/findings-ingest" = "factory/skills/findings-ingest"
+".agents/skills/away-mode" = "factory/skills/away-mode"
+".agents/skills/build-metrics" = "factory/skills/build-metrics"
+".agents/skills/spec-html" = "factory/skills/spec-html"
 "personas.example.yaml" = "factory/personas.yaml"
 "container/seccomp-ergane.json" = "factory/container/seccomp-ergane.json"
 "container/ergane-engine.profile" = "factory/container/ergane-engine.profile"

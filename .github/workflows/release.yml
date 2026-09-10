@@ -62,8 +62,8 @@ jobs:
           fi
           echo "Tag ${TAG} matches declared version ${DECLARED_VERSION}"
 
-      - name: Build distribution
-        run: uv build --wheel
+      - name: Build wheel and portable source distribution
+        run: uv build --wheel --sdist
 
       - name: Validate wheel metadata and contents
         shell: bash
@@ -84,6 +84,8 @@ jobs:
             echo "VALIDATION-FAIL: personas.yaml missing from wheel" >&2
             exit 1
           fi
+
+          uv run python -m factory.cli.skills validate-release --dist dist
 
           echo "Validation passed for ${WHEEL}"
 

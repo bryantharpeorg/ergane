@@ -1,0 +1,277 @@
+"""US1 of epic 087: canonical skill directories survive every packaging route."""
+
+from __future__ import annotations
+
+import os
+import hashlib
+import shutil
+import subprocess
+import tarfile
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from factory.cli.skills import (
+    CANONICAL_SKILLS_ROOT,
+    DECLARED_SKILLS,
+    SkillPackagingError,
+    source_inventory,
+    validate_release,
+    wheel_inventory,
+)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+UV = shutil.which("uv")
+pytestmark = pytest.mark.skipif(UV is None, reason="uv must be on PATH to build")
+
+
+def _copy_worktree(destination: Path) -> Path:
+    """Copy the working tree, including unstaged source-tree mutations."""
+    destination.mkdir()
+    listed = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    for raw_path in listed.split(b"\0"):
+        if not raw_path:
+            continue
+        source = REPO_ROOT / os.fsdecode(raw_path)
+        target = destination / os.fsdecode(raw_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            os.symlink(os.readlink(source), target)
+        elif source.is_file():
+            shutil.copy2(source, target, follow_symlinks=False)
+    return destination
+
+
+def _copy_skill_source(destination: Path) -> None:
+    shutil.copytree(
+        REPO_ROOT / CANONICAL_SKILLS_ROOT,
+        destination / CANONICAL_SKILLS_ROOT,
+        symlinks=True,
+    )
+    shutil.copytree(
+        REPO_ROOT / ".claude" / "skills",
+        destination / ".claude" / "skills",
+        symlinks=True,
+    )
+
+
+def _build(cwd: Path, *arguments: str) -> None:
+    assert UV is not None
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = ""
+    environment.pop("VIRTUAL_ENV", None)
+    subprocess.run(
+        [UV, "build", *arguments, "--out-dir", "dist"],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
+def _build_wheel(repo: Path) -> Path:
+    _build(repo, "--wheel")
+    wheels = sorted((repo / "dist").glob("*.whl"))
+    assert len(wheels) == 1, f"expected one wheel, got {wheels}"
+    return wheels[0]
+
+
+def _build_sdist(repo: Path) -> Path:
+    _build(repo, "--sdist")
+    sdists = sorted((repo / "dist").glob("*.tar.gz"))
+    assert len(sdists) == 1, f"expected one sdist, got {sdists}"
+    return sdists[0]
+
+
+def _sdist_source_records(sdist: Path) -> dict[str, str]:
+    records: dict[str, str] = {}
+    extraction = sdist.parent / "extracted"
+    with tarfile.open(sdist, "r:*") as archive:
+        for member in archive.getmembers():
+            marker = "/.agents/skills/"
+            marker_position = member.name.find(marker)
+            if member.isdir() or marker_position < 0:
+                continue
+            relative = member.name[marker_position + len(marker) :]
+            if not relative or relative.split("/", 1)[0] not in DECLARED_SKILLS:
+                continue
+            if member.issym() or member.islnk():
+                archive.extractall(extraction, filter="data")
+                resolved = extraction / member.name
+                while resolved.is_symlink():
+                    target = os.readlink(resolved)
+                    resolved = resolved.parent / target if not os.path.isabs(target) else Path(target)
+                content = resolved.read_bytes()
+            else:
+                content = archive.extractfile(member).read()
+            records[relative] = hashlib.sha256(content).hexdigest()
+    return records
+
+
+def test_archive_and_sdist_rebuild_preserve_the_canonical_payload(tmp_path: Path) -> None:
+    """The wheel, sdist and sdist-rebuilt wheel all carry the full payload."""
+    repo = _copy_worktree(tmp_path / "repo")
+    source = source_inventory(repo)
+
+    wheel = _build_wheel(repo)
+    assert wheel_inventory(wheel, source) == wheel_inventory(wheel)
+
+    sdist = _build_sdist(repo)
+    assert _sdist_source_records(sdist) == {
+        record.path: record.digest for record in source
+    }
+
+    extraction = tmp_path / "sdist-unpacked"
+    extraction.mkdir()
+    subprocess.run(
+        ["tar", "-xf", str(sdist), "-C", str(extraction)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    extracted_root = next(extraction.iterdir())
+    _build(extracted_root, "--wheel")
+    rebuilt_wheels = sorted(extracted_root.glob("dist/*.whl"))
+    assert len(rebuilt_wheels) == 1
+    assert wheel_inventory(rebuilt_wheels[0]) == wheel_inventory(wheel)
+
+
+def test_generated_skill_file_parity_has_no_fixed_count(tmp_path: Path) -> None:
+    """A newly added file enters the derived inventory and drives its checks."""
+    repo = _copy_worktree(tmp_path / "repo")
+    generated = repo / CANONICAL_SKILLS_ROOT / "away-mode" / "generated-reference.md"
+    generated.write_text("generated by the fixture\n", encoding="utf-8")
+
+    wheel = _build_wheel(repo)
+    assert wheel_inventory(wheel, source_inventory(repo)) == wheel_inventory(wheel)
+
+    missing = tmp_path / "missing.whl"
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(
+        missing, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for member in source.infolist():
+            if member.filename.endswith("away-mode/generated-reference.md"):
+                continue
+            target.writestr(member, source.read(member))
+    with pytest.raises(SkillPackagingError, match="MISSING: away-mode/generated-reference.md"):
+        wheel_inventory(missing, source_inventory(repo))
+
+    extra = tmp_path / "extra.whl"
+    with zipfile.ZipFile(wheel) as source, zipfile.ZipFile(
+        extra, "w", compression=zipfile.ZIP_DEFLATED
+    ) as target:
+        for member in source.infolist():
+            target.writestr(member, source.read(member))
+        target.writestr("factory/skills/away-mode/extra.md", "not canonical\n")
+    with pytest.raises(SkillPackagingError, match="EXTRA: away-mode/extra.md"):
+        wheel_inventory(extra, source_inventory(repo))
+
+
+def test_release_validation_command_executes_the_sdist_rebuild_route(
+    tmp_path: Path,
+) -> None:
+    """The workflow's helper checks real archives and refuses named mutations."""
+    repo = _copy_worktree(tmp_path / "repo")
+    _build(repo, "--wheel")
+    _build(repo, "--sdist")
+    subprocess.run(
+        [UV, "run", "python", "-m", "factory.cli.skills", "validate-release", "--dist", "dist"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    os.symlink(
+        "../../../../pyproject.toml",
+        repo / CANONICAL_SKILLS_ROOT / "away-mode" / "escape.md",
+    )
+    mutation = subprocess.run(
+        [UV, "run", "python", "-m", "factory.cli.skills", "validate-release", "--dist", "dist"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert mutation.returncode == 1
+    assert "SYMLINK-ESCAPE: away-mode/escape.md" in mutation.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_failure", "mutate"),
+    [
+        (
+            "escaping symlink",
+            "SYMLINK-ESCAPE",
+            lambda root: _make_link(root, "escape.md", "../../../../pyproject.toml"),
+        ),
+        ("dangling symlink", "SYMLINK-DANGLING", lambda root: _make_link(root, "dangling.md", "does-not-exist.md")),
+        ("cyclic symlink", "SYMLINK-CYCLE", lambda root: _make_cycle(root)),
+        (
+            "credential-shaped file",
+            "CREDENTIAL",
+            lambda root: (root / "floor-status" / "operator.env").write_text(
+                "TOKEN=not-a-real-secret\n", encoding="utf-8"
+            ),
+        ),
+    ],
+)
+def test_source_validation_refuses_forbidden_skill_payload_mutations(
+    tmp_path: Path, name: str, expected_failure: str, mutate: object
+) -> None:
+    repo = tmp_path / "repo"
+    _copy_skill_source(repo)
+    mutate(repo / CANONICAL_SKILLS_ROOT)
+    with pytest.raises(SkillPackagingError) as failure:
+        source_inventory(repo)
+    assert expected_failure in str(failure.value)
+
+
+def _make_link(root: Path, name: str, target: str) -> None:
+    os.symlink(target, root / "away-mode" / name)
+
+
+def _make_cycle(root: Path) -> None:
+    first = root / "away-mode" / "one.md"
+    second = root / "away-mode" / "two.md"
+    os.symlink("two.md", first)
+    os.symlink("one.md", second)
+
+
+def test_stale_claude_compatibility_copy_is_refused_by_name(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _copy_skill_source(repo)
+    compatibility_link = repo / ".claude" / "skills" / "floor-status"
+    compatibility_link.unlink()
+    compatibility_link.mkdir(parents=True)
+    compatibility_link.joinpath("SKILL.md").write_text("stale\n", encoding="utf-8")
+    with pytest.raises(SkillPackagingError, match="COMPAT-DIVERGENT: floor-status"):
+        source_inventory(repo)
+
+
+def test_retired_collections_and_lockfile_names_are_not_allowed(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    shutil.copytree(
+        REPO_ROOT / CANONICAL_SKILLS_ROOT,
+        repo / CANONICAL_SKILLS_ROOT,
+        symlinks=True,
+    )
+    (repo / CANONICAL_SKILLS_ROOT / "ask-matt").mkdir()
+    (repo / CANONICAL_SKILLS_ROOT / "ask-matt" / "SKILL.md").write_text(
+        "retired collection\n", encoding="utf-8"
+    )
+    lockfile = repo / "skills-lock.json"
+    lockfile.write_text(
+        '{"version":1,"skills":{"phantom-skill":{"source":"history"}}}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillPackagingError, match="UNDECLARED-COLLECTION: ask-matt"):
+        source_inventory(repo)
