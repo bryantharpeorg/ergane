@@ -3,7 +3,7 @@
 ## Current seams and source contract
 
 - `factory/workgraph/adapter.py:1873` — `CodexAdapter` currently launches ordinary output and discovers rollouts in a persistent node home.
-- `factory/workgraph/adapter.py:2057` — `CodexAdapter._turn_happened` accepts any rollout found by `factory/workgraph/adapter.py:2102` — `_codex_rollouts`.
+- `factory/workgraph/adapter.py:2066` — `CodexAdapter._turn_happened` accepts any rollout found by `factory/workgraph/adapter.py:2143` — `_codex_rollouts`.
 - `factory/workgraph/adapter.py:1165` — `SharedAttemptPolicy` owns launch, monitoring, archival, and neutral result construction; keep per-CLI decoding behind this seam.
 - `factory/workgraph/adapter.py:300` — `AgentInvocation`, `factory/workgraph/adapter.py:357` — `HostAgentBackend`, and `factory/workgraph/adapter.py:388` — `BwrapBackend` currently expose one combined `log` and route stderr into stdout; Codex JSONL cannot use that contract unchanged.
 - `factory/activities/agent_activities.py:586` — `_classify_auth_failure` scans combined output substrings and reconstructs the result at line 617.
