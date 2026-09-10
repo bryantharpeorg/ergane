@@ -14,7 +14,7 @@ Paths in commands and code spans below are relative to the repository root unles
 shown as absolute paths. Choose the installation and deployment path that fits
 your environment before running its commands.
 
-The same path is also set as a single illustrated page — the one-command demo
+The same path is also set as a single illustrated page — the supervised demo
 with the ladder it climbs, the six steps, and the trap each one hides — at
 [`docs/onramp.html`](onramp.html). Open it in a browser rather than on
 GitHub, which renders it as markup. It is the shorter read; this page is the

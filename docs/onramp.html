@@ -229,28 +229,40 @@
       back, and lands what passes through a merge queue — with every token of spend
       attributed to the node that spent it.
     </p>
-    <p class="provenance">written against v0.5.0 · 2026-08-27 · every command below is real; the demo was run from this page, from cold, and passed</p>
+    <p class="provenance">setup references refreshed 2026-09-10 · the original v0.5.0 demo was exercised on 2026-08-27; that observation does not qualify a later image</p>
+    <p>
+      Keep the <a href="getting-started.md">full operator setup guide</a> beside
+      this overview. For Codex CLI with Ollama Cloud, follow the
+      <a href="codex-gateway-setup.md">Codex gateway procedure</a>: the operator
+      session, factory builders and independent judge have separate routing.
+    </p>
   </header>
 
   <section>
     <p class="kicker">Before anything else</p>
-    <h2>Prove it in one command</h2>
+    <h2>Watch a supervised demo</h2>
     <p>
       You do not have to take any of this page's word for it. The released demo
       boots the whole factory — engine, Temporal, LiteLLM gateway, Postgres —
-      from one file, and runs one real story end to end in front of you. Docker
+      from one file, and runs one real story through gates and judging, stopping
+      before a pull request or merge. This is not a landing qualification. Docker
       is the only thing you install; the kernel underneath it has to agree to one
       more thing, named in the trap below. You need an
       <a href="https://ollama.com">Ollama</a> API key; the demo's gateway fronts
       Ollama&nbsp;Cloud.
     </p>
 
-    <pre class="well"><code><span class="cmt"># exporting the key is the opt-in: the demo spends a few</span>
-<span class="cmt"># attempts' worth of tokens on it, and nothing else does</span>
+    <p>
+      Use an empty, dedicated demo directory and keep its downloaded compose
+      file for subsequent stop and cleanup commands. Review the file before
+      starting it. Use the same project name for each operation below.
+    </p>
+    <pre class="well"><code><span class="cmt"># opt in to real gateway probes, builder attempts and judging</span>
 export UPSTREAM_MODEL_API_KEY=&lt;your ollama key&gt;
 
 curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/compose.yaml \
-  | docker compose -f - up</code></pre>
+  -o compose.yaml
+docker compose -p ergane-demo -f compose.yaml up</code></pre>
 
     <div class="card">
       <p class="kicker">What you will watch</p>
@@ -277,13 +289,14 @@ curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/com
     <p>
       First boot is the slow one — Postgres initialises and the gateway applies
       its whole migration history before it answers a health check, so the show
-      starts a few minutes in. The install transcript that scrolls past carries
-      two <code>[FAIL]</code> lines of its own: <code>gh</code> is unauthenticated
-      on a stock host, and the <code>gh</code> in the image may be too old to
-      declare <code>baseRefOid</code>. Neither stops a demo that never lands
-      anything, and setting <code>GH_TOKEN</code> is optional. If the agent's
-      first attempt fails its gate, that is part of the show too: you will watch
-      the recovery ladder produce a second attempt and pass.
+      starts after those services are ready. The install transcript can report
+      <code>[FAIL]</code> findings for an unauthenticated <code>gh</code> or an
+      incompatible image toolchain. Read each finding: the demo may continue
+      past non-LLM installation findings, but it refuses a failed gateway or
+      sandbox probe. That tolerance does not qualify GitHub landing, and
+      <code>GH_TOKEN</code> is optional for this no-landing exercise. A failed
+      attempt can advance through the configured retry ladder; retries do not
+      guarantee success. Inspect the final epic and node states.
     </p>
 
     <p>
@@ -294,8 +307,13 @@ curl -fsSL https://github.com/bryantharpeorg/ergane/releases/latest/download/com
       enough. The two sentinels the demo writes live in the named volumes, which
       is what stops a restart from spending your key twice; it also means a second
       <code>up</code> in the same directory finds the work already done and says
-      so. To watch it again from cold, take the volumes with it:
-      <code>docker compose -p &lt;project&gt; down -v</code>.
+      so. To remove this demo's containers while retaining its named volumes,
+      use <code>docker compose -p ergane-demo -f compose.yaml down</code>.
+      Only if you deliberately want to erase this demo's saved state and spend
+      again on a fresh run, use
+      <code>docker compose -p ergane-demo -f compose.yaml down -v</code>.
+      The latter deletes the project's named volumes; it is not an upgrade or
+      a routine way to recover an unexplained failure.
     </p>
 
     <div class="trap">
@@ -357,7 +375,8 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap</code></pre>
         perfectly, passes a casual smoke test, and fails at the first dispatch.
       </p>
       <p>
-        The gateway must also serve every model alias the persona registry names —
+        The gateway must also serve every model and fallback alias used by
+        gateway-routed personas in the selected registry —
         <code>ergane install --requirements</code> prints the exact set, and
         <code>ergane install --scan</code> shows what a candidate endpoint actually
         offers before you commit to it.
@@ -369,9 +388,10 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap</code></pre>
       <tbody>
         <tr><td>an authenticated <code>gh</code> CLI</td><td class="why">it must push to and administer the repositories Ergane targets</td></tr>
         <tr><td>an organization-owned target repo</td><td class="why">GitHub merge queues need an org owner (public repo, or private under Enterprise Cloud) — a user-owned repository cannot host one at any plan level</td></tr>
-        <tr><td>Spec Kit's authoring skills, in your agent</td><td class="why">specs are Spec Kit documents; the skills that write and check them come from <a href="https://github.com/github/spec-kit">github/spec-kit</a> and live outside the tree</td></tr>
+        <tr><td>a prepared Spec Kit trio</td><td class="why">each feature needs spec, plan and tasks documents; authoring helpers from <a href="https://github.com/github/spec-kit">github/spec-kit</a> are optional, not a parser prerequisite</td></tr>
         <tr><td><code>bwrap</code> on <code>PATH</code></td><td class="why">the default runtime sandboxes agent work with it</td></tr>
         <tr><td><code>git</code>, <code>uv</code>, Python ≥ 3.11, Node.js</td><td class="why">the toolchain the engine and the agent CLI run on</td></tr>
+        <tr><td>the selected agent CLI and target toolchain</td><td class="why">install them on the worker host; a standalone Codex binary alone does not remove the current sandbox's Node.js requirement</td></tr>
         <tr><td>a systemd user session</td><td class="why">only if you want <code>ergane worker install</code> to run managed units</td></tr>
       </tbody>
     </table></div>
@@ -382,12 +402,16 @@ sudo apparmor_parser -r /etc/apparmor.d/bwrap</code></pre>
     <h2>Install the CLI</h2>
     <p>
       There are two install paths and they are not interchangeable. To run Ergane
-      against your own repositories, install the published distribution — the PyPI
+      as a host CLI, install the published distribution — the PyPI
       name is <code>ergane-cli</code>; the command it puts on your
       <code>PATH</code> is <code>ergane</code>:
     </p>
     <pre class="well"><code>uv tool install ergane-cli</code></pre>
-    <p>To work on Ergane itself, install from a checkout in editable mode:</p>
+    <p>
+      Native versioned workers also need an Ergane Git checkout, even when your
+      target is a different repository. To use that path, or work on Ergane
+      itself, install from a checkout in editable mode:
+    </p>
     <pre class="well"><code>git clone https://github.com/bryantharpeorg/ergane.git
 cd ergane
 uv venv
@@ -396,11 +420,13 @@ uv pip install -e .</code></pre>
     <div class="trap">
       <span class="tlabel">The trap</span>
       <p>
-        The two paths resolve the persona registry from different places. An
-        editable checkout reads the <code>personas.yaml</code> at its root, so
-        edits take effect immediately. A published install reads the copy packaged
-        inside the distribution — editing a <code>personas.yaml</code> in whatever
-        directory you happen to be standing in changes nothing.
+        Explicit configuration wins over either install's registry fallback:
+        <code>ERGANE_PERSONAS_PATH</code> (or its legacy alias), then the
+        operator's XDG configuration registry, then packaged data or the source
+        checkout's fallback <code>personas.yaml</code>. An existing operator
+        registry can override an editable checkout. Editing a same-named file
+        in the current directory does not select it, and changing the registry
+        does not reroute an already frozen epic.
         <code>ergane install</code> reports the path it resolved, and that path is
         the answer.
       </p>
@@ -433,8 +459,13 @@ ergane install --scan     <span class="cmt"># discover what an endpoint offers f
   <section>
     <p class="kicker">Step 4 <span class="stepno">of 6</span></p>
     <h2>Install the worker</h2>
+    <p>
+      This is the native checkout path. Package-only installations use the
+      separately managed <a href="container.md">container engine</a>; read its
+      mount, toolchain and upgrade limitations before choosing that tier.
+    </p>
     <pre class="well"><code>ergane worker install     <span class="cmt"># bridge + probe under systemd user supervision</span>
-ergane worker deploy      <span class="cmt"># freeze a commit into its own checkout and serve it</span></code></pre>
+ergane worker deploy &lt;validated-commit-or-tag&gt; <span class="cmt"># serve a qualified frozen revision</span></code></pre>
     <p>
       Install writes a <em>versioned</em> unit template rather than a worker;
       <code>deploy</code> starts an instance serving one frozen commit, so every
@@ -459,10 +490,23 @@ ergane repo onboard &lt;target-repo-path&gt;   <span class="cmt"># register it w
   <section>
     <p class="kicker">Step 6 <span class="stepno">of 6</span></p>
     <h2>Dispatch your first epic</h2>
+    <p>
+      Validate the authored trio first. A supervised trial can run through gates
+      and judging without opening a landing pull request:
+    </p>
+    <pre class="well"><code>ergane spec validate specs/&lt;dir&gt;
+ergane build ship specs/&lt;dir&gt; --target-repo &lt;target-repo-path&gt; --halt-after-pass</code></pre>
+    <p>
+      This is real execution, not a dry run: it uses tools and model calls and
+      writes runtime evidence. Preflight can still require target/GitHub
+      readiness. See the <a href="cli/build.md">build reference</a> for the halt
+      state and recovery options. For a build authorized to land, derive a fresh
+      graph and start it normally:
+    </p>
     <pre class="well"><code>ergane spec derive specs/&lt;dir&gt; --target-repo &lt;target-repo-path&gt;   <span class="cmt"># compile the spec to a work graph</span>
 ergane build start specs/&lt;dir&gt;/workgraph.json                     <span class="cmt"># put it on the floor</span></code></pre>
     <p>
-      Then watch it the way the demo taught you: every story climbs the same six
+      Then watch the full landing path: every story climbs the same six
       stops — <span class="chip done">merged</span> is the last word, and
       <code>ergane build status &lt;epic-id&gt;</code> narrates the climb.
     </p>

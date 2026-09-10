@@ -35,24 +35,27 @@ and reconciles the engine in one command (spec 104, US6).  Rebuild remains the
 remedy for the other case — a recorded path that is stale rather than unmounted,
 where no mount would help because the registry is what is wrong.
 
-## Mount the supervision home, not just the state root
+## Preserve the state and supervision mounts
 
-The state root (`~/.local/state/ergane` by default) holds the repo registry and
-durable engine state.  The supervision home (`~/.local/state/ergane/supervision`)
-holds the generated systemd units and the managed Temporal dev-server's SQLite
-database.  The Temporal database lives **one directory above** the supervision
-subdirectory, so a `compose down && up` that mounts only the state root silently
-discards all workflow history.  The reference compose mounts both explicitly.
+The Ergane state root normally lives at `/home/<operator>/.local/state/ergane`.
+Its `supervision` subdirectory holds generated supervision artifacts and frozen
+native-worker deployments. Temporal history is a sibling of that subdirectory,
+not a file inside it:
 
-The engine container does not share that database.  It writes its own history to
-`<state root>/temporal/engine.db`, beside the native tier's `dev.db` and never
-into it: two Temporal servers on one SQLite file is the same-host corruption
-hazard the same-path research exists to prevent.  The **state-root** mount carries
-`engine.db` across a `compose down && compose up`; the supervision-home mount does
-not, that database being a sibling of the supervision home rather than a child.
-One intended consequence: a host switching from the native tier starts with
-**empty workflow history** — migrating is an operator move, stopping both tiers
-and copying the file by hand.
+- Native managed Temporal: `<state root>/temporal/dev.db`.
+- Generated container project: `<state root>/temporal/engine.db`.
+
+The generated compose project mounts both the state root and supervision home,
+plus the resolved configuration directory and registered repositories at their
+same absolute paths. Keep those declarations intact. The **state-root** mount
+preserves `engine.db` across container recreation; mounting only the supervision
+subdirectory does not. Check the actual generated database path and volume
+coverage when using non-default locations.
+
+The two engine tiers deliberately use different SQLite files. Switching tiers
+does not migrate workflow history. Do not point two running Temporal servers at
+one file or copy a live SQLite database as an upgrade step. A history migration
+requires a separately planned, quiescent backup/restore and recovery check.
 
 ## Confinement artifacts
 
@@ -72,21 +75,32 @@ unacceptable can fall back to **config F** (`apparmor=unconfined`) documented in
 `docs/container-onramp-research-findings.md`, which depends on a host-loaded
 `bwrap` stub that the installer must place.
 
-## Subscription credential trade-off
+## Gateway and subscription credentials are different paths
 
-Subscription-routed personas (`factory/workgraph/adapter.py:767`) run the agent
-runner against the operator's own credential.  The factory copies that credential
-into each per-node HOME (`factory/workgraph/adapter.py:803`) so concurrent nodes
-do not share a writable credential file.  The operator's stored credential is
-never written to by an agent.  If the provider rotates refresh tokens on use, the
-copy still isolates concurrent nodes from invalidating one another, but the
-operator's own host login may be invalidated when the first node refreshes — a
-trade-off documented here and in the code.
+Codex gateway builders use per-attempt gateway keys, not a ChatGPT login. See
+[Codex gateway setup](codex-gateway-setup.md); an operator's session provider,
+the builder's runner/route, and the independent judge remain separate choices.
+
+A copied subscription credential is a separate writable file, **not an
+independent login or refresh-token stream**. Copies can still interfere when
+the provider rotates a token, and throwing away a refreshed copy loses the
+state needed by the next attempt. Do not use file copying as evidence that
+concurrent subscription attempts are safe.
+
+OpenAI's [managed-account automation guidance](https://learn.chatgpt.com/docs/auth/ci-cd-auth)
+requires preserving the credentials refreshed by Codex and serialized use of
+the credential stream on trusted private infrastructure. It is distinct from
+the gateway procedure. Credential ownership, host/container delivery and the
+applicable target-policy qualification must be established before enabling a
+subscription rung; this container guide does not establish them. Do not mount
+your interactive operator's writable Codex home into builders.
 
 ## Extending the image for target toolchains
 
-The base image ships the factory's own toolchain (Python, uv, node, git, the
-agent runner).  Repos that need system libraries or languages outside that set
+The base image ships the factory's own toolchain (Python, uv, Node.js, Git and
+agent CLIs). Check the actual image's pinned CLI versions and supported sandbox
+layout; a working host CLI is not proof of the container's tools. Repositories
+that need system libraries or languages outside that set
 can extend the image with:
 
 ```dockerfile
@@ -102,10 +116,12 @@ to remove if the engine is gone.
 
 ## Verbs the container does not support
 
-The container tier runs the engine; it does **not** run `ergane install` or
-`ergane worker install` inside itself.  Those verbs install systemd user units on
-the host.  The container's operational project is generated by `ergane install`
-in spec 104 and is started with `docker compose up`.
+Choose and manage the container tier from the host's `ergane install` flow.
+Do not use `ergane worker install` or native `worker deploy` inside the container;
+those commands require host systemd-user supervision and a native checkout.
+Container-safe configuration/verification paths are separate from installing
+host units. Operate the generated compose project, not a newly invented compose
+file or an unversioned worker started alongside it.
 
 ## The reference compose is a reference
 
@@ -117,12 +133,21 @@ same-path mounts from the interview answers.
 
 ## Upgrading the engine
 
-`ergane engine upgrade` moves the running container to the image that matches
-this CLI version.  It refuses while any epic is in flight, naming the open
-epic and what stopping the engine now would cost; pass `--force` only when
-you are willing to strand that work.  Once the floor is drained, the verb stops
-the running engine, starts the new pinned image, verifies through it with the
-same `ergane install --verify` battery, and removes local images that are
-older than the immediately previous version.  It keeps exactly two versions:
-the one it just started and the one it replaced, so a failed upgrade has a
-known rollback target.
+The intended `ergane engine upgrade` sequence is stop, start the CLI-matched
+image, verify and retain a rollback image. It refuses open epics unless forced;
+that refusal is not proof that its image-selection and cleanup paths are safe.
+
+**Do not use automated container upgrade until its image lifecycle is
+qualified.** An isolated audit of the current implementation reproduced an
+unrelated-images cleanup selection, a requested version not reaching Compose,
+and loss of the previous image reference after identity replacement. No real
+Docker operation was needed to reproduce those boundaries. The native
+versioned-worker deployment path is separate and is not affected by these
+specific findings.
+
+Before a container upgrade, preserve the resolved configuration and persona
+registry, workflow history, verification/usage stores and required attempt
+evidence. Record the actual current image reference/digest and intended target.
+Do not use `--force` or broad image pruning to get past an unexplained failure.
+See the [engine reference](cli/engine.md) for the command's current limits;
+an image retained on disk alone is not a tested rollback procedure.
