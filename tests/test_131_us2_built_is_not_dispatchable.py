@@ -164,3 +164,17 @@ def test_status_supplies_drift_that_reopens_a_landed_ready_spec(
     assert spec.dispatchable is True
     assert spec.rendered_state == "ready"
     assert drifted_for is not None and drifted_for("131-built") is True
+
+
+def test_observed_landing_does_not_restate_a_draft_as_built(tmp_path: Path) -> None:
+    """Only `ready` can enter the attestation window; other states keep their word."""
+    specs_root = build_corpus(tmp_path, {"131-draft": {"state": SpecState.DRAFT}})
+    roadmap = _read_corpus(specs_root)
+
+    readiness = compute_readiness(
+        roadmap, landed_for=_observed_landed, drifted_for=lambda spec_dir: False
+    )
+
+    spec = readiness.spec("131-draft")
+    assert spec.observed_landed is True
+    assert spec.rendered_state == "draft"

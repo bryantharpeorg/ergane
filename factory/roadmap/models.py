@@ -554,7 +554,11 @@ class SpecReadiness:
         """The state the render prints: `amended` overrides a drifted `landed`."""
         if self.drifted and self.state is SpecState.LANDED:
             return RENDERED_AMENDED
-        if self.observed_landed and not self.dispatchable:
+        if (
+            self.observed_landed
+            and self.state is SpecState.READY
+            and not self.dispatchable
+        ):
             return RENDERED_BUILT
         return self.state.value
 
