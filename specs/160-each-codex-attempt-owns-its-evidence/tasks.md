@@ -5,15 +5,15 @@ not a dependency. Write tests first; no real model turn is part of this epic.
 
 ## Phase 1: User Story 1 — A decoder identifies one current Codex execution
 
-- [ ] [US1-S1] Add official-shape failing JSONL fixtures and typed assertions for thread, turn, items, agent messages, fatal events, and usage in `tests/test_codex_events.py`.
+- [ ] [US1-S1] Add official-shape failing JSONL fixtures and typed assertions for thread, turn, items, agent messages, fatal events, and usage in `tests/test_codex_events.py`; use the plan's measured0.154.0 error shapes, distinguish diagnostic error items, and accept normal items without repeated thread identifiers.
 - [ ] [US1-S2] Add failing malformed, unknown, missing-thread, duplicate-terminal, and cross-thread cases requiring incomplete diagnostics and no fabricated evidence.
 - [ ] [US1-S3] Add token-pattern fixtures and failing redaction/bounding tests for orchestration serialization while retaining a caller-owned raw spool.
 - [ ] [US1] Implement the pure streaming decoder and frozen evidence models in `factory/workgraph/codex_events.py`.
 
 ## Phase 2: User Story 2 — The adapter archives only this attempt's execution as current evidence
 
-- [ ] [US2-S1] Add a failing persistent-home test with a prior rollout and a new pre-thread startup failure around `CodexAdapter._turn_happened`.
-- [ ] [US2-S2] Add a fake process emitting only an error event; require raw archival and absent turn/final message.
+- [ ] [US2-S1] Add a failing persistent-home test with a prior rollout and a new pre-thread configuration failure around `CodexAdapter._turn_happened`.
+- [ ] [US2-S2] Add fake processes emitting thread/turn starts, diagnostic error items, and fatal401 or missing-key events without model activity; retain protocol identity/raw archival while requiring false `agent_took_a_turn` and no final message.
 - [ ] [US2-S3] Add normal, timeout, cancellation, and redelivered-finalization archive tests for one attempt identity.
 - [ ] [US2-S4] Extend adapter conformance tests so Claude and all neutral consumers receive the same plain `AdapterResult` shape.
 - [ ] [US2-S5] Add failing HostAgentBackend and BwrapBackend tests with valid stdout JSONL interleaved in time with ordinary stderr; assert separate exact archive files and unchanged Claude combined logging.
@@ -23,8 +23,8 @@ not a dependency. Write tests first; no real model turn is part of this epic.
 
 ## Phase 3: User Story 3 — Refusals and questions come from typed current events
 
-- [ ] [US3-S1] Add failing non-auth exits quoting 401 in reasoning, tool output, and fixtures.
-- [ ] [US3-S2] Add a failing typed fatal-auth event with surrounding output and assert pre-agent refusal without rung charge.
+- [ ] [US3-S1] Add failing non-auth exits quoting401 in reasoning, tool output, fixtures, and the measured400 fatal error body.
+- [ ] [US3-S2] Add the measured typed fatal-auth error/turn.failed pair with surrounding diagnostics and assert exactly one pre-agent refusal without rung charge; do not fabricate numeric status fields absent from the measured events.
 - [ ] [US3-S3] Add failing question-marker controls for every non-agent item and non-final agent-message position.
 - [ ] [US3-S4] Add a field-enumerating preservation test over every current `AdapterResult` field so new fields enter the assertion automatically; do not require future spec 159 fields.
 - [ ] [US3] Refactor `_classify_auth_failure`, pre-agent detail, and question detection in `factory/activities/agent_activities.py` to consume typed evidence and preserve fields.
