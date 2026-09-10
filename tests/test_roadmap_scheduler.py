@@ -131,11 +131,11 @@ class _RecordingInterceptor(Interceptor):
 class _ActivityRecordingInterceptor(Interceptor):
     """Record the activity names a roadmap pass actually executed."""
 
-    def __init__(self, activity_names: list[str]) -> None:
-        self._activity_names = activity_names
+    def __init__(self, activity_calls: list[tuple[str, str | None]]) -> None:
+        self._activity_calls = activity_calls
 
     def intercept_activity(self, next):
-        activity_names = self._activity_names
+        activity_calls = self._activity_calls
 
         class _Inbound:
             def __init__(self, next):
@@ -145,7 +145,10 @@ class _ActivityRecordingInterceptor(Interceptor):
                 self.next.init(outbound)
 
             async def execute_activity(self, input):
-                activity_names.append(getattr(input.fn, "__name__", str(input.fn)))
+                account = getattr(input.args[0], "spec_dir", None) if input.args else None
+                activity_calls.append(
+                    (getattr(input.fn, "__name__", str(input.fn)), account)
+                )
                 return await self.next.execute_activity(input)
 
         return _Inbound(next)
@@ -681,7 +684,8 @@ async def run_roadmap(
     _SCRIPT.statuses = dict(statuses or {})
     _SCRIPT.on_dispatch = on_dispatch
     _SCRIPT.on_complete = on_complete
-    _SCRIPT.hold = set(hold_specs or {})
+    if hold_specs is not None:
+        _SCRIPT.hold = set(hold_specs)
     world.apply()
 
     from factory.activities.notify_activities import (
@@ -693,9 +697,9 @@ async def run_roadmap(
     from factory.activities.roadmap_activities import (
         clone_target,
         count_open_epics,
+        landed_for_spec,
         derive_spec,
         drift_for_spec,
-        landed_for_spec,
         onboard_target,
         preflight_spec,
         read_loop_config,
@@ -710,6 +714,7 @@ async def run_roadmap(
         clone_target,
         derive_spec,
         drift_for_spec,
+        landed_for_spec,
         preflight_spec,
         onboard_target,
         count_open_epics,

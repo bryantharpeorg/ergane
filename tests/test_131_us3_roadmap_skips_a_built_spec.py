@@ -95,7 +95,7 @@ async def test_a_spec_with_outstanding_work_still_clones_onboards_and_dispatches
         {"001-real": dict(state=SpecState.READY)},
     )
     world = RoadmapWorld()
-    activity_names: list[str] = []
+    activity_calls: list[tuple[str, str | None]] = []
     child_starts: list[str] = []
 
     async with run_roadmap(
@@ -103,13 +103,19 @@ async def test_a_spec_with_outstanding_work_still_clones_onboards_and_dispatches
         world,
         str(specs_root),
         on_dispatch=child_starts.append,
-        interceptors=[_ActivityRecordingInterceptor(activity_names)],
+        interceptors=[_ActivityRecordingInterceptor(activity_calls)],
     ) as handle:
         status = await handle.result()
 
     assert child_starts == ["001-real"]
-    assert "clone_target" in activity_names
-    assert "onboard_target" in activity_names
+    assert any(
+        name == "clone_target" and account == "001-real"
+        for name, account in activity_calls
+    )
+    assert any(
+        name == "onboard_target" and account == "001-real"
+        for name, account in activity_calls
+    )
     real = next(spec for spec in status.specs if spec.spec_dir == "001-real")
     assert real.dispatchable is False
     assert real.landed is True
@@ -200,7 +206,7 @@ async def test_built_ready_spec_never_reaches_clone_or_onboard(
         landed_runner=_built_landed("001-built"),
         drift_runner=lambda request: False,
     )
-    activity_names: list[str] = []
+    activity_calls: list[tuple[str, str | None]] = []
     child_starts: list[str] = []
 
     async with run_roadmap(
@@ -209,7 +215,7 @@ async def test_built_ready_spec_never_reaches_clone_or_onboard(
         str(specs_root),
         max_concurrent_epics=2,
         on_dispatch=child_starts.append,
-        interceptors=[_ActivityRecordingInterceptor(activity_names)],
+        interceptors=[_ActivityRecordingInterceptor(activity_calls)],
     ) as handle:
         status: RoadmapStatus = await handle.result()
 
@@ -217,5 +223,11 @@ async def test_built_ready_spec_never_reaches_clone_or_onboard(
     assert built.dispatchable is False
     assert built.rendered_state == "built"
     assert all("001-built" not in child_id for child_id in child_starts)
-    assert "clone_target" not in activity_names
-    assert "onboard_target" not in activity_names
+    assert not any(
+        name == "clone_target" and account == "001-built"
+        for name, account in activity_calls
+    )
+    assert not any(
+        name == "onboard_target" and account == "001-built"
+        for name, account in activity_calls
+    )
