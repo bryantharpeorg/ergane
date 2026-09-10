@@ -1,0 +1,181 @@
+"""US3: skills status distinguishes filesystem states without mutation."""
+
+from __future__ import annotations
+
+import importlib.metadata
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from factory.cli.skills import (
+    CANONICAL_SKILLS_ROOT,
+    COMPATIBILITY_SKILLS_ROOT,
+    install,
+    skills_status,
+)
+
+
+RUNBOOK = "docs/codex-primary-operator-migration-runbook-2026-09-09.md"
+
+
+def manifest_path(home: Path) -> Path:
+    return home / "state" / "ergane" / "skills" / "manifest.json"
+
+
+def entry(home: Path, client: str, skill: str):
+    status = skills_status()
+    matches = [
+        item
+        for item in status.entries
+        if item.client == client and item.skill == skill
+    ]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def status_cases(home: Path, monkeypatch: pytest.MonkeyPatch):
+    def absent():
+        for root in (CANONICAL_SKILLS_ROOT, COMPATIBILITY_SKILLS_ROOT):
+            for path in (home / root).glob("*"):
+                if path.is_symlink():
+                    path.unlink()
+                else:
+                    for child in sorted(path.rglob("*"), reverse=True):
+                        if child.is_dir():
+                            child.rmdir()
+                        else:
+                            child.unlink()
+                    path.rmdir()
+
+    def stale():
+        manifest = json.loads(manifest_path(home).read_text(encoding="utf-8"))
+        manifest["source_version"] = "0.0.1"
+        manifest["package_version"] = "0.0.1"
+        manifest_path(home).write_text(json.dumps(manifest), encoding="utf-8")
+
+    def modified():
+        skill = home / CANONICAL_SKILLS_ROOT / "floor-status" / "SKILL.md"
+        skill.write_bytes(skill.read_bytes() + b"\n# operator change\n")
+
+    def collided():
+        path = home / CANONICAL_SKILLS_ROOT / "build-metrics" / "SKILL.md"
+        path.write_bytes(b"operator-owned bytes\n")
+        manifest = json.loads(manifest_path(home).read_text(encoding="utf-8"))
+        manifest["entries"].pop(path.relative_to(home).as_posix())
+        manifest_path(home).write_text(json.dumps(manifest), encoding="utf-8")
+
+    def broken_alias():
+        path = home / COMPATIBILITY_SKILLS_ROOT / "spec-html"
+        path.unlink()
+        path.symlink_to("/nowhere/that/does/not/exist")
+
+    def unavailable_version():
+        def refuse(name: str):
+            raise importlib.metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(importlib.metadata, "version", refuse)
+
+    def unsupported_manifest():
+        manifest = json.loads(manifest_path(home).read_text(encoding="utf-8"))
+        manifest["schema"] = 999
+        manifest_path(home).write_text(json.dumps(manifest), encoding="utf-8")
+
+    return (
+        ("absent", absent, "absent", "Run `ergane skills install`."),
+        (
+            "current-filesystem",
+            lambda: None,
+            "current-filesystem",
+            "No repair needed; fresh client loading remains unqualified.",
+        ),
+        (
+            "stale",
+            stale,
+            "stale",
+            "Run `ergane skills install` after preserving desired local changes.",
+        ),
+        (
+            "modified",
+            modified,
+            "modified",
+            "Preserve the local bytes; run install for any unmodified paths.",
+        ),
+        (
+            "collided",
+            collided,
+            "collided",
+            "Preserve the conflicting path; resolve it deliberately before install.",
+        ),
+        (
+            "broken-alias",
+            broken_alias,
+            "broken-alias",
+            "Run `ergane skills install` to replace the broken compatibility alias.",
+        ),
+        (
+            "unavailable-version",
+            unavailable_version,
+            "unavailable-version",
+            "Install the packaged CLI to provide skill version metadata.",
+        ),
+        (
+            "unsupported-manifest",
+            unsupported_manifest,
+            "unsupported-manifest",
+            "Back up and explicitly migrate or remove the unsupported manifest.",
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "name,mutate,state,remedy",
+    ("absent", "current-filesystem", "stale", "modified", "collided", "broken-alias", "unavailable-version", "unsupported-manifest"),
+)
+def test_status_truth_table_reports_state_and_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    home.mkdir()
+    state.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    install()
+
+    cases = dict(
+        (name, value)
+        for name, *value in status_cases(home, monkeypatch)
+    )
+    _, mutate, expected_state, expected_remedy = cases[name]
+    mutate()
+
+    status = skills_status()
+    if name in {"absent", "stale", "modified", "collided", "broken-alias"}:
+        client = "claude" if name in {"collided", "broken-alias"} else "codex"
+        observed = entry(home, client, "floor-status")
+        assert observed.state == expected_state
+        assert observed.remedy == expected_remedy
+        assert observed.package_version == "0.5.0"
+        if name in {"stale", "modified", "broken-alias"}:
+            assert observed.installed_version == "0.0.1"
+    elif name == "current-filesystem":
+        observed = entry(home, "codex", "floor-status")
+        assert observed.state == expected_state
+        assert observed.remedy == expected_remedy
+        assert observed.installed_version is None
+    elif name == "unavailable-version":
+        observed = entry(home, "codex", "floor-status")
+        assert observed.state == expected_state
+        assert observed.remedy == expected_remedy
+        assert status.package_version is None
+    else:
+        assert all(
+            item.state == expected_state for item in status.entries
+        )
+        assert all(
+            item.remedy == expected_remedy for item in status.entries
+        )
+    assert "modification time" not in status.rendered.lower()
