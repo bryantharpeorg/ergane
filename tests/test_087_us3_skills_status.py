@@ -19,6 +19,7 @@ from factory.cli.skills import (
     COMPATIBILITY_SKILLS_ROOT,
     install,
     skills_status,
+    render_status,
 )
 
 
@@ -302,3 +303,26 @@ def test_status_command_is_read_only_without_client_or_network_execution(
 
     assert exit_code == 0
     assert (filesystem_snapshot(home), filesystem_snapshot(state)) == before
+
+
+def test_current_filesystem_presentation_does_not_claim_client_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    home.mkdir()
+    state.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    install()
+    manifest_path(home).unlink()
+
+    status = skills_status()
+    rendered = render_status(status)
+
+    assert "current-filesystem" in rendered
+    assert "fresh client loading remains unqualified" in rendered
+    assert RUNBOOK in rendered
+    assert "shared-discovery gate" in rendered
+    assert "client loaded" not in rendered
