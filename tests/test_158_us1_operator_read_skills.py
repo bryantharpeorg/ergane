@@ -26,7 +26,8 @@ ESCALATION_SKILL = ROOT / ".agents/skills/escalation-triage"
 FORBIDDEN_ACTION_RE = re.compile(
     r"\b(?:git\s+(?:fetch|merge|push|checkout|reset)|gh\s+(?:pr\s+merge|run\s+rerun)|"
     r"ergane\s+(?:build\s+ship|build\s+(?:pause|resume|kill|answer|resolve)|"
-    r"findings\s+apply|spec\s+ship)|systemctl\s+(?:start|restart|stop|kill|reload))\b"
+    r"findings\s+(?:apply|report|resolve|promote|triage\s+--apply)|"
+    r"spec\s+ship)|systemctl\s+(?:start|restart|stop|kill|reload))\b"
 )
 FORBIDDEN_IMPORT_RE = re.compile(
     r"^(?:import|from)\s+(?:subprocess|os|shutil|socket|httpx|requests)\b",
