@@ -12,7 +12,7 @@ from temporalio.testing import WorkflowEnvironment
 
 from factory.activities import roadmap_activities as ra
 from factory.roadmap.models import LandedKind, LandedStatus, SpecState
-from factory.roadmap.workflow import _FAST, RoadmapStatus, RoadmapWorkflow
+from factory.roadmap.workflow import _FAST, RoadmapWorkflow
 from factory.worker import ACTIVITIES
 from tests.roadmap_script import _SCRIPT
 from tests.test_roadmap_scheduler import (
@@ -265,3 +265,38 @@ async def test_cost_control_detects_an_unbounded_landed_read(
     ]
 
     assert len(landed_calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_a_built_but_drifted_ready_spec_is_read_and_dispatched(
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+) -> None:
+    """A real drift answer keeps an amendment in the dispatchable work."""
+    specs_root = build_corpus(tmp_path, {"001-amended": dict(state=SpecState.READY)})
+    world = RoadmapWorld(
+        landed_runner=lambda _request: LandedStatus(
+            landed=True, kind=LandedKind.OBSERVED
+        ),
+        drift_runner=lambda _request: True,
+    )
+    activity_calls: list[tuple[str, str | None]] = []
+    child_starts: list[str] = []
+    async with run_roadmap(
+        temporal_env,
+        world,
+        str(specs_root),
+        on_dispatch=child_starts.append,
+        interceptors=[_ActivityRecordingInterceptor(activity_calls)],
+    ) as handle:
+        status = await handle.result()
+
+    drift_calls = [
+        name
+        for name in _activity_names_and_specs(activity_calls)
+        if name.startswith("drift_for_spec:")
+    ]
+    assert drift_calls == ["drift_for_spec:001-amended"]
+    assert child_starts == ["001-amended"]
+    assert world.clone_calls == ["/srv/factory/targets/library"]
+    assert any(name == "onboard_target" for name, _ in activity_calls)
