@@ -4113,6 +4113,10 @@ class EpicWorkflow:
         )
         record.last_snapshot = None
 
+        # Bound before the bracket so a raise out of `_attempt` still reaches
+        # the finally with a defined key ending instead of becoming an
+        # `UnboundLocalError` that leaks the lease.
+        termination = Termination.KILLED
         try:
             adapter_result = await self._attempt(
                 record,
@@ -4170,6 +4174,12 @@ class EpicWorkflow:
                 )
             )
             return result if result.verdict == OverallVerdict.PASS else None
+        except _LaunchFailed:
+            # A task nobody accepted produced no result and no attempt. Return
+            # `None` like every other failed recovery cycle so its caller
+            # escalates the landing normally rather than letting the raise
+            # escape to the reaper.
+            return None
         finally:
             # The recovery key is closed on every exit, raise included, exactly
             # once per lease (FR-007/FR-008).
