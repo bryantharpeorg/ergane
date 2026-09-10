@@ -18,6 +18,8 @@ from temporalio.testing import WorkflowEnvironment
 
 from factory.verify.ladder import _attempts_spent
 from factory.verify.models import AttemptRecord, VerificationConfig
+from factory.verify.models import EscalationChoice
+from factory.mergequeue.models import LandingState
 from factory.activities.agent_activities import AGENT_LAUNCH_FAILED
 from factory.workgraph.models import WorkGraph
 from factory.workgraph.models import (
@@ -29,13 +31,18 @@ from factory.workgraph.models import (
 from factory.workgraph import workflow as workflow_module
 
 from tests.test_interpreter import (
+    EPIC_ID,
     _EVENT_ACTIVITY_SCHEDULED,
+    checks_failed_snapshot,
+    failing,
     ScriptedWorld,
     env,  # noqa: F401  — pytest fixture, re-exported for this module
     make_graph,
     make_node,
     passing,
     run_epic,
+    one_node,
+    branch_name,
 )
 
 from tests.test_launch_is_not_an_attempt import launch_world
@@ -266,3 +273,53 @@ async def test_terminal_reasons_name_their_distinct_launch_faults(
     no_worker_reason = workflow_module._launch_failed_reason(no_worker_signal, 1)
     assert "schedule-to-start" in no_worker_reason.lower()
     assert "AGENT_LAUNCH_FAILED" not in no_worker_reason
+
+
+async def test_recovery_attempt_raise_reaches_landing_escalation(
+    env: WorkflowEnvironment,
+) -> None:
+    """A no-worker signal in recovery ends through the landing page (FR-013).
+
+    The initial attempt is allowed through so the landing reaches its scripted
+    CHECKS_FAILED rejection; only the recovery attempt raises. That composes the
+    landed rejection, attempt-raise and recovery-teardown fixtures.
+    """
+    script = ScriptedWorld(
+        {"us1": [passing(), failing(2)]},
+        client=env.client,
+        press=EscalationChoice.KILL.value,
+    )
+    script.script_landing("us1", checks_failed_snapshot(), checks_failed_snapshot())
+    script.script_sync("us1", clean=True, base_ref="c0ffee")
+
+    original_attempt = workflow_module.EpicWorkflow._attempt
+
+    async def recovery_attempt_raises(*args: Any, **kwargs: Any) -> Any:
+        if args[2].attempt == 2:
+            raise workflow_module._LaunchFailed(
+                "no worker accepted the scheduled attempt",
+                fault=workflow_module._NO_AGENT_STARTED,
+            )
+        return await original_attempt(*args, **kwargs)
+
+    workflow_module.EpicWorkflow._attempt = recovery_attempt_raises
+    try:
+        status = await run_epic(env, script, graph=one_node())
+    finally:
+        workflow_module.EpicWorkflow._attempt = original_attempt
+
+    assert status.nodes["us1"].landing_state == LandingState.KILLED
+    assert status.nodes["us1"].terminal_reason is not None
+    assert "no worker accepted the scheduled attempt" not in (
+        status.nodes["us1"].terminal_reason
+    )
+    assert "UnboundLocalError" not in status.nodes["us1"].terminal_reason
+    assert len(script.escalation_requests) == 1
+    assert script.escalation_requests[0].node_id == "us1"
+    recovery_teardowns = [
+        teardown
+        for teardown in script.teardowns
+        if teardown.lease.node_id == "us1" and teardown.lease.attempt == 2
+    ]
+    assert len(recovery_teardowns) == 1
+    assert status.nodes["us1"].branch == branch_name(EPIC_ID, "us1")
