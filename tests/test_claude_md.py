@@ -1,13 +1,14 @@
-"""`CLAUDE.md` cannot be allowed to lie, so it is asserted rather than trusted.
+"""The operator orientation cannot be allowed to lie, so it is asserted, not trusted.
 
 An orientation file is the worst kind of documentation to let rot, because it is
 read by an agent that has no other picture of the repository yet and therefore no
 way to notice that what it just read stopped being true. A stale sentence in
 `docs/architecture.md` gets caught by the next person who knows better; a stale
-command in `CLAUDE.md` gets *acted on*, and the discovery arrives hours later as a
+command in the orientation gets *acted on*, and the discovery arrives hours later as a
 burned attempt.
 
-So the three claims the file makes about the world are checked against the world:
+So the three claims the orientation makes about the world are checked against the
+world:
 
 - **Every command it names still exists.** Each backticked `ergane` invocation
   is run for real, with `--help`, through the installed console script — the exact
@@ -24,6 +25,11 @@ So the three claims the file makes about the world are checked against the world
 The last of the three is the only one that is a judgement call rather than a fact,
 and it is deliberately strict: it would rather refuse a defensible sentence than
 let the file start keeping a second copy of the roadmap.
+The orientation itself is `AGENTS.md` (157 US1), the canonical file; `CLAUDE.md`
+is a tracked symlink to it. This suite reads the canonical source — the entry
+point's resolved content is byte-asserted in `tests/test_operator_instructions.py`,
+so sweeping either name would test the same bytes, and naming the canonical file
+keeps the sweep honest about what it holds to account.
 """
 
 from __future__ import annotations
@@ -45,9 +51,9 @@ from tests.page_holds_true import (
     verbs_of,
 )
 
-CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
+AGENTS_MD = REPO_ROOT / "AGENTS.md"
 
-TEXT = CLAUDE_MD.read_text(encoding="utf-8")
+TEXT = AGENTS_MD.read_text(encoding="utf-8")
 LINES = TEXT.splitlines()
 
 
