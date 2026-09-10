@@ -40,8 +40,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from temporalio.client import Client, WorkflowQueryFailedError, WorkflowQueryRejectedError
+from temporalio.api.enums.v1.workflow_pb2 import PendingActivityState
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
+from datetime import timezone
 
 #: The server answered but the workflow would not answer this query. A read that
 #: is refused degrades: the command reports the cause and still exits 0.
@@ -453,25 +455,34 @@ async def _live_spend(
             continue
         if activity_info.activity_type.name != "run_agent_attempt":
             continue
-        if converter is None or not activity_info.HasField("heartbeat_details"):
+        if converter is None:
             continue
         node_id = activity_info.activity_id
         if node_id not in nodes:
             continue
-        try:
-            decoded = await converter.decode(
-                list(activity_info.heartbeat_details.payloads),
-                [UsageSnapshot | None],
-            )
-        except Exception:
-            continue
-        snapshot = decoded[0]
-        if snapshot is None:
-            continue
-        live[node_id] = {
-            "spend_usd": snapshot.spend_usd,
-            "captured_at": snapshot.captured_at,
+        entry: dict[str, Any] = {
+            "state": PendingActivityState.Name(
+                activity_info.state
+            ).removeprefix("PENDING_ACTIVITY_STATE_"),
+            "activity_attempt": activity_info.attempt,
         }
+        if activity_info.HasField("last_heartbeat_time"):
+            entry["last_heartbeat_at"] = (
+                activity_info.last_heartbeat_time.ToDatetime(tzinfo=timezone.utc)
+            ).isoformat()
+        if activity_info.HasField("heartbeat_details"):
+            try:
+                decoded = await converter.decode(
+                    list(activity_info.heartbeat_details.payloads),
+                    [UsageSnapshot | None],
+                )
+            except Exception:
+                continue
+            snapshot = decoded[0]
+            if snapshot is not None:
+                entry["spend_usd"] = snapshot.spend_usd
+                entry["captured_at"] = snapshot.captured_at
+        live[node_id] = entry
     return live
 
 

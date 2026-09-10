@@ -65,6 +65,8 @@ class _FakeClient:
 
 
 class _FakeStatusClient:
+    data_converter = _FakeConverter()
+
     def get_workflow_handle(self, workflow_id: str) -> Any:
         assert workflow_id == "epic-us2"
         return _FakeStatusHandle()
@@ -87,17 +89,13 @@ class _FakeStatusHandle:
 
     async def describe(self) -> Any:
         started = _FakeActivity(
-            state=PendingActivityState.Name(
-                PendingActivityState.PENDING_ACTIVITY_STATE_STARTED
-            ),
+            state=PendingActivityState.PENDING_ACTIVITY_STATE_STARTED,
             attempt=1,
             heartbeat_payloads=[SNAPSHOT],
-            heartbeat_time=Timestamp.FromJsonString(CAPTURED_AT),
+            heartbeat_time=_heartbeat_time(),
         )
         scheduled = _FakeActivity(
-            state=PendingActivityState.Name(
-                PendingActivityState.PENDING_ACTIVITY_STATE_SCHEDULED
-            ),
+            state=PendingActivityState.PENDING_ACTIVITY_STATE_SCHEDULED,
             attempt=2,
             heartbeat_payloads=None,
             heartbeat_time=_heartbeat_time(),
@@ -145,7 +143,7 @@ def _live(state: str) -> dict[str, Any]:
 async def test_a_pending_agent_attempt_without_a_payload_is_still_visible() -> None:
     """US2-S1/FR-007: no payload leaves the activity, not its liveness fields."""
     activity = _FakeActivity(
-        state="SCHEDULED",
+        state=PendingActivityState.PENDING_ACTIVITY_STATE_SCHEDULED,
         attempt=2,
         heartbeat_payloads=None,
         heartbeat_time=_heartbeat_time(),
@@ -204,7 +202,7 @@ async def test_json_live_spend_stays_additive_and_loadable(
     document = json.loads(capsys.readouterr().out)
 
     live = document["live_spend"]
-    assert set(live) == {NODE, "us1"}
+    assert set(live) == {NODE}
     for figure in live.values():
         if "spend_usd" in figure:
             assert set(figure) >= {"spend_usd", "captured_at"}
