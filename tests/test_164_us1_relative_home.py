@@ -333,17 +333,13 @@ async def test_two_nodes_each_find_their_own_rollout_and_their_homes_stay_distin
     assert not codex._turn_happened(relative, worktree, env_fresh)
 
     # The archive carries each node's own rollout, and only that node's.
-    for node, worktree_dir, record in (
-        (NODE_A, worktree, record_a),
-        (NODE_B, worktree_b, record_b),
-    ):
+    for node, record in ((NODE_A, record_a), (NODE_B, record_b)):
         archived = archive_dir(worker_cwd, node)
-        names = {p.name for p in archived.iterdir()}
-        rollouts = [name for name in names if name.startswith("rollout-")]
-        assert rollouts, f"node {node}: no rollout archived beside the log"
-        for name in rollouts:
-            source = Path(record["rollout"]).name
-            assert name == source
+        archived_rollouts = sorted(p.name for p in archived.glob("rollout-*.jsonl"))
+        assert archived_rollouts == [Path(str(record["rollout"])).name], (
+            f"node {node}: the archive did not carry exactly its own rollout "
+            f"(archived {archived_rollouts})"
+        )
     # And the two rollout files are distinct files in distinct homes.
     assert Path(record_a["rollout"]) != Path(record_b["rollout"])
     assert Path(record_a["rollout"]).is_relative_to(codex_home_path(node_home))
@@ -358,18 +354,23 @@ async def test_the_relative_home_launch_still_carries_no_worker_credential(
     attempt: Callable[..., AttemptContext],
     worktree: Path,
     worker_cwd: Path,
+    node_home: Path,
 ) -> None:
     """FR-002: the repair changes where CODEX_HOME points, nothing else —
-    the allowlist stays closed by omission."""
+    the allowlist stays closed by omission, read off the child's own env
+    record, with the values checked and not just their names."""
     result = await adapter.run_attempt(attempt(), factory_root=worker_cwd / str(DEFAULT_RUNTIME_ROOT))
 
     assert result.termination == Termination.COMPLETED
-    env = last_record(worktree)  # the strict child records env only in argv-adjacent keys
-    # The archived log is the classifier's surface; the strict child's refusal
-    # path is what carries credentials nowhere. The allowlist is asserted in
-    # the 155 suite; here the repaired launch's own record is checked.
-    assert "LITELLM_MASTER_KEY" not in json.dumps(last_record(worktree))
-    assert ATTEMPT_ARCHIVE_ENV  # the ferry channel is still constructed (see 155)
+    env = last_record(worktree)["env"]
+    assert "LITELLM_MASTER_KEY" not in env
+    assert "TELEGRAM_BOT_TOKEN" not in env
+    assert "sk-master-must-never-reach-an-agent" not in json.dumps(env)
+    assert "telegram-bot-token-must-never-reach-an-agent" not in json.dumps(env)
+    # The ferry channel is still constructed, and CODEX_HOME still names the
+    # seeded home.
+    assert env[ATTEMPT_ARCHIVE_ENV] == str(archive_dir(worker_cwd))
+    assert env[CODEX_HOME_ENV] == str(codex_home_path(node_home.resolve()))
 
 
 # --- the registry still resolves codex by its own name (FR-005) -----------------

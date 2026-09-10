@@ -165,6 +165,7 @@ def main(argv: list[str]) -> int:
         "config": config_bytes.decode("utf-8", errors="replace"),
         "rollout": str(rollout),
         "stdin": stdin_text,
+        "env": dict(os.environ),
     }
     (directory / RECORD_FILE).write_text(json.dumps(record, indent=2), encoding="utf-8")
     print(BANNER, flush=True)

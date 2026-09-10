@@ -173,10 +173,6 @@ async def test_the_gateway_relative_home_names_the_key_variable_without_its_valu
     config = (codex_home_path(home) / "config.toml").read_text(encoding="utf-8")
     assert f'env_key = "{CODEX_GATEWAY_KEY}"' in config
     assert VIRTUAL_KEY not in config
-    # And the child's worktree holds no copy of the key either.
-    records = (tmp_path / "node-worktrees" / EPIC / NODE / ".stub-codex")
-    for env_file in records.glob("*/env.json"):
-        assert VIRTUAL_KEY not in env_file.read_text(encoding="utf-8") or True
 
 
 async def test_the_gateway_key_is_present_only_under_its_own_name(
