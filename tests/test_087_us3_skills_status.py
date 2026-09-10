@@ -323,6 +323,28 @@ def test_status_command_is_read_only_without_client_or_network_execution(
     ) == before
 
 
+def test_parent_symlink_reports_collided_without_following_escape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home, _ = make_status_home(tmp_path, monkeypatch)
+    escape = tmp_path / "outside"
+    escape.mkdir()
+    (home / ".agents").symlink_to(escape)
+
+    status = skills_status()
+    observed = next(
+        item
+        for item in status.entries
+        if item.client == "codex" and item.skill == "floor-status"
+    )
+
+    assert observed.state == "collided"
+    assert observed.remedy == (
+        "Preserve the conflicting path; resolve it deliberately before install."
+    )
+    assert list(escape.iterdir()) == []
+
+
 def test_current_filesystem_presentation_does_not_claim_client_loading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

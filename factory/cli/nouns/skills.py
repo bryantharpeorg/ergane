@@ -25,11 +25,11 @@ def _status(_args: Any) -> int:
 def add_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser(
         "skills",
-        help="install canonical operator skills and safe client entry points",
+        help="install or inspect canonical operator skills and safe client entry points",
     description=(
-        "Install the packaged canonical skill tree into the declared operator "
-            "home and create compatibility aliases. Existing paths are preserved "
-            "and reported; the explicit verb is the only mutation."
+            "Install the packaged canonical skill tree into the declared operator "
+            "home, create compatibility aliases, or report filesystem status. "
+            "Existing paths are preserved and reported; install is the only mutation."
         ),
     )
     verbs = parser.add_subparsers(dest="verb", required=True)
@@ -47,7 +47,7 @@ def add_parser(subparsers: Any) -> None:
 
 NOUN = Noun(
     name="skills",
-    summary="install collision-safe operator skills for supported clients",
+    summary="install and inspect collision-safe operator skills for supported clients",
     order=5,
     add_parser=add_parser,
 )

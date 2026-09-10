@@ -883,6 +883,9 @@ def _canonical_state(
     for record in selected:
         relative = PurePosixPath(CANONICAL_DESTINATION) / record.path
         absolute = home / relative
+        if _parent_collision(home, relative) is not None:
+            states.append("collided")
+            continue
         current = _lstat_kind(absolute)
         if current is None:
             states.append("absent")
@@ -921,6 +924,8 @@ def _compatibility_state(
 ) -> str:
     relative = PurePosixPath(COMPATIBILITY_DESTINATION) / skill
     absolute = home / relative
+    if _parent_collision(home, relative) is not None:
+        return "collided"
     current = _lstat_kind(absolute)
     if current is None:
         return "absent"
