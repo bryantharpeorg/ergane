@@ -27,7 +27,20 @@ RUNBOOK = "docs/codex-primary-operator-migration-runbook-2026-09-09.md"
 
 
 def manifest_path(home: Path) -> Path:
-    return home / "state" / "ergane" / "skills" / "manifest.json"
+    return home.parent / "state" / "ergane" / "skills" / "manifest.json"
+
+
+def make_status_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    home.mkdir()
+    state.mkdir()
+    monkeypatch.delenv("ERGANE_STATE_HOME", raising=False)
+    monkeypatch.delenv("FACTORY_STATE_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    return home, state
 
 
 def entry(home: Path, client: str, skill: str):
@@ -70,6 +83,7 @@ def status_cases(home: Path, monkeypatch: pytest.MonkeyPatch):
         path.write_bytes(b"operator-owned bytes\n")
         manifest = json.loads(manifest_path(home).read_text(encoding="utf-8"))
         manifest["entries"].pop(path.relative_to(home).as_posix())
+        manifest["entries"].pop(".claude/skills/build-metrics")
         manifest_path(home).write_text(json.dumps(manifest), encoding="utf-8")
 
     def broken_alias():
@@ -92,9 +106,12 @@ def status_cases(home: Path, monkeypatch: pytest.MonkeyPatch):
         ("absent", absent, "absent", "Run `ergane skills install`."),
         (
             "current-filesystem",
-            lambda: None,
+        lambda: manifest_path(home).unlink(),
             "current-filesystem",
-            "No repair needed; fresh client loading remains unqualified.",
+            (
+                "No repair needed; fresh client loading remains unqualified. "
+                f"Authorize fresh evidence through the {RUNBOOK} shared-discovery gate."
+            ),
         ),
         (
             "stale",
@@ -136,36 +153,43 @@ def status_cases(home: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.parametrize(
-    "name,mutate,state,remedy",
-    ("absent", "current-filesystem", "stale", "modified", "collided", "broken-alias", "unavailable-version", "unsupported-manifest"),
+    "name",
+    (
+        "absent",
+        "current-filesystem",
+        "stale",
+        "modified",
+        "collided",
+        "broken-alias",
+        "unavailable-version",
+        "unsupported-manifest",
+    ),
 )
 def test_status_truth_table_reports_state_and_remedy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    home = tmp_path / "home"
-    state = tmp_path / "state"
-    home.mkdir()
-    state.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    home, _ = make_status_home(tmp_path, monkeypatch)
     install()
 
     cases = dict(
         (name, value)
         for name, *value in status_cases(home, monkeypatch)
     )
-    _, mutate, expected_state, expected_remedy = cases[name]
+    mutate, expected_state, expected_remedy = cases[name]
     mutate()
 
     status = skills_status()
     if name in {"absent", "stale", "modified", "collided", "broken-alias"}:
-        client = "claude" if name in {"collided", "broken-alias"} else "codex"
-        observed = entry(home, client, "floor-status")
+        if name == "collided":
+            observed = entry(home, "claude", "build-metrics")
+        elif name == "broken-alias":
+            observed = entry(home, "claude", "spec-html")
+        else:
+            observed = entry(home, "codex", "floor-status")
         assert observed.state == expected_state
         assert observed.remedy == expected_remedy
         assert observed.package_version == "0.5.0"
-        if name in {"stale", "modified", "broken-alias"}:
+        if name == "stale":
             assert observed.installed_version == "0.0.1"
     elif name == "current-filesystem":
         observed = entry(home, "codex", "floor-status")
@@ -216,13 +240,7 @@ def test_checkout_without_package_metadata_or_manifest_is_explicitly_unavailable
 def test_newer_incompatible_manifest_is_explicitly_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    home = tmp_path / "home"
-    state = tmp_path / "state"
-    home.mkdir()
-    state.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    home, _ = make_status_home(tmp_path, monkeypatch)
     manifest_path(home).parent.mkdir(parents=True)
     manifest_path(home).write_text(
         json.dumps(
@@ -287,34 +305,28 @@ def deny_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_status_command_is_read_only_without_client_or_network_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    home = tmp_path / "home"
-    state = tmp_path / "state"
-    home.mkdir()
-    state.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    home, _ = make_status_home(tmp_path, monkeypatch)
     install()
-    before = (filesystem_snapshot(home), filesystem_snapshot(state))
+    before = (
+        filesystem_snapshot(home),
+        filesystem_snapshot(home.parent / "state"),
+    )
     deny_mutation(monkeypatch)
 
     arguments = _build_parser().parse_args(["skills", "status"])
     exit_code = arguments.run(arguments)
 
     assert exit_code == 0
-    assert (filesystem_snapshot(home), filesystem_snapshot(state)) == before
+    assert (
+        filesystem_snapshot(home),
+        filesystem_snapshot(home.parent / "state"),
+    ) == before
 
 
 def test_current_filesystem_presentation_does_not_claim_client_loading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    home = tmp_path / "home"
-    state = tmp_path / "state"
-    home.mkdir()
-    state.mkdir()
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("XDG_STATE_HOME", str(state))
-    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    home, _ = make_status_home(tmp_path, monkeypatch)
     install()
     manifest_path(home).unlink()
 
