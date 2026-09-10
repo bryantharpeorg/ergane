@@ -281,6 +281,19 @@ Split out of US2 on 2026-09-08 for size. Merges after US2, before US3.
 
 ### Implementation for this story
 
+- [ ] T030 [US3] (FR-012, traps 8, 9 and 23) Before T031 consumes the landed
+      read, create it in `factory/activities/roadmap_activities.py` as an
+      `async def` activity mirroring
+      `factory/activities/roadmap_activities.py:496` — `drift_for_spec`: an input
+      record beside `factory/activities/roadmap_activities.py:482` — `DriftInput`,
+      a module-level scripted seam beside
+      `factory/activities/roadmap_activities.py:491` so scheduler tests need no
+      real clone, and the blocking git work behind `asyncio.to_thread` as
+      `factory/activities/roadmap_activities.py:512` — `_drift_from_git` does.
+      Register it with `factory/worker.py` — `build_worker`. The tests above
+      exercise the read through a real scheduling pass before implementation;
+      US5 later adds its dedicated threading and read-bound regression controls.
+
 - [ ] T031 [US3] (FR-009, FR-014, traps 7, 14 and 19) In
       `factory/roadmap/workflow.py`, add a `_compute_landed` beside
       `factory/roadmap/workflow.py:1508` — `RoadmapWorkflow._compute_drift` that
@@ -341,7 +354,12 @@ Split out of US2 on 2026-09-08 for size. Merges after US2, before US3.
 
 Split out of US3 on 2026-09-08 for size. Merges last.
 
-### Tests for this story (write FIRST, must fail)
+The activity itself must already exist in the merged US3 base (T030); this
+slice proves its threading and read bounds rather than creating a prerequisite
+after its consumer. Existing correct behavior is a passing control, not a reason
+to duplicate production code or fabricate a failing baseline (plan trap 23).
+
+### Tests for this story (write FIRST; prove sensitivity with negative controls)
 
 - [ ] T027 [P] [US5] (spec US5-S1, FR-012, traps 8 and 9) Assert the new activity
       performs its git work off the event loop — the same split
@@ -379,19 +397,15 @@ Split out of US3 on 2026-09-08 for size. Merges last.
       `factory/roadmap/workflow.py:1508` must go on covering every `landed`
       entry, and 102 of this corpus's 141 specs are `landed`.
 
-### Implementation for this story
+### Verification for this story
 
-- [ ] T030 [US5] (FR-012, traps 8 and 9) In
-      `factory/activities/roadmap_activities.py`, add the landed read as an
-      `async def` activity mirroring
-      `factory/activities/roadmap_activities.py:496` — `drift_for_spec`: an input
-      record beside `factory/activities/roadmap_activities.py:482` — `DriftInput`,
-      a module-level scripted seam beside
-      `factory/activities/roadmap_activities.py:491` so scheduler tests need no
-      real clone, and the blocking git work behind `asyncio.to_thread` as
-      `factory/activities/roadmap_activities.py:512` — `_drift_from_git` does.
-      Register it at `factory/worker.py:192`; unregistered, every scheduled tick
-      fails and it reads as a Temporal problem.
+- [ ] T038 [US5] Run the dedicated controls against the merged US3 behavior.
+      Prove the new assertions detect an on-loop git read, a missing activity
+      registration, an unbounded landed read, and a suppressed required drift
+      read using isolated test-scoped fault injection. Commit compact actual
+      results; restore every injected fault before the gate. Change production
+      code only for a demonstrated remaining defect, never to make a passing
+      baseline appear red.
 
 
 ## Verification

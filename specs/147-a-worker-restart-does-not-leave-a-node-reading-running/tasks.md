@@ -21,9 +21,10 @@ is retryable — so the sequence this spec exists for reaches `SCHEDULE_TO_START
 on a re-scheduled attempt whose predecessor ran, heartbeated and spent money. A
 branch on the timeout type alone therefore records hours of paid work as an
 attempt that never started, on the common path, with every gate green. Trap 20
-is the small one that changes an assertion's meaning: `_close_out` overwrites
-`terminal_reason` on the terminal path, so the reason function FR-006 asks for is
-not the last writer in production. Trap 5 says why no test drives
+records a repair that already landed in 127: `_close_out` now keeps the archive
+report in `housekeeping_report`, separately from `terminal_reason`. Preserve
+that separation and its tests; do not accept the old overwrite as a caveat or
+rebuild the fix. Trap 5 says why no test drives
 the expiry end to end and names the two routes that look like it and are not — do
 not spend attempts there. Trap 6 is a gate trap in both stories:
 `tests/test_final_sweep.py` reads every module under `factory/` and fails one

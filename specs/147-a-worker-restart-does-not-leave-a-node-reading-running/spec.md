@@ -254,13 +254,14 @@ node whose worker died stalls for two minutes, not two hours. That mechanism is
 not this spec's — and closing it is what moved the defect one step along, from
 an attempt that sat STARTED for hours to a retry that sits SCHEDULED forever.
 
-**Why this is not an exotic case.** The factory runs one dedicated task queue
-served by one worker (`factory/worker.py:283` — `build_worker`), which sets no
-activity concurrency limit at all — so an agent activity sitting SCHEDULED means
-nobody is polling, never that the pool is busy. And 082's worker versioning makes
-a second route concrete: a PINNED epic whose deployment version is retired routes
-to a version nobody serves, and `factory/versioning.py:163` — `strandable_epics`
-guards only the retirement of the **unversioned** worker.
+**Why this is not an exotic case.** The factory runs a dedicated task queue
+(`factory/worker.py:283` — `build_worker`), and a pinned version can temporarily
+have no accepting worker during a stop or outage. A SCHEDULED activity means it
+has not been accepted; it does not by itself prove that no poller exists or
+exclude a busy activity pool. Normal deployment retirement already refuses
+versions with open pinned work (`factory/supervision/deploy.py:168` — `reapable`,
+rechecked by `_reap` at line 605). This spec preserves those guards and covers
+the bounded wait of an activity that remains unaccepted.
 
 ## The rule this spec is asking for
 
