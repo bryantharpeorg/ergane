@@ -29,6 +29,8 @@ def _number(value: Any) -> int | None:
 
 
 def _time(value: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError('Usage timestamps must be strings')
     parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if parsed.tzinfo is None:
         raise ValueError('Usage timestamps must include a timezone')

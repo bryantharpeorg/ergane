@@ -310,3 +310,16 @@ def test_missing_message_usage_keeps_known_subtotal_but_marks_partial(tmp_path, 
     measured=read_attempt_usage(tmp_path,replace(lease,key=''))
     assert measured.status=='partial'
     assert measured.aggregate.prompt_tokens==150
+
+
+def test_malformed_codex_timestamp_does_not_fail_the_finished_attempt(tmp_path, lease):
+    from factory.usage.runner import archive_execution_usage, read_attempt_usage
+    path=tmp_path/'transcripts/epic/node/attempt-1/rollout-current.jsonl'
+    def event(timestamp):
+        return {'timestamp':timestamp,'type':'event_msg','payload':{'type':'token_count','info':{
+            'total_token_usage':{'input_tokens':100,'output_tokens':10}}}}
+    write_events(path,[event('2026-09-10T13:00:00Z'),event(None)])
+    archive_execution_usage(tmp_path,context(agent='codex'),'2026-09-10T12:00:00Z',True)
+    measured=read_attempt_usage(tmp_path,replace(lease,key=''))
+    assert measured.status=='partial'
+    assert measured.aggregate.prompt_tokens==100
