@@ -551,7 +551,7 @@ class SpecReadiness:
 
     @property
     def rendered_state(self) -> str:
-        """The state the render prints: `amended` overrides a drifted `landed`."""
+        """The state the render prints, rewriting only observed facts."""
         if self.drifted and self.state is SpecState.LANDED:
             return RENDERED_AMENDED
         if (
