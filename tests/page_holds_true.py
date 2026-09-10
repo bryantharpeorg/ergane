@@ -177,13 +177,13 @@ def _substitute_placeholders(argv: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(_PLACEHOLDER_VALUES.get(word, word) for word in argv)
 
 
-def parse_argv(argv: tuple[str, ...]) -> argparse.Namespace:
+def parse_argv(argv: tuple[str, ...]) -> argparse.Namespace | None:
     """Parse one Ergane argv using the real CLI parser.
 
     Placeholders are substituted before parsing. On success the returned
-    namespace proves the invocation is syntactically valid; on failure an
-    `AssertionError` is raised carrying argparse's own message. No verb handler
-    is called and no subprocess is spawned.
+    namespace proves the invocation is syntactically valid; a successful help
+    request returns None. On failure an `AssertionError` is raised carrying
+    argparse's own message. No verb handler is called and no subprocess is spawned.
     """
     parser = _parser()
     substituted = _substitute_placeholders(argv)
@@ -195,6 +195,8 @@ def parse_argv(argv: tuple[str, ...]) -> argparse.Namespace:
         try:
             return parser.parse_args(command)
         except SystemExit as exc:
+            if exc.code == 0 and any(word in {"--help", "-h"} for word in command):
+                return None
             message = buffer.getvalue().strip() or f"invalid arguments: {argv}"
             raise AssertionError(f"parse failed for `{' '.join(argv)}`: {message}") from exc
     finally:

@@ -1,278 +1,188 @@
 # Ergane
 
-Ergane is an agentic software factory. It turns Spec Kit feature specs into
-merged, verified code by dispatching headless coding agents through an
-orchestrated DAG, with attributed per-node spend, mechanical acceptance-criteria
-verification, and merge-queue discipline.
+**A software factory for specification-driven development.**
 
-This page takes a new operator from a bare machine to a dispatched epic. Every
-command below is real; run them in order.
+Ergane coordinates coding agents from a written specification through implementation,
+verification, and merge. It turns user stories into a dependency graph, runs agents in
+their own worktrees, evaluates what they produce, and manages retries, operator
+decisions, and landing through a merge queue.
 
-The same path is also set as a single illustrated page — the one-command demo
-with the ladder it climbs, the six steps, and the trap each one hides — at
-[`docs/onramp.html`](docs/onramp.html). Open it in a browser rather than on
-GitHub, which renders it as markup. It is the shorter read; this page is the
-fuller one.
+The goal is to make agent execution a repeatable part of software delivery. People
+shape the intent, context, acceptance criteria, and operating policy; Ergane manages
+the work and records the evidence needed to understand its results.
 
-## What you must already have
+Ergane is also a reference implementation of that pattern. It is used to develop
+Ergane itself, and the repository’s [specifications](specs/) and
+[decision log](docs/decisions.md) document how the system has evolved.
 
-### A LiteLLM gateway, backed by a database
+**Status: beta, under active development.** Start with a supervised trial on a
+dedicated repository. The quality of a result depends on the specification, context,
+checks, and review behind it.
 
-Ergane dispatches through a LiteLLM proxy. This is the prerequisite that most
-often looks satisfied when it is not, so it is worth stating exactly.
+[How it works](#how-it-works) · [Get started](#get-started) ·
+[Architecture](docs/architecture.md) · [CLI reference](docs/cli/README.md)
 
-**The proxy must be database-backed.** Every attempt runs on its own
-model-constrained, TTL'd virtual key: Ergane mints one with `POST /key/generate`,
-reads what it spent through `GET /key/info` and `GET /spend/logs/v2`, and revokes
-it when the attempt ends. Those endpoints exist only when LiteLLM has a
-`DATABASE_URL`. A config-only proxy answers `GET /v1/models` and
-`POST /v1/chat/completions` perfectly and returns 404 for all of the rest — so it
-passes a casual smoke test and then fails at the first dispatch.
+## What Ergane coordinates
 
-**The proxy must serve every model alias the persona registry names.** That is
-every `model` and every `fallback` in `personas.yaml`, excluding personas
-declared `agent: none`, which have no model by construction. Run
-`ergane install --requirements` to print the exact set for your registry, or
-`ergane install --scan` to see what a candidate endpoint actually offers before
-you commit to it.
+- **Specifications into executable work.** Parse acceptance criteria, validate the
+  spec and its supporting documents, and derive a graph of stories and dependencies.
+- **Agent execution.** Select a runner and model through a persona, prepare a
+  worktree, and run a bounded attempt with its own execution context.
+- **Verification and repair.** Run declared checks, inspect the output, and use
+  configured LLM review against acceptance scenarios. Feed failures into a bounded
+  retry and escalation policy.
+- **Controlled landing.** Open pull requests for passing work and route them through
+  integration checks and the repository’s merge queue.
+- **Operational visibility.** Inspect attempts, verification records, transcripts,
+  usage, pending decisions, and observed landings.
+- **Feedback into future work.** Track findings and recurring defects, scaffold new
+  specs, and carry reviewed lessons into plans and standards.
 
-`llm.mode` takes `gateway` or `direct`, and the control plane accepts either. It
-names what `direct` costs at the moment you choose it: the declared key is handed
-to every attempt unexpiring, the registry's model bindings become a hint rather
-than a gate, and spend attribution goes away entirely, because there is no proxy
-to read per-key spend from. Two of those three are security properties rather
-than bookkeeping. Put a LiteLLM-shaped gateway in front of the provider and
-declare `llm.mode = "gateway"` unless you have decided to give them up.
+## How it works
 
-### Everything else
-
-- An authenticated `gh` CLI, able to push to and administer the repositories you
-  want Ergane to target.
-- **A GitHub merge queue you are allowed to enable.** Merge queues are available
-  on public repositories owned by an organization, and on private repositories
-  only under GitHub Enterprise Cloud. A user-owned repository cannot host one at
-  any plan level, so make the target repository organization-owned before you
-  wire it.
-- **Spec Kit's authoring skills, installed into your agent, not into this
-  repository.** Ergane's specs are Spec Kit documents — a numbered feature
-  directory under `specs/` holding its spec, plan and tasks files — and the
-  skills that write and check them (speckit-specify, speckit-plan, speckit-tasks
-  and the rest) come from <https://github.com/github/spec-kit>. Install them
-  globally, so every project sees them, or individually per repository; either
-  way they live outside this tree. Ergane's own layer of Spec Kit — the
-  templates, the shell scripts, and the constitution at
-  `.specify/memory/constitution.md` that every dispatched attempt is told to
-  obey — is committed here and needs no installation.
-- `bwrap` on `PATH`, used by the default runtime to sandbox agent work.
-- `git` and `uv`.
-- Python 3.11 or newer.
-- A Node.js runtime, used by the agent CLI.
-- A systemd user session, if you want `ergane worker install` to run managed
-  units under your user manager.
-
-See `factory/controlplane/config.py` for the exact control-plane schema, and
-`factory.yaml` for the gate and loop composition this repository declares.
-
-On Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1`
-denies user namespaces by default. The `apparmor=unconfined` option on the
-demo container does not lift it: AppArmor attaches a profile by executable
-path on exec, so `bwrap` inside the container is mediated by the *host's*
-policy. The profile this repository ships grants `/usr/bin/bwrap` the
-`userns` permission. Load it once from a checkout:
-
-```bash
-printf '%s\n' \
-  'abi <abi/4.0>,' \
-  'include <tunables/global>' \
-  'profile bwrap /usr/bin/bwrap flags=(unconfined) {' \
-  '  userns,' \
-  '  include if exists <local/bwrap>' \
-  '}' | sudo tee /etc/apparmor.d/bwrap
-sudo apparmor_parser -r /etc/apparmor.d/bwrap
+```mermaid
+flowchart TD
+    S["Specification + context"] --> G["Validated work graph"]
+    G --> A["Agent attempt in a worktree"]
+    A --> V["Checks + output review + evidence"]
+    V -->|Repair within limits| A
+    V -->|Pass| M["PR + integration checks + merge"]
+    V -->|Needs a decision| H["Operator"]
+    H -->|Retry authorized| A
+    M --> L["Observed landing + findings"]
+    L -->|Refine future work| S
 ```
 
-The profile is at `container/ergane-bwrap.apparmor` and is not installed by any
-package; running the two commands above is the operator's deliberate act.
+There are four connected loops:
 
-## Installing Ergane
+1. **Refine:** turn an intended outcome into a small, executable assignment with
+   explicit acceptance criteria and the context needed to implement it.
+2. **Build and repair:** dispatch the assignment, evaluate the candidate, and retry
+   or escalate when it cannot progress within its allowance.
+3. **Integrate:** check the change in the context of the branch it will join, then
+   observe the resulting landing.
+4. **Learn:** use findings and operating experience to improve the next spec,
+   evaluator, or implementation.
 
-There are two install paths and they are not interchangeable. Pick by what you
-intend to do.
+Refinement and learning include operator work. A person or operator agent must
+still decide what matters, resolve ambiguity, and review changes to scope or policy.
 
-### To run Ergane against your own repositories
+One execution of a spec is an **epic**. Its dispatched stories are **nodes**; each
+invocation of a coding agent is an **attempt**. See the [glossary](CONTEXT.md) for
+the full vocabulary.
 
-Install the published distribution. The PyPI name is `ergane-cli`; the command it
-puts on your `PATH` is `ergane`.
+### What a passing result means
+
+A passing result is relative to the configured verification loop and the evidence
+it collected. Deterministic checks, output validation, and LLM review answer
+different questions. Read the recorded results and unavailable or skipped checks
+alongside the verdict.
+
+Acceptance, landing, and release are separate events. Ergane tracks the path into
+the repository; deployment and production acceptance need their own delivery policy.
+
+## The pieces underneath
+
+Ergane combines these responsibilities in its current implementation:
+
+| Responsibility | Implementation |
+| --- | --- |
+| Intent and context | Spec Kit documents: [spec.md](.specify/templates/spec-template.md), [plan.md](.specify/templates/plan-template.md), and [tasks.md](.specify/templates/tasks-template.md); repository standards |
+| Scheduling and durable coordination | Temporal workflows for roadmaps, epics, and operator decisions |
+| Coding agents | Claude Code and Codex adapters; persona-based runner, model, scope, and timeout configuration |
+| Execution environment | Git worktrees, per-node homes, and a Linux sandbox backend |
+| Evaluation | Repository-declared gate commands, output checks, and configurable LLM review |
+| Model access and attribution | LiteLLM-compatible gateway integration for leased keys and usage attribution; routing also supports subscription-backed agent execution |
+| Landing | A forge interface with GitHub as the reference implementation |
+| Evidence and operation | SQLite records, attempt archives, CLI inspection, and notification adapters |
+
+The gateway supplies model access, key lifecycle, and attribution for gateway-routed
+attempts. Those properties depend on the selected route; subscription and direct
+routes have different credential and accounting behavior. Configure them deliberately
+through the [installation flow](docs/cli/install.md).
+
+Runner, forge, and notification interfaces provide extension points. A new backend
+still needs an adapter that satisfies the relevant contract. The
+[architecture guide](docs/architecture.md) describes those boundaries and their
+tradeoffs.
+
+## Get started
+
+### Install the CLI
+
+With Python 3.11+ and [uv](https://docs.astral.sh/uv/) available:
 
 ```bash
 uv tool install ergane-cli
+ergane --help
 ```
 
-### To work on Ergane itself
+### Configure an engine and target repository
 
-Install from a checkout, in editable mode.
+The current runtime needs a Linux execution environment, a Temporal engine and
+worker, a configured agent/model route, and the target repository’s toolchain and
+verification commands. The GitHub landing path also needs authenticated repository
+access and a supported merge-queue configuration.
+
+Follow the [operator setup guide](docs/getting-started.md) for prerequisites and
+the setup sequence. Use the [installation reference](docs/cli/install.md) to configure
+the control plane and choose an engine deployment. Then follow
+[repository initialization](docs/cli/init.md) and [onboarding](docs/cli/repo.md) to
+prepare a target. Native worker operation and
+container operation are covered in the [worker guide](docs/cli/worker.md) and
+[container guide](docs/container.md).
+
+### Try one prepared specification
+
+Author a small feature with [Spec Kit](https://github.com/github/spec-kit):
+
+```text
+specs/001-example/
+├── spec.md     # Stories, acceptance scenarios, and work-graph declarations
+├── plan.md     # Technical context, approach, and known hazards
+└── tasks.md    # Implementation tasks grouped by story
+```
+
+After the engine and repository are configured, run the following from the target
+repository root, replacing the example path with your prepared spec directory:
 
 ```bash
-git clone https://github.com/bryantharpeorg/ergane.git
-cd ergane
-uv venv
-uv pip install -e .
+ergane spec validate specs/001-example --target-repo "$PWD"
+ergane build ship specs/001-example --target-repo "$PWD" --halt-after-pass
 ```
 
-### The difference that will bite you
+`build ship` validates the spec, derives the graph, and asks for confirmation before
+dispatch. `--halt-after-pass` stops passing work before landing. This executes agents
+and checks and can incur model costs; it is an execution trial, not a dry run.
+`--target-repo` must resolve on the worker host.
 
-The two paths resolve the persona registry from different places. An editable
-checkout reads the `personas.yaml` at the root of that checkout, so editing it
-takes effect immediately. A published install reads the copy packaged inside the
-distribution — so editing a `personas.yaml` in some directory you happen to be
-standing in changes nothing, and the file you want to edit is not obviously
-anywhere.
-
-If you installed the published package and want your own registry, put it where
-the resolver looks rather than where you happen to be; `ergane install` reports
-the path it resolved, and that path is the answer.
-
-## Configuring the control plane
-
-Run the interview and let it write the control-plane config. The interview asks
-for environment **variable names**, not values; set those variables in your shell
-before running the commands that need them.
+Inspect the result:
 
 ```bash
-ergane install
+ergane build status 001-example
+ergane build attempts 001-example
 ```
 
-`scripts/ergane-env.sh` is one operator-specific way to set them, and it is the
-way this repository does it. It **prints** `export` lines rather than setting
-them, so eval it — sourcing it appears to work and sets nothing:
+The [build guide](docs/cli/build.md) covers normal landing, recovery, concurrency,
+and operator decisions. The [on-ramp exercise](docs/onramp-exercise.md) documents an
+end-to-end test against a scratch repository, including its prerequisites and effects.
 
-```bash
-eval "$(scripts/ergane-env.sh)"
-```
+## Find your way around
 
-Re-run the verification without the interview whenever the environment changes:
-
-```bash
-ergane install --verify
-```
-
-If you do not yet know what to point it at, discover first — this writes nothing:
-
-```bash
-ergane install --scan
-```
-
-## Installing the worker
-
-Put the bridge and probe under systemd user supervision, then put a worker
-version on the floor. Install writes a *versioned* unit template rather than a
-worker; `deploy` freezes a commit into a checkout of its own and starts an
-instance serving it, so every epic finishes on the code it started with.
-
-```bash
-ergane worker install
-ergane worker deploy
-```
-
-On a host installed before versioning, `ergane worker migrate` retires the old
-`ergane-worker.service` — refused while any pre-versioning epic is still open.
-
-## Joining a repository
-
-Join a git repository so Ergane can dispatch against it. `ergane init` resolves
-upward to the nearest enclosing repository, which is not always the one you
-meant — so when the directory you run it in is not itself the repository root,
-it names the root it resolved and asks before enrolling anything. Answer `y` to
-proceed, or name the repository outright:
-
-```bash
-ergane init
-ergane init <repository-root>
-```
-
-Under `--non-interactive` there is nobody to ask, so a resolved root that
-differs from the invocation directory is refused rather than assumed.
-
-Judge a repository's readiness without writing anything:
-
-```bash
-ergane init --check
-```
-
-To also wire the repository's GitHub side — enable the merge queue on the
-declared landing branch, require one check per declared gate, and scaffold the
-workflow that produces them:
-
-```bash
-ergane init --wire
-```
-
-## Onboarding a target repository
-
-Register the repository with the engine:
-
-```bash
-ergane repo onboard <target-repo-path>
-```
-
-## Dispatching your first epic
-
-Start a compiled workgraph:
-
-```bash
-ergane build start <workgraph.json>
-```
-
-## Asking the system about itself
-
-Ergane answers questions about its own state, and those answers are live. Prefer
-them to anything written down, including this page.
-
-| Question | Command |
+| If you want to… | Start here |
 | --- | --- |
-| What is the whole floor doing right now | `ergane status` |
-| What state is every spec in, and what blocks each | `ergane spec list specs` |
-| Which of a spec's stories are landed in git | `ergane spec landed <spec-dir>` |
-| What is one epic doing right now | `ergane build status <epic-id>` |
-| What defects are open | `ergane findings list` |
-| What did the work cost | `ergane usage --by epic` |
-| Is anything waiting on me | `ergane escalations list` |
-| Is the installation healthy | `ergane doctor` |
+| Understand the workflows and component boundaries | [Architecture](docs/architecture.md) |
+| Understand the project’s terminology | [Glossary](CONTEXT.md) |
+| Author, validate, and inspect specifications | [Spec commands](docs/cli/spec.md) and [the spec corpus](specs/) |
+| Operate the system | [CLI reference](docs/cli/README.md) |
+| Inspect outcomes and failures | [Build records](docs/cli/build.md), [findings](docs/cli/findings.md), and [usage](docs/cli/usage.md) |
+| Understand the decisions behind the implementation | [Decision log](docs/decisions.md) |
+| Work on Ergane itself | [Contributor orientation](CLAUDE.md) and [repository standards](.specify/memory/constitution.md) |
 
-`ergane spec landed <spec-dir>` scans the default branch unless told otherwise,
-and a factory does not necessarily land there — pass `--default-branch` whenever
-the answer matters.
+Implementation lives in [`factory/`](factory/); tests live in [`tests/`](tests/).
+Changes to Ergane follow the same specification, verification, and landing process
+the project provides to other repositories.
 
-## Leaving
+## License
 
-Ergane has an inverse for the two things it registers, and you should know which
-two before you start.
-
-To remove a repository from the engine without touching its files:
-
-```bash
-ergane repo forget <repo-slug>
-```
-
-To remove the worker units, exactly as `ergane worker install` wrote them:
-
-```bash
-ergane worker uninstall
-```
-
-Two things have no inverse verb today, and come off by hand: the control-plane
-config the interview wrote under your XDG config directory, and the manifest,
-gitignore entry and runtime directory `ergane init` wrote into your repository.
-Removing the package itself is your package manager's job — `uv tool uninstall
-ergane-cli`.
-
-## Where the binding documents live
-
-- `.specify/memory/constitution.md` — the standards every node obeys.
-- `docs/architecture.md` — how the factory works.
-- `docs/cli/` — reference documentation for every `ergane` noun and verb.
-- `docs/decisions.md` — the immutable decision log.
-- `CONTEXT.md` — the vocabulary this repository uses.
-- `scripts/ergane-env.sh` — the shell environment the CLI commands expect.
-- `personas.yaml` — the personas, their models and their fallbacks.
-- `ergane.yaml` — this repository's own manifest, as `ergane init` writes one.
+[Apache 2.0](LICENSE).

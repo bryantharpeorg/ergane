@@ -10,7 +10,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROFILE_PATH = REPO_ROOT / "container" / "ergane-bwrap.apparmor"
-README_PATH = REPO_ROOT / "README.md"
+SETUP_PATH = REPO_ROOT / "docs" / "getting-started.md"
 ONRAMP_PATH = REPO_ROOT / "docs" / "onramp.html"
 
 
@@ -50,8 +50,8 @@ def _extract_html_procedure(html_text: str) -> str:
     return "\n".join(line for line in normalized if line)
 
 
-def _extract_readme_procedure(md_text: str) -> str:
-    """Pull the printf arguments from the README fenced code block."""
+def _extract_setup_procedure(md_text: str) -> str:
+    """Pull the printf arguments from the setup guide fenced code block."""
     # Find a ```bash ... ``` block containing printf and apparmor_parser.
     match = re.search(
         r"```bash\s+(.*?)```",
@@ -88,12 +88,12 @@ def test_onramp_procedure_matches_shipped_profile() -> None:
     )
 
 
-def test_readme_procedure_matches_shipped_profile() -> None:
+def test_setup_procedure_matches_shipped_profile() -> None:
     assert PROFILE_PATH.exists()
     profile_text = _normalize_profile(PROFILE_PATH.read_text())
-    md_text = README_PATH.read_text()
-    procedure_text = _normalize_profile(_extract_readme_procedure(md_text))
-    assert procedure_text, "could not extract profile procedure from README.md"
+    md_text = SETUP_PATH.read_text()
+    procedure_text = _normalize_profile(_extract_setup_procedure(md_text))
+    assert procedure_text, "could not extract profile procedure from docs/getting-started.md"
     assert procedure_text == profile_text, (
-        "README.md procedure does not match the shipped profile"
+        "docs/getting-started.md procedure does not match the shipped profile"
     )
