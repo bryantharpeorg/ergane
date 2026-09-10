@@ -148,6 +148,42 @@ async def test_empty_delta_for_another_reason_still_parks(
     assert child_starts == []
 
 
+async def test_a_dependency_built_but_not_attested_satisfies_an_edge(
+    env: WorkflowEnvironment,
+    tmp_path: Path,
+) -> None:
+    """US3-S5: the roadmap uses its own landed read to satisfy dependencies."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-dependency": dict(state=SpecState.READY),
+            "002-dependent": dict(
+                state=SpecState.READY,
+                depends_on_landed=["001-dependency"],
+            ),
+        },
+    )
+    world = RoadmapWorld(
+        landed_runner=_built_landed("001-dependency"),
+        drift_runner=lambda request: False,
+    )
+    child_starts: list[str] = []
+
+    async with run_roadmap(
+        env,
+        world,
+        str(specs_root),
+        max_concurrent_epics=2,
+        on_dispatch=child_starts.append,
+    ) as handle:
+        status = await handle.result()
+
+    assert child_starts == ["002-dependent"]
+    dependent = next(spec for spec in status.specs if spec.spec_dir == "002-dependent")
+    assert dependent.dispatchable is False
+    assert dependent.blockers == []
+
+
 async def test_built_ready_spec_never_reaches_clone_or_onboard(
     env: WorkflowEnvironment,
     tmp_path: Path,
