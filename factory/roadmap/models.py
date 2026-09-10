@@ -89,6 +89,7 @@ class SpecState(StrEnum):
 #: Not a writable `SpecState` value — an author who writes `state: amended`
 #: is rejected (`unknown_state`), because intent is declared and drift is observed.
 RENDERED_AMENDED = "amended"
+RENDERED_BUILT = "built"
 
 
 class LandedKind(StrEnum):
@@ -514,10 +515,11 @@ def _attested_resolver(roadmap: Roadmap) -> Callable[[str], LandedStatus | None]
 
 @dataclass(frozen=True)
 class SpecReadiness:
-    """One spec's computed readiness: dispatchable, blockers, drift, and why satisfied.
+    """One spec's computed readiness: build fact, blockers, drift, and why satisfied.
 
-    `dispatchable` is `True` only when `state == ready` and every
-    `depends_on_landed` edge is satisfied (FR-003). `blockers` names the
+    `dispatchable` is `True` only when `state == ready`, every
+    `depends_on_landed` edge is satisfied (FR-003), and the spec is not a clean
+    built one (FR-005). `blockers` names the
     unsatisfied edges — never a bare "blocked" (acceptance scenario 5).
     `satisfied_as` maps each satisfied dependency to its `LandedKind`, so a
     report can say *why* an edge is satisfied (attested vs observed), the two
@@ -525,12 +527,18 @@ class SpecReadiness:
     `satisfied_as` are disjoint: an edge is either satisfied (named in
     `satisfied_as`) or a blocker (named in `blockers`), never both.
 
+    `observed_landed` records the own-spec landing answer the injected resolver
+    supplied. A `ready` spec with that fact and a supplied not-drifted answer is
+    built, not dispatchable; attestation remains the operator's outstanding act.
+
     `drifted` is US4's read-only signal: the frontmatter says `landed` but the
     injected resolver reports the spec's fingerprints differ from their landing
     baseline. An amended spec is not dispatchable until the operator flips it to
     `ready`, and the render shows `amended` rather than `landed` (FR-009).
-    `rendered_state` is the state an operator sees: `amended` when `drifted` and
-    the declared state is `landed`, otherwise the declared `state` value.
+    `rendered_state` is the state an operator sees: `amended` when `drifted`
+    and the declared state is `landed`, `built` when a `ready` spec cannot
+    dispatch because attestation remains outstanding, otherwise the declared
+    `state` value.
     """
 
     spec_dir: str
@@ -538,6 +546,7 @@ class SpecReadiness:
     dispatchable: bool
     blockers: list[str]
     satisfied_as: dict[str, LandedKind]
+    observed_landed: bool = False
     drifted: bool = False
 
     @property
@@ -545,6 +554,8 @@ class SpecReadiness:
         """The state the render prints: `amended` overrides a drifted `landed`."""
         if self.drifted and self.state is SpecState.LANDED:
             return RENDERED_AMENDED
+        if self.observed_landed and not self.dispatchable:
+            return RENDERED_BUILT
         return self.state.value
 
 
@@ -575,17 +586,18 @@ def compute_readiness(
 ) -> Readiness:
     """Compute dispatchability and drift for every spec (FR-003, FR-009).
 
-    A spec is dispatchable iff `state == ready` and every `depends_on_landed`
-    entry is satisfied — satisfied means observed-landed (US2's resolver) or
-    attested (`state: landed` in that spec's own frontmatter). The two kinds are
-    reported distinctly in `SpecReadiness.satisfied_as`.
+    A spec is dispatchable iff `state == ready`, every `depends_on_landed`
+    entry is satisfied, and it is not both observed-landed and supplied as
+    not-drifted. Dependencies are satisfied by observed-landed (US2's resolver)
+    or attestation (`state: landed` in that spec's own frontmatter); the two
+    kinds are reported distinctly in `SpecReadiness.satisfied_as`.
 
-    `landed_for` is the seam for dependency satisfaction. `drifted_for` is the
-    US4 seam for drift: it returns `True` when the frontmatter says `landed` but
-    the spec's current fingerprints differ from their landing baseline. Drift is
-    read-only: a drifted spec renders as `amended` and is not dispatchable until
-    the operator flips `state` to `ready`. Both resolvers are injected so git
-    reads stay out of workflow code (constitution IV).
+    `landed_for` is the seam for dependency satisfaction and the entry's own
+    observed landing. `drifted_for` is the US4 seam for drift: it returns `True`
+    when the frontmatter says `landed` but the spec's current fingerprints
+    differ from their landing baseline. An absent resolver is not a negative
+    drift answer: only a supplied `False` closes a built spec. Both resolvers
+    are injected so git reads stay out of workflow code (constitution IV).
     """
     attested = _attested_resolver(roadmap)
     observed = landed_for if landed_for is not None else (lambda spec_dir: None)
@@ -604,7 +616,17 @@ def compute_readiness(
             else:
                 blockers.append(dependency)
 
-        dispatchable = entry.state is SpecState.READY and not blockers
+        own_status = observed(entry.spec_dir) if landed_for is not None else None
+        observed_landed = own_status is not None and own_status.landed
+        dispatchable = (
+            entry.state is SpecState.READY
+            and not blockers
+            and not (
+                observed_landed
+                and drifted_for is not None
+                and not drift_resolver(entry.spec_dir)
+            )
+        )
         drifted = drift_resolver(entry.spec_dir) if entry.state is SpecState.LANDED else False
         specs.append(
             SpecReadiness(
@@ -613,6 +635,7 @@ def compute_readiness(
                 dispatchable=dispatchable,
                 blockers=blockers,
                 satisfied_as=satisfied_as,
+                observed_landed=observed_landed,
                 drifted=drifted,
             )
         )
