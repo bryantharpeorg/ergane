@@ -5,9 +5,14 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import subprocess
+import urllib.request
 from pathlib import Path
+from typing import Any, Callable
 
+import httpx
 import pytest
+from factory.cli.main import _build_parser
 
 from factory.cli.skills import (
     CANONICAL_SKILLS_ROOT,
@@ -237,3 +242,63 @@ def test_newer_incompatible_manifest_is_explicitly_unsupported(
     assert all(item.installed_version == "0.6.0" for item in status.entries)
     assert all(item.state == "unsupported-manifest" for item in status.entries)
     assert status.manifest_schema == 2
+
+
+def filesystem_snapshot(root: Path) -> dict[str, tuple[str, bytes | str]]:
+    snapshot: dict[str, tuple[str, bytes | str]] = {}
+    for path in sorted((root, *root.rglob("*")), key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            snapshot[relative] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            snapshot[relative] = ("directory", b"")
+        elif path.is_file():
+            snapshot[relative] = ("file", path.read_bytes())
+    return snapshot
+
+
+def deny_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_open = Path.open
+
+    def read_only_open(self: Path, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
+        if any(character in mode for character in ("+", "a", "w", "x")):
+            raise AssertionError(f"status opened {self} for writing ({mode})")
+        return real_open(self, mode, *args, **kwargs)
+
+    def refuse(operation: str) -> Callable[..., Any]:
+        def denied(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError(f"status attempted {operation}")
+
+        return denied
+
+    monkeypatch.setattr(Path, "open", read_only_open)
+    for operation in ("mkdir", "replace", "symlink_to", "touch", "unlink", "write_bytes", "write_text"):
+        monkeypatch.setattr(Path, operation, refuse(operation))
+    for operation in ("replace", "symlink"):
+        monkeypatch.setattr(os, operation, refuse(operation))
+    for name in ("Popen", "run", "check_call", "check_output", "getoutput", "getstatusoutput"):
+        monkeypatch.setattr(subprocess, name, refuse(name))
+    monkeypatch.setattr(urllib.request, "urlopen", refuse("urlopen"))
+    monkeypatch.setattr(httpx, "request", refuse("httpx.request"))
+    monkeypatch.setattr(httpx, "Client", refuse("httpx.Client"))
+
+
+def test_status_command_is_read_only_without_client_or_network_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    home.mkdir()
+    state.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    install()
+    before = (filesystem_snapshot(home), filesystem_snapshot(state))
+    deny_mutation(monkeypatch)
+
+    arguments = _build_parser().parse_args(["skills", "status"])
+    exit_code = arguments.run(arguments)
+
+    assert exit_code == 0
+    assert (filesystem_snapshot(home), filesystem_snapshot(state)) == before
