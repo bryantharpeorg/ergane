@@ -1,5 +1,10 @@
 ---
-state: draft
+state: ready
+# RELEASE REFINEMENT 2026-09-10: included in approved 0.6 audit-packet scope.
+# IMPLEMENTATION APPROVED 2026-09-10: the user's packet approval readies this
+# prerequisite; normal pre-dispatch refinement and factory gates still apply.
+# The release section below supersedes historical storage identity/safety
+# assumptions; historical provenance remains unedited. No live collector changed.
 fixes:
   - feedback/pr-3-typed-attestation-artifacts-declared-and-collected-at-the-gate-boundary
   - feedback/the-platform-has-no-attestation-surface-so-every-target-repo-will-invent-its-own
@@ -196,17 +201,28 @@ fixes:
 **Created**: 2026-09-03
 **Depends on**: nothing.
 
+## 0.6 packet dependency refinement (2026-09-10)
+
+The user explicitly included story/spec packets in 0.6. This spec owns reusable
+gate-artifact capture; 167 consumes it rather than writing a second collector.
+Capture must be safe at the first read, immutable across redispatches and honest
+about whether a file was actually produced during this gate. Lexical path
+validation alone cannot protect the activity from an escaping symlink or FIFO.
+The historical examples naming only epic/node/attempt describe a namespace
+prefix, not a unique artifact identity: dispatch and capture identity are now
+required for new persisted captures (FR-020 through FR-023).
+
 ## The gap, stated precisely
 
 1. A manifest can declare a gate's **command** and nothing else about it.
-   `_read_gates` (`factory/verify/factory_yaml.py:328` — `_read_gates`) requires
+   `_read_gates` (`factory/verify/factory_yaml.py:340` — `_read_gates`) requires
    each gate's value to be a non-empty string, so there is no place on a gate to
    hang a path or a type.
 2. What survives a gate is its exit code, its duration and the last ≤32 KiB of
-   its output. `GateResult` (`factory/verify/models.py:362` — `GateResult`) has
+   its output. `GateResult` (`factory/verify/models.py:374` — `GateResult`) has
    nine fields and not one of them is a file the gate wrote.
 3. The one field that names files names them and throws them away.
-   `worktree_writes` (`factory/verify/models.py:405` — `GateResult`) is a tuple
+   `worktree_writes` (`factory/verify/models.py:417` — `GateResult`) is a tuple
    of paths, recorded so that a gate which dirtied the judge's evidence can be
    demoted — never so that anything reads what is at those paths.
 4. So a coverage report, a dependency inventory, a scan result or an SBOM is
@@ -219,21 +235,21 @@ fixes:
    been forbidden by its own constitution from reading them, because reading them
    would be inventing the per-repo answer this gap forces.
 6. There is a decoy in the tree with exactly the right name. `expected_artifacts`
-   / `artifacts_present` (`factory/verify/models.py:551` — `OutputCheck`) look
+   / `artifacts_present` (`factory/verify/models.py:563` — `OutputCheck`) look
    like this feature and are not: the docstring above them
-   (`factory/verify/models.py:515` — `OutputCheck`) is explicit that they are the
+   (`factory/verify/models.py:527` — `OutputCheck`) is explicit that they are the
    anti-rubber-stamp check for read-scope nodes, and the one production caller
    passes an empty list literally inside `_verify`
-   (`factory/workgraph/workflow.py:2615` — `_verify`).
+   (`factory/workgraph/workflow.py:2714` — `_verify`).
 7. And the place the bytes would have to land is a question the workflow cannot
-   answer. `_verify` (`factory/workgraph/workflow.py:2601` — `_verify`) builds
+   answer. `_verify` (`factory/workgraph/workflow.py:2700` — `_verify`) builds
    `RunGatesInput` (`factory/activities/verify_activities.py:217` —
    `RunGatesInput`) with one argument, and workflow code may read neither the
-   environment nor the filesystem; `EpicInput` (`factory/workgraph/workflow.py:532`
+   environment nor the filesystem; `EpicInput` (`factory/workgraph/workflow.py:578`
    — `EpicInput`) carries a graph, a proxy url, dials and no runtime root. The
    host location is an activity-side fact everywhere else in this repository —
    `_store_path` (`factory/activities/verify_activities.py:634` — `_store_path`)
-   and `factory_root` (`factory/activities/agent_activities.py:188` —
+   and `factory_root` (`factory/activities/agent_activities.py:179` —
    `factory_root`) both resolve it inside an activity — and it must be one here.
 
 ## The rule this spec is asking for
@@ -288,7 +304,7 @@ gate writes on purpose"; an artifact declaration is narrower and names one path.
 It is not a new way to resolve the runtime root. The destination is resolved
 inside the gate-running activity, which is where `_store_path`
 (`factory/activities/verify_activities.py:634` — `_store_path`) and `factory_root`
-(`factory/activities/agent_activities.py:188` — `factory_root`) already resolve
+(`factory/activities/agent_activities.py:179` — `factory_root`) already resolve
 their own host locations; and it is resolved through the one engine resolver, the
 way `factory_root` does and `_store_path` does not (plan.md § What already exists).
 The workflow composes no filesystem path at all. Nothing here invents a fifth
@@ -451,6 +467,8 @@ directory.
 9. **Given** an attempt with collected artifacts, **When** the judge's prompt is
    assembled for it, **Then** the prompt is byte-identical to the prompt assembled
    for the same attempt with no artifacts declared.
+10. **Given** a lexically accepted artifact path resolves through an escaping or swapped symlink, a hardlink alias or a special file, **When** the real collector opens it, **Then** committed tests prove bounded refusal without reading outside the permitted worktree, blocking on a FIFO or changing the gate verdict, and the artifact record names the refusal.
+11. **Given** an artifact already exists before its gate and is unchanged, is newly written, or changes while being captured, **When** collection runs, **Then** committed tests prove capture provenance distinguishes those observations and refuses an inconsistent snapshot instead of certifying every present file as newly produced by that gate.
 
 ### User Story 5 - The bytes land in one absolute place the activity resolves (Priority: P2)
 
@@ -498,6 +516,7 @@ write and re-read an attempt's row, including a row written before this spec.
 6. **Given** an attempt in a repository declaring no artifacts, **When** its row
    is written, **Then** the row decodes to a result equal, in every field that
    existed before this story, to what the same attempt stored before it.
+7. **Given** two dispatches or two captures share an epic/node/attempt ordinal, **When** both store different bytes and one capture is redelivered, **Then** committed tests prove each retains its own immutable location and digest, identical redelivery is idempotent, and conflicting bytes cannot overwrite the earlier capture.
 
 ### User Story 4 - An exported reader returns them per attempt (Priority: P3)
 
@@ -522,6 +541,7 @@ call the exported reader for each.
    neither returns the other's.
 3. **Given** an attempt whose row carries no artifacts, **When** the reader is
    called, **Then** it returns an empty tuple rather than raising.
+4. **Given** two dispatches share the requested node/attempt, **When** the reader is called with explicit dispatch and capture identity, **Then** a committed test proves it returns only that capture with digest/status/freshness provenance, and an ambiguous old-style request refuses rather than combining both as one attempt.
 
 ## Functional Requirements
 
@@ -603,6 +623,10 @@ call the exported reader for each.
   and return with path, type, presence, size and stored location; a row written
   before this spec MUST decode to a result equal in every field that existed
   before it, with the artifact field empty, and no schema migration may be added.
+- **FR-020**: The collector MUST enforce source containment on opened regular files, refuse unsafe symlink/hardlink aliases and special files without blocking, bound reads, and record refusals without changing a gate verdict; lexical manifest validation alone MUST NOT be treated as runtime safety.
+- **FR-021**: New persisted captures MUST carry dispatch and immutable capture identity plus content digest/status, preserve distinct bytes across reused ordinals, and make identical redelivery idempotent. Existing artifact-free payloads MUST remain readable, with no invented historical identity.
+- **FR-022**: Capture MUST preserve whether bytes were observed preexisting/unchanged, newly written or changed during collection; unstable bytes MUST NOT be published as a consistent snapshot, and mere presence MUST NOT be claimed as proof the gate produced a fresh report.
+- **FR-023**: The read-only reader MUST accept explicit dispatch/capture identity and return its digest, capture status and freshness provenance; ambiguous legacy selection MUST be refused rather than conflating distinct captures.
 
 ## Work Graph
 
@@ -617,15 +641,15 @@ US2:
 US3:
   depends_on: []
   depends_on_merged: [US2]
-  implements: [FR-006, FR-007, FR-008, FR-009, FR-011, FR-015, FR-016, FR-018]
+  implements: [FR-006, FR-007, FR-008, FR-009, FR-011, FR-015, FR-016, FR-018, FR-020, FR-022]
 US5:
   depends_on: []
   depends_on_merged: [US3]
-  implements: [FR-017, FR-019]
+  implements: [FR-017, FR-019, FR-021]
 US4:
   depends_on: []
   depends_on_merged: [US5]
-  implements: [FR-010]
+  implements: [FR-010, FR-023]
 ```
 
 A chain, and each edge is declared rather than left inferred (069-US2 FR-007).

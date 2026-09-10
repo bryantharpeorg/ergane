@@ -1,5 +1,8 @@
 ---
 state: draft
+# RELEASE COORDINATION 2026-09-10: the user explicitly included audit packets
+# in0.6. This usage-correctness trio remains coordinated release work; its
+# historical US2 spend-contract decision hold is NOT implicitly cleared.
 fixes:
   - feedback/pr-11-a-confirmed-usage-record-carries-nothing
 # DRAFTED 2026-09-04 by the refinement workflow (refinement-2026-09-04) from
@@ -190,6 +193,24 @@ fixes:
 
 **Depends on**: nothing.
 
+## 0.6 audit-packet coordination (2026-09-10)
+
+The approved packet feature is specified in167. This trio corrects the legacy
+ledger's claims; it does not by itself provide complete audit evidence. Its
+predicate accepts a measured request count with absent token counts, so neither
+today's flag nor the corrected flag proves complete token coverage.167 records
+per-dimension completeness and immutable execution identity separately.
+
+The original three stories and finding scope remain unchanged. The inspected
+decision log at buildout a654fca ends at D-055 and still has no decision
+authorizing US2's zero-counter reversal; this release inclusion does not invent
+one. Resolve that existing hold before readying this whole trio, or explicitly
+split the held spend slice under a new spec number without closing the whole
+finding.167 does not import the held reversal as a dependency and must remain
+honest when reading existing rows. No historical dollars or live store are
+rewritten by this documentation update. Full source-anchor/readiness refinement
+remains a pre-dispatch step for this older trio.
+
 ## The gap, stated precisely
 
 `final_usage_confirmed` is set from the wrong question. It answers "did both
@@ -198,12 +219,12 @@ it as "does this row carry final counts?".
 
 The chain is four short steps:
 
-1. `factory/activities/usage_activities.py:585` — `_record_for` writes
+1. `factory/activities/usage_activities.py:594` — `_record_for` writes
    `final_usage_confirmed=confirmed is not None`. The only thing that value can
    express is whether a reading happened.
-2. `factory/activities/usage_activities.py:497` — `_read_final_usage` returns
+2. `factory/activities/usage_activities.py:506` — `_read_final_usage` returns
    `None` for exactly two reasons — `client is None`, or a raised `LiteLLMError`
-   — at `factory/activities/usage_activities.py:507-514`. Any successful pair of
+   — at `factory/activities/usage_activities.py:516-523`. Any successful pair of
    reads returns a `_ConfirmedUsage`, **including one whose row set is empty**.
 3. An empty row set is not a measurement, and this tree already says so:
    `factory/usage/aggregate.py:39` — `aggregate_rows` documents at
@@ -231,7 +252,7 @@ fallback path `final_usage_confirmed` is False" — which the row this spec is
 about has never fitted.
 
 The dollar figure makes it worse rather than better. When no row was reported,
-`factory/activities/usage_activities.py:573-575` — `_record_for` still writes
+`factory/activities/usage_activities.py:582-584` — `_record_for` still writes
 `/key/info`'s counter, so the row names a spend of `0.0` — the one number in it
 that looks like a measurement and is not.
 
@@ -477,7 +498,7 @@ connection, reopen the ledger with `connect`, and read the row back.
   `completion_tokens` and `request_count` is not `None` — and false otherwise,
   including when both proxy reads succeeded and the spend-log row set was empty.
 - **FR-002**: The decision MUST be taken at the single assignment site,
-  `factory/activities/usage_activities.py:585` — `_record_for`, from the three
+  `factory/activities/usage_activities.py:594` — `_record_for`, from the three
   count values that function has already assembled into the `usage` dict it is
   about to expand — `prompt_tokens`, `completion_tokens` and `request_count` —
   rather than from a name bound on only one of its three branches. Those three
@@ -486,11 +507,11 @@ connection, reopen the ledger with `connect`, and read the row back.
   `factory/activities/usage_activities.py` that takes those three values as its
   arguments and returns a `bool`, rather than an expression inlined at the
   assignment site. US2 has to apply the same rule from inside the `else` branch
-  at `factory/activities/usage_activities.py:566` — `_record_for`, where the
+  at `factory/activities/usage_activities.py:575` — `_record_for`, where the
   `usage` dict is still being built and cannot be read and only `aggregate` is
   in scope, so a helper is what makes "the flag and the spend cannot disagree" a
   fact about the code rather than an instruction an implementer has to honour
-  (FR-006, trap 12). `factory/activities/usage_activities.py:497` — `_read_final_usage`
+  (FR-006, trap 12). `factory/activities/usage_activities.py:506` — `_read_final_usage`
   MUST keep returning a `_ConfirmedUsage` for a successful pair of reads with an
   empty row set, so the key's own spend figure still reaches the row and the
   snapshot fallback is not entered.
@@ -522,8 +543,8 @@ connection, reopen the ledger with `connect`, and read the row back.
   same live attempt rather than from anything it asserts itself. All three stay
   consistent with the rule this story writes.
 - **FR-004**: The subscription-lease branch at
-  `factory/activities/usage_activities.py:543` — `_record_for` and the
-  read-failure fallback at `factory/activities/usage_activities.py:554` — `_record_for`
+  `factory/activities/usage_activities.py:552` — `_record_for` and the
+  read-failure fallback at `factory/activities/usage_activities.py:563` — `_record_for`
   MUST keep writing `final_usage_confirmed` false with the spend figures they
   write today.
 - **FR-005**: `tests/test_usage_activities.py:626-645` MUST be amended rather
@@ -535,14 +556,14 @@ connection, reopen the ledger with `connect`, and read the row back.
   counter is `0.0`, `spend_usd` MUST be written `NULL`. "Not a measurement" MUST
   be decided by calling FR-002's helper with `aggregate.prompt_tokens`,
   `aggregate.completion_tokens` and `aggregate.request_count` — the three values
-  bound at `factory/activities/usage_activities.py:566` — `_record_for`, which
+  bound at `factory/activities/usage_activities.py:575` — `_record_for`, which
   are the same three the flag reads — and MUST NOT be restated as a second
   expression, so the flag and the spend cannot come to disagree about one row.
 - **FR-007**: When the aggregate is not a measurement and the key's counter is
   non-zero, `spend_usd` MUST be written as that counter, unchanged.
 - **FR-008**: When the aggregate is a measurement, `spend_usd` MUST keep coming
   from the key's counter exactly as it does today, at
-  `factory/activities/usage_activities.py:573-575` — `_record_for`.
+  `factory/activities/usage_activities.py:582-584` — `_record_for`.
 - **FR-009**: The diff that performs the reversal MUST name, at the branch that
   performs it, the `docs/decisions.md` entry that authorises it, by `D-`
   identifier and by that entry's heading line quoted verbatim.

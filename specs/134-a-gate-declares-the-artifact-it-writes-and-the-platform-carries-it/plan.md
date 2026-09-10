@@ -1,5 +1,50 @@
 # Implementation Plan: a gate declares the artifact it writes and the platform carries it
 
+## Release refinement — 2026-09-10
+
+Included in approved 0.6 packet scope; 167 consumes this carrier. Citation line
+hints outside spec frontmatter were mechanically mapped from unchanged source
+lines at602a92c to a654fca; the changed v2-key declaration was re-read at its
+current line144. This refresh does not redate the older measurements below.
+This section
+supersedes earlier storage/path-only safety assumptions. Historical
+anchor/provenance paragraphs below remain dated observations, not a claim of
+fresh dispatch readiness. Revalidate all citations against the eventual landed
+base before dispatch; do not use the stale untracked four-node graph in the
+operator clone. Derive into a fresh isolated output path and preserve that file.
+
+US3 also owns FR-020/FR-022: enforce containment/type on opened source handles,
+reject symlink swaps/hardlink aliases/special files, and bound actual reads, not
+just the initial stat. Record capture refusal independently of gate exit. Compare
+pre-gate and captured metadata/digests to describe observed freshness; unchanged
+preexisting bytes are carried but not claimed newly produced. A mid-read change
+is explicit refusal, not a partial report. The packet consumer cannot undo an
+unsafe read that happened before export, so do not defer safety to 167.
+
+US5 also owns capture persistence under FR-021. Add dispatch plus immutable
+capture identity to the supplied logical namespace and store a content digest;
+old input defaults must remain loadable without claiming newly complete
+attribution. New workflow inputs supply dispatch deterministically, never
+environment/filesystem reads. A gate-list/capture invocation has stable identity
+across activity redelivery, distinct from a repeated ordinal. Publish blobs
+atomically outside the watched worktree; same identity+bytes is idempotent and
+different bytes must never replace old evidence. No artifact bytes enter Temporal
+payloads. Carry metadata in the existing gate JSON codecs, not a SQL migration.
+Retain an immutable per-capture metadata manifest beside each stored capture,
+with a bounded reference in the gate JSON. A later verification-row upsert may
+replace its latest gate result, so older capture manifests must remain directly
+addressable by declared dispatch/capture identity rather than reachable only
+through that latest row. US4 resolves that explicit identity through the same
+artifact storage boundary; do not build a second collector or scan worktrees.
+
+US4's reader accepts explicit dispatch/capture selection and returns digest,
+capture status and freshness. An old-style request remains supported only when
+unambiguous; no silent coalescing of redispatches. Five story numbers and merge
+order stay unchanged. Reassess US3's code+tests+evidence size before readiness;
+split under a new story number if the safety cases erase its 64 KiB margin.
+
+The remainder records the older refinement and measured mechanisms.
+
 Every `file:line` below was read from `ergane-buildout` at `602a92c` on
 2026-09-04 and verified to resolve to the symbol named. Do not trust an anchor
 that has moved; re-read before editing.
@@ -24,21 +69,21 @@ it is "113 of 172 citations landed inside the span of the symbol they name".
 its instructions was wrong when it was, and one anchor was still mis-cited after
 the first refinement.** The `expected_artifacts` call the hand-over placed at line
 2314, and a later re-measurement placed at 2433, is really inside `_verify`
-(`factory/workgraph/workflow.py:2615` — `_verify`). The 2026-09-03 draft told the
+(`factory/workgraph/workflow.py:2714` — `_verify`). The 2026-09-03 draft told the
 implementer to hang the new declaration on `VerificationConfig`
-(`factory/verify/models.py:1181` — `VerificationConfig`), which is the
+(`factory/verify/models.py:1224` — `VerificationConfig`), which is the
 **retry-ladder** configuration and carries no gate at all; the class that carries
 `gates`, `timeouts` and `writes` is `FactoryConfig`
 (`factory/verify/models.py:291` — `FactoryConfig`). And the refined spec cited
-`worktree_writes` at `factory/verify/models.py:403` — `GateResult`, which is in
-fact `output_tail`'s line; the field is at `factory/verify/models.py:405` —
+`worktree_writes` at `factory/verify/models.py:415` — `GateResult`, which is in
+fact `output_tail`'s line; the field is at `factory/verify/models.py:417` —
 `GateResult`. All three resolved green through `ergane spec validate` the whole
 time, which is the point: a citation that lands on a real symbol, or inside the
 right class, is not a citation that means what it says.
 
 **And the first refinement settled the storage question the wrong way.** It said
 the destination was "composed by `_verify`, which already knows the epic, the node
-and the attempt". `_verify` (`factory/workgraph/workflow.py:2601` — `_verify`) is
+and the attempt". `_verify` (`factory/workgraph/workflow.py:2700` — `_verify`) is
 Temporal workflow code: it knows the identity and may not read the environment or
 the filesystem to turn it into a path. That correction is trap 7, and it is the
 one that moved a story boundary.
@@ -46,36 +91,36 @@ one that moved a story boundary.
 ## What already exists, and where
 
 **The decoy.** `expected_artifacts` / `artifacts_present`
-(`factory/verify/models.py:551` — `OutputCheck`) live on the output check, and
+(`factory/verify/models.py:563` — `OutputCheck`) live on the output check, and
 their one production caller passes an empty list literally
-(`factory/workgraph/workflow.py:2615` — `_verify`):
+(`factory/workgraph/workflow.py:2714` — `_verify`):
 
 ```python
                 base_ref=prepared.base_ref,
                 expected_artifacts=[],
 ```
 
-Their docstring (`factory/verify/models.py:515` — `OutputCheck`) says what they
+Their docstring (`factory/verify/models.py:527` — `OutputCheck`) says what they
 are for: "Read scopes have nothing to diff, so they are judged on
 `expected_artifacts` existing and being non-empty instead". That is the
 anti-rubber-stamp check for read-scope nodes, not this feature.
 
 **The manifest's gate grammar cannot hold a path.** `_read_gates`
-(`factory/verify/factory_yaml.py:328` — `_read_gates`) requires each gate's value
+(`factory/verify/factory_yaml.py:340` — `_read_gates`) requires each gate's value
 to be a non-empty **string** — the command. So a sibling top-level key is the only
 shape that does not break every existing manifest, and it must be added to
-`_V2_TOP_LEVEL_KEYS` (`factory/verify/factory_yaml.py:134`) or
-`_reject_unknown_keys` (`factory/verify/factory_yaml.py:269` —
+`_V2_TOP_LEVEL_KEYS` (`factory/verify/factory_yaml.py:144`) or
+`_reject_unknown_keys` (`factory/verify/factory_yaml.py:281` —
 `_reject_unknown_keys`) refuses it:
 
 ```python
 #: Keys that only schema v2 recognises; v1 refuses them as unknown (US1-S6).
-_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify")
+_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify", "boundary_only_gates")
 ```
 
 **There is already a sibling key of exactly this shape, and it is the model to
 copy.** `caches:` (101 FR-004) is a list of mappings with a fixed key set, read by
-`_read_caches` (`factory/verify/factory_yaml.py:694` — `_read_caches`) into
+`_read_caches` (`factory/verify/factory_yaml.py:761` — `_read_caches`) into
 `CacheDeclaration` (`factory/verify/models.py:241` — `CacheDeclaration`). Read
 that reader before writing US1: it does the entry-is-a-mapping refusal, the
 unknown-key-inside-an-entry refusal, the empty-list refusal and — the part US1
@@ -91,7 +136,7 @@ and the departure is deliberate" — from a module of pure functions over text.
 FR-012 wants the mirror image: repo-relative required, absolute refused, escape
 judged against the repository root. Do not reach for `.resolve()` to judge it. The
 manifest parser runs wherever the candidate CLI is invoked (`_main`,
-`factory/verify/factory_yaml.py:1129` — `_main`), so a resolved comparison decides
+`factory/verify/factory_yaml.py:1216` — `_main`), so a resolved comparison decides
 the escape against whatever directory the reading process happens to sit in —
 parse-time host-dependence a tmp-dir test cannot see, in a module whose other
 readers are pure. Refuse an absolute path, and refuse any path whose normalised
@@ -102,11 +147,11 @@ segments leave the repository root, with no filesystem call at all. The names,
 `FactoryConfig`) is the parsed manifest: `gates`, `timeouts`, `writes: dict[str,
 bool]`, `standards`, `landing_branch`, `roadmap`, `forge`, `ladder`,
 `verify_order`, `diff_refusal_bytes`, `caches`. This is where an `artifacts` field
-belongs. `VerificationConfig` (`factory/verify/models.py:1181` —
+belongs. `VerificationConfig` (`factory/verify/models.py:1224` —
 `VerificationConfig`) is the retry ladder and is the wrong class.
 
 **`writes:` is a per-gate boolean, not a path allow-list.** `_read_writes`
-(`factory/verify/factory_yaml.py:431` — `_read_writes`) returns `dict[str, bool]`
+(`factory/verify/factory_yaml.py:443` — `_read_writes`) returns `dict[str, bool]`
 — "the gates this repo declares as legitimate writers" — and the demotion is one
 line in `_to_result` (`factory/verify/gates.py:1583` — `_to_result`):
 
@@ -128,7 +173,7 @@ through `git add -A` into a throwaway index and `changes_between`
 (`factory/verify/worktree_snapshot.py:100` — `changes_between`) diffs two of those
 trees, so `worktree_writes` is "tracked content and unignored new paths only — the
 same set `worktree.diff` puts in front of the judge"
-(`factory/verify/models.py:383` — `GateResult`). A repository that git-ignores its
+(`factory/verify/models.py:395` — `GateResult`). A repository that git-ignores its
 `coverage.xml` — most do — never triggers the demotion at all.
 
 **Two runners reach one watched body, and one snapshot is handed forward.**
@@ -166,25 +211,25 @@ warning:
     it is named. `writes` is carried for that reason (084 FR-012)
 ```
 
-The emitter half needs nothing: `_main` (`factory/verify/factory_yaml.py:1129` —
+The emitter half needs nothing: `_main` (`factory/verify/factory_yaml.py:1216` —
 `_main`) prints `json.dumps(dataclasses.asdict(config))` at
-`factory/verify/factory_yaml.py:1152` — `_main`. The reader half is an allow-list.
+`factory/verify/factory_yaml.py:1239` — `_main`. The reader half is an allow-list.
 
 **The per-gate result shape, and the boundary it crosses.** `GateResult`
-(`factory/verify/models.py:362` — `GateResult`) has nine fields; `output_tail`
-(`factory/verify/models.py:403` — `GateResult`) is bounded at 32 KiB, as its
-docstring says at `factory/verify/models.py:367` — `GateResult`, and
-`worktree_writes` is the field below it at `factory/verify/models.py:405` —
+(`factory/verify/models.py:374` — `GateResult`) has nine fields; `output_tail`
+(`factory/verify/models.py:415` — `GateResult`) is bounded at 32 KiB, as its
+docstring says at `factory/verify/models.py:379` — `GateResult`, and
+`worktree_writes` is the field below it at `factory/verify/models.py:417` —
 `GateResult`. A list of these is what the `run_gates` **activity** returns
 (`factory/activities/verify_activities.py:263` — `run_gates`), so every field on
 it is serialised into a Temporal payload. Its input dataclass is `RunGatesInput`
 (`factory/activities/verify_activities.py:217` — `RunGatesInput`) — `worktree_path`,
 `factory_yaml_path`, `timeout_overrides`, and nothing else — constructed at
-`factory/workgraph/workflow.py:2601` — `_verify` with one argument.
+`factory/workgraph/workflow.py:2700` — `_verify` with one argument.
 
 **Where a host location comes from in this repository, and it is never the
 workflow.** The workflow's only argument is `EpicInput`
-(`factory/workgraph/workflow.py:532` — `EpicInput`): a graph, a proxy url, the
+(`factory/workgraph/workflow.py:578` — `EpicInput`): a graph, a proxy url, the
 ladder's dials, and no runtime root. `PreparedWorktree`
 (`factory/workgraph/worktree.py:264` — `PreparedWorktree`) says why in its own
 docstring — "captured here because the workflow cannot run git itself
@@ -204,7 +249,7 @@ def factory_root() -> Path:
     root, _choice, _source = worktrees.resolve_factory_root(FACTORY_ROOT_ENV)
 ```
 
-`factory/activities/agent_activities.py:188` — `factory_root`, which calls
+`factory/activities/agent_activities.py:179` — `factory_root`, which calls
 `resolve_factory_root` (`factory/workgraph/worktree.py:191` —
 `resolve_factory_root`), the one engine resolver.
 
@@ -257,16 +302,16 @@ platform collector can take them unchanged.
 
 **Trap 1 — `expected_artifacts` IS A DECOY WITH EXACTLY THE RIGHT NAME.** It is
 the first thing an implementer will find and the obvious thing to extend. Its
-docstring (`factory/verify/models.py:515` — `OutputCheck`) is explicit that it is
+docstring (`factory/verify/models.py:527` — `OutputCheck`) is explicit that it is
 the anti-rubber-stamp check for read-scope nodes, and its one production caller
-passes `[]` inside `_verify` (`factory/workgraph/workflow.py:2615` —
+passes `[]` inside `_verify` (`factory/workgraph/workflow.py:2714` —
 `_verify`). **Reusing it produces a spec
 that appears to land and changes nothing**, because the field is inert at its only
 call site. FR-006 names a new carrier — `GateResult.artifacts` — for that reason.
 
 **Trap 2 — THE CONFIG WITH THE RIGHT-SOUNDING NAME IS THE WRONG CLASS, AND THE
 PREVIOUS DRAFT OF THIS PLAN FELL FOR IT.** `VerificationConfig`
-(`factory/verify/models.py:1181` — `VerificationConfig`) is "per-deployment caps
+(`factory/verify/models.py:1224` — `VerificationConfig`) is "per-deployment caps
 for the retry ladder" — `max_attempts`, `max_judge_retries`, `gate_timeout_s`. It
 holds no gate names and reaches no gate runner. The parsed manifest, with `gates`,
 `timeouts` and `writes` on it, is `FactoryConfig` (`factory/verify/models.py:291` —
@@ -276,7 +321,7 @@ would parse, store, round-trip and never be read by anything that runs a gate.
 **Trap 3 — `writes:` IS A BOOLEAN PER GATE, NOT A LIST OF PATHS, AND THE BLANKET
 FIX PASSES EVERY OBVIOUS TEST.** FR-004, FR-005. An implementer reading "reaches
 the gate's write allow-list" will go looking for a path set to append to and will
-not find one: `_read_writes` (`factory/verify/factory_yaml.py:431` —
+not find one: `_read_writes` (`factory/verify/factory_yaml.py:443` —
 `_read_writes`) returns `dict[str, bool]` and the decision is `worktree_writes and
 not writes_declared` (`factory/verify/gates.py:1629` — `_to_result`). Two wrong
 moves are within reach and **both are green under every scenario except one**:
@@ -311,7 +356,7 @@ the manifest never named, which is the first wrong move wearing a different hat.
 PRODUCTION CODE AT ALL.** `snapshot_tree`
 (`factory/verify/worktree_snapshot.py:83` — `snapshot_tree`) runs `git add -A`, so
 ignored paths never enter the tree it hashes, and `worktree_writes` is "tracked
-content and unignored new paths only" (`factory/verify/models.py:383` —
+content and unignored new paths only" (`factory/verify/models.py:395` —
 `GateResult`). Most repositories git-ignore `coverage.xml`. Write US2's fixture
 over an **unignored** path or the story's headline test is green before it starts.
 The same fact points the other way for US3: collection must **read the declared
@@ -319,7 +364,7 @@ path from disk**, never from `worktree_writes`, or every git-ignored artifact �
 the common case — silently collects nothing.
 
 **Trap 5 — THE DECLARATION REACHES THE RUNNER THROUGH JSON, AND THE READER IS AN
-ALLOW-LIST.** FR-013, FR-014. `_main` (`factory/verify/factory_yaml.py:1129` —
+ALLOW-LIST.** FR-013, FR-014. `_main` (`factory/verify/factory_yaml.py:1216` —
 `_main`) emits the whole config with `dataclasses.asdict`, so the emitter needs no
 change — but two things follow. First, `_interpret_candidate`
 (`factory/verify/gates.py:1045` — `_interpret_candidate`) lifts only the fields it
@@ -346,9 +391,9 @@ and the location the bytes were written to.
 **Trap 7 — THE COMPONENT THAT KNOWS THE ATTEMPT MAY NOT RESOLVE A PATH, AND THE
 LAST REFINEMENT TOLD AN IMPLEMENTER TO MAKE IT.** FR-017. The previous plan said
 the destination was "composed by `_verify`, which is the code that already knows
-the epic, the node and the attempt". `_verify` (`factory/workgraph/workflow.py:2601`
+the epic, the node and the attempt". `_verify` (`factory/workgraph/workflow.py:2700`
 — `_verify`) is Temporal workflow code. It has the identity and nothing to turn it
-into: `EpicInput` (`factory/workgraph/workflow.py:532` — `EpicInput`) carries no
+into: `EpicInput` (`factory/workgraph/workflow.py:578` — `EpicInput`) carries no
 runtime root, and workflow code may not read the environment or the filesystem —
 the same constitution IV rule `PreparedWorktree`
 (`factory/workgraph/worktree.py:264` — `PreparedWorktree`) cites for capturing a
@@ -365,7 +410,7 @@ target clone is forbidden by `worktree_path`'s docstring — and that reason is
 false of this deployment; see trap 15, which is why FR-017 no longer asks for it.
 **The activity resolves; the workflow passes identity.** `_store_path`
 (`factory/activities/verify_activities.py:634` — `_store_path`) and `factory_root`
-(`factory/activities/agent_activities.py:188` — `factory_root`) are the two
+(`factory/activities/agent_activities.py:179` — `factory_root`) are the two
 in-repo models of *where* that resolution happens, and only `factory_root` models
 *how*: it calls `resolve_factory_root` (`factory/workgraph/worktree.py:191` —
 `resolve_factory_root`), the one engine resolver. `_store_path` reaches
@@ -415,7 +460,7 @@ did not emit it" indistinguishable from "nobody declared it".
 
 **Trap 12 — An oversized artifact is recorded, not truncated.** FR-015. The
 tempting symmetry is `output_tail`, which keeps the last 32 KiB
-(`factory/verify/models.py:367` — `GateResult`) — correct for a log and wrong for
+(`factory/verify/models.py:379` — `GateResult`) — correct for a log and wrong for
 an artifact, because half an SBOM is not a smaller SBOM, it is a corrupt one. Above
 the bound, record present, record the true size, store nothing.
 
@@ -545,7 +590,7 @@ The reason this is a live hazard and not a tidiness note is that one entry point
 does not re-derive. The roadmap re-derives through its `derive_spec` activity and
 `ergane spec derive` re-derives by definition, so both read the trio; but
 `ergane build start` calls `load_workgraph(args.graph)`
-(`factory/cli/nouns/build.py:808` — `start_command`) and dispatches whatever is on
+(`factory/cli/nouns/build.py:879` — `start_command`) and dispatches whatever is on
 disk. The file is also untracked and **not** git-ignored, so a `git add` on this
 directory commits the stale graph alongside the spec.
 
