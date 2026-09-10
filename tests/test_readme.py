@@ -1,12 +1,12 @@
-"""`README.md` cannot be allowed to lie, so it is asserted rather than trusted.
+"""Assert that the README and its setup guide describe the tree accurately.
 
 This is the same three-claim sweep `tests/test_claude_md.py` runs on
 `CLAUDE.md`, applied to the repository's front door. A new operator follows the
-README before they have any other picture of Ergane, so every command it names
+README and linked setup guide before operating Ergane, so every command it names
 must resolve, every path it cites must exist, and it must not keep a second
 copy of any figure that has a live source.
 
-US2 adds a fourth claim: the page must still state the prerequisites and install
+US2 adds a fourth claim: the setup guide must still state the prerequisites and install
 differences that live under "What you must already have" and "Installing Ergane".
 Each guard is a mutation test: a copy of the page text is edited to remove one
 protected concept, and the suite is required to fail on that copy. A test that
@@ -36,7 +36,12 @@ from tests.page_holds_true import (
 
 README_MD = REPO_ROOT / "README.md"
 
-TEXT = README_MD.read_text(encoding="utf-8")
+SETUP_MD = REPO_ROOT / "docs" / "getting-started.md"
+README_TEXT = README_MD.read_text(encoding="utf-8")
+SETUP_TEXT = SETUP_MD.read_text(encoding="utf-8")
+# Sweep both pages so moving operating instructions out of the overview does
+# not drop their command, path, secret, or live-status checks.
+TEXT = README_TEXT + "\n" + SETUP_TEXT
 LINES = TEXT.splitlines()
 
 
@@ -50,7 +55,7 @@ COMMANDS = extract_commands(TEXT)
 def test_every_command_the_file_names_parses(argv: tuple[str, ...]) -> None:
     executable = BIN_DIR / argv[0]
     assert executable.exists(), (
-        f"README.md tells the reader to run `{' '.join(argv)}`, but there is no "
+        f"README.md or docs/getting-started.md tells the reader to run `{' '.join(argv)}`, but there is no "
         f"{argv[0]} entry point installed — check [project.scripts] in pyproject.toml"
     )
 
@@ -64,35 +69,34 @@ def test_every_command_the_file_names_parses(argv: tuple[str, ...]) -> None:
         if not verbs:
             break
         assert word in verbs, (
-            f"README.md tells the reader to run `{' '.join(argv)}`, but "
+            f"README.md or docs/getting-started.md tells the reader to run `{' '.join(argv)}`, but "
             f"`{' '.join(command)}` has no "
             f"`{word}` verb — it has {sorted(verbs)}"
         )
         command.append(word)
 
     help_text = _help_text(tuple(command))
-    for flag, value in flags:
+    for flag, _value in flags:
         assert flag in help_text, (
-            f"README.md recommends `{' '.join(argv)}`, but `{flag}` is not in the help "
+            f"README.md or docs/getting-started.md recommends `{' '.join(argv)}`, but `{flag}` is not in the help "
             f"for `{' '.join(command)}` — the option was renamed or removed"
         )
-        if value is not None:
-            assert value in help_text, (
-                f"README.md recommends `{' '.join(argv)}`, but `{' '.join(command)}` no longer "
-                f"accepts {value!r} for `{flag}`"
-            )
+        # parse_argv already validates choices and argument types. Free-form
+        # paths and identifiers need not appear literally in argparse's help.
 
 
 def test_the_command_sweep_actually_read_the_file() -> None:
     # A parametrized sweep over an empty list passes without asserting anything,
     # which is how this file would go quiet if the backtick convention changed.
     flat = {" ".join(argv) for argv in COMMANDS}
+    assert ("ergane", "--help") in extract_commands(README_TEXT)
+    assert "(docs/getting-started.md)" in README_TEXT
     assert "ergane install" in flat, (
-        f"the sweep found {sorted(flat)} — README.md is meant to start with "
+        f"the sweep found {sorted(flat)} — the setup guide is meant to name "
         "`ergane install`, and the sweep is meant to find it"
     )
     assert "ergane init" in flat, (
-        f"the sweep found {sorted(flat)} — README.md is meant to name "
+        f"the sweep found {sorted(flat)} — the setup guide is meant to name "
         "`ergane init`, and the sweep is meant to find it"
     )
 
@@ -108,7 +112,7 @@ def test_every_path_the_file_cites_exists(cited: str) -> None:
     if cited.startswith(".factory/"):
         pytest.skip(f"{cited} is runtime state, not a committed path")
     assert (REPO_ROOT / cited).exists(), (
-        f"README.md points at {cited}, which is not in the tree — it moved, or it "
+        f"README.md or docs/getting-started.md points at {cited}, which is not in the tree — it moved, or it "
         "was never there"
     )
 
@@ -129,7 +133,7 @@ def test_the_file_contains_no_secret_value() -> None:
             for match in pattern.finditer(line):
                 matches.append((number, match.group(0), pattern.pattern))
     assert not matches, (
-        "README.md contains a value that matches a shipped secret shape:\n"
+        "README.md or docs/getting-started.md contains a value that matches a shipped secret shape:\n"
         + "\n".join(f"  line {number}: {value!r} (pattern {pattern!r})" for number, value, pattern in matches)
     )
 
@@ -140,7 +144,7 @@ def test_the_file_contains_no_secret_value() -> None:
 def test_the_file_names_no_spec_status() -> None:
     claims = status_claims(TEXT)
     assert not claims, (
-        "README.md states a spec's status, which has a live source and will rot:\n"
+        "README.md or docs/getting-started.md states a spec's status, which has a live source and will rot:\n"
         + "\n".join(
             f"  line {number}: {spec!r} beside {status!r}" for number, spec, status in claims
         )
@@ -160,7 +164,7 @@ def test_the_file_names_no_spend_figure() -> None:
         if _SPEND_FIGURE.search(line)
     ]
     assert not hits, (
-        "README.md states a spend figure, which `ergane usage` already answers:\n"
+        "README.md or docs/getting-started.md states a spend figure, which `ergane usage` already answers:\n"
         + "\n".join(f"  line {number}: {line}" for number, line in hits)
     )
 
@@ -208,7 +212,7 @@ _MISSING_CONCEPT_NAMES: dict[str, str] = {
 
 
 def missing_readme_concepts(page_text: str) -> list[str]:
-    """Return the protected concepts from README.md that `page_text` fails to state.
+    """Return the protected concepts from the setup guide that `page_text` fails to state.
 
     The check is meaning-based, not literal-string based: a reworded page that
     still expresses the same fact passes, and a page that removes the fact fails.
@@ -288,10 +292,10 @@ def missing_readme_concepts(page_text: str) -> list[str]:
     return missing
 
 
-def test_the_page_states_all_required_concepts() -> None:
-    missing = missing_readme_concepts(TEXT)
+def test_the_setup_guide_states_all_required_concepts() -> None:
+    missing = missing_readme_concepts(SETUP_TEXT)
     assert not missing, (
-        "README.md is missing required concepts:\n"
+        "docs/getting-started.md is missing required concepts:\n"
         + "\n".join(f"  - {concept}" for concept in missing)
     )
 
@@ -302,27 +306,27 @@ def _mutations() -> list[tuple[str, str]]:
     return [
         (
             "database",
-            TEXT.replace("**The proxy must be database-backed.**", "**The proxy must exist.**")
+            SETUP_TEXT.replace("**The proxy must be database-backed.**", "**The proxy must exist.**")
             .replace("`DATABASE_URL`", "`POSTGRES_URL`")
             .replace("database-backed", "operational")
             .replace("database", "service"),
         ),
         (
             "endpoints",
-            TEXT.replace("`POST /key/generate`", "`POST /key/create`")
+            SETUP_TEXT.replace("`POST /key/generate`", "`POST /key/create`")
             .replace("`GET /key/info`", "`GET /key/status`")
             .replace("`GET /spend/logs/v2`", "`GET /spend/total`"),
         ),
         (
             "config_only_warning",
-            TEXT.replace("config-only proxy", "minimal proxy")
+            SETUP_TEXT.replace("config-only proxy", "minimal proxy")
             .replace("returns 404", "returns 200")
             .replace("all of the rest", "everything")
             .replace("`GET /v1/models`", "`GET /v1/health`"),
         ),
         (
             "aliases",
-            TEXT.replace(
+            SETUP_TEXT.replace(
                 "**The proxy must serve every model alias the persona registry names.**",
                 "**The proxy must be up.**",
             )
@@ -351,7 +355,7 @@ def _mutations() -> list[tuple[str, str]]:
                     "the path it resolved, and that path is the answer.",
                     "",
                 )
-            )(TEXT),
+            )(SETUP_TEXT),
         ),
         (
             "checkout_install",
@@ -367,11 +371,11 @@ def _mutations() -> list[tuple[str, str]]:
                     "takes effect immediately.",
                     "",
                 )
-            )(TEXT),
+            )(SETUP_TEXT),
         ),
         (
             "resolve_differently",
-            TEXT.replace(
+            SETUP_TEXT.replace(
                 "The two paths resolve the persona registry from different places.",
                 "Both paths use the same personas.yaml.",
             ),
@@ -399,7 +403,7 @@ def test_reworded_equivalent_page_passes() -> None:
     This keeps the guards anchored to meaning rather than to one literal string.
     """
     reworded = (
-        TEXT.replace(
+        SETUP_TEXT.replace(
             "**The proxy must be database-backed.**",
             "**Ergane needs a database-backed LiteLLM proxy.**",
         )
@@ -430,6 +434,6 @@ def test_reworded_equivalent_page_passes() -> None:
     )
     missing = missing_readme_concepts(reworded)
     assert not missing, (
-        "a reworded but equivalent README.md was rejected; the guards are too "
+        "a reworded but equivalent setup guide was rejected; the guards are too "
         f"literal-string keyed: {missing}"
     )

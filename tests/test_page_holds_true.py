@@ -111,6 +111,18 @@ def test_parse_argv_accepts_usage_by_epic() -> None:
     parse_argv(("ergane", "usage", "--by", "epic"))
 
 
+@pytest.mark.parametrize("argv", [("ergane", "--help"), ("ergane", "build", "ship", "-h")])
+def test_parse_argv_accepts_help(argv: tuple[str, ...], capsys: pytest.CaptureFixture[str]) -> None:
+    """Help is a successful argparse exit, including at a leaf with required args."""
+    assert parse_argv(argv) is None
+    assert "usage:" in capsys.readouterr().out
+
+
+def test_parse_argv_rejects_nonexistent_verb_before_help() -> None:
+    with pytest.raises(AssertionError, match="nonexistent"):
+        parse_argv(("ergane", "nonexistent", "--help"))
+
+
 # --- US1 T003: placeholder substitution by shape ------------------------------
 
 
