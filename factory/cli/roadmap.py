@@ -500,6 +500,9 @@ def _render_status(status: RoadmapStatus) -> str:
         f"running: {', '.join(status.running) or '-'}",
         f"parked: {len(status.parked)}",
     ]
+    for finding in status.parked:
+        lines.append(f"  {finding.spec_dir} — check: {finding.check}")
+        lines.append(f"    {finding.detail}")
     if status.specs:
         lines.append("specs:")
         for spec in status.specs:

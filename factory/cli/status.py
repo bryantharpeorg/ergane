@@ -88,6 +88,7 @@ from factory.roadmap.discovery import (
     render_schedule_line,
     resolve_roadmap,
 )
+from factory.roadmap.workflow import ParkedFinding
 from factory.roadmap.models import (
     SPEC_NAME,
     LandedKind,
@@ -177,7 +178,9 @@ class RoadmapDisposition:
     looked_for: list[str]
     dispatch_paused: bool | None = None
     running: list[str] = field(default_factory=list)
-    parked: int | None = None
+    #: Each refused spec, in the order the roadmap reported it. The fields are
+    #: the roadmap's own; the count is a rendering concern, not the payload.
+    parked: list[ParkedFinding] | None = None
     #: Why the bottom half is missing, when the run refused to answer. `None`
     #: whenever it answered *or* whenever there was no run to ask — an absent
     #: reading and a refused one look the same in the fields above, and only one
@@ -551,7 +554,16 @@ async def _disposition(client: Any, specs_root: Path) -> RoadmapDisposition:
         looked_for=list(location.looked_for),
         dispatch_paused=None if document is None else bool(document.get("paused")),
         running=[] if document is None else list(document.get("running") or []),
-        parked=None if document is None else len(document.get("parked") or []),
+        parked=None
+        if document is None
+        else [
+            ParkedFinding(
+                spec_dir=str(entry.get("spec_dir", "")),
+                check=str(entry.get("check", "")),
+                detail=str(entry.get("detail", "")),
+            )
+            for entry in document.get("parked") or []
+        ],
         dispatch_unavailable=refusal,
         schedule_state=str(location.schedule_state_at(now)),
         seconds_since_last_start=location.seconds_since_last_start(now),
@@ -777,7 +789,10 @@ def _roadmap_lines(floor: FloorStatus) -> list[str]:
     if disposition.dispatch_paused is not None:
         lines.append(f"dispatch: {'paused' if disposition.dispatch_paused else 'running'}")
         lines.append(f"running: {', '.join(disposition.running) or '-'}")
-        lines.append(f"parked: {disposition.parked}")
+        lines.append(f"parked: {len(disposition.parked or [])}")
+        for finding in disposition.parked or []:
+            lines.append(f"  {finding.spec_dir} — check: {finding.check}")
+            lines.append(f"    {finding.detail}")
     if disposition.dispatch_unavailable is not None:
         lines.append(f"dispatch: unavailable ({disposition.dispatch_unavailable})")
     if not lines:
