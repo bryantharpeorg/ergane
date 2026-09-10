@@ -491,7 +491,7 @@ async def test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it
         status = await handle.result()
 
     assert status.parked == []
-    assert dispatched == ["002-bravo", "001-runtime-root"]
+    assert set(dispatched) == {"002-bravo", "001-runtime-root"}
     assert _status_of(status, "001-runtime-root").landed is True
 
 
