@@ -65,6 +65,7 @@ from factory.verify.models import (
     GateStatus,
     RoadmapDials,
     VerificationConfig,
+    gate_watchdog_basis,
 )
 
 #: The manifest's committed filename; callers compose `<worktree>/ergane.yaml`.
@@ -1147,9 +1148,29 @@ def load_loop_config(
     a node's own work is refused unjudged, so a node that could rewrite it in its
     worktree would be voting on its own verdict — the governing value is read
     from the declaration that owns it, once, here (constitution IX).
+
+    The ladder's `gate_timeout_s` is pinned here too, derived from the manifest
+    rather than carried as `_read_ladder` leaves it. Per-gate, `timeouts:` and
+    the default stay the only governing sources (163 FR-003) — the runner reads
+    them at gate time exactly as before — but the *verification activity's*
+    watchdog has to outlast the slowest window the manifest declared, and the
+    field that sizes it was pinned at the default however long the manifest
+    said. The declared deadlines reach the same pin the ladder and the order
+    ride, once, at the same dispatch-time read (163 FR-001); `_child_config`'s
+    one-field overlay then preserves it into every child a roadmap starts.
     """
     config, _ = load_factory_config_with_name(repo_root)
-    return config.ladder, config.verify_order, config.diff_refusal_bytes
+    ladder = config.ladder
+    derived_basis = gate_watchdog_basis(
+        config.gates.keys(),
+        config.timeouts,
+        ladder.gate_timeout_s,
+    )
+    return (
+        dataclasses.replace(ladder, gate_timeout_s=derived_basis),
+        config.verify_order,
+        config.diff_refusal_bytes,
+    )
 
 
 # Reporting -------------------------------------------------------------------
