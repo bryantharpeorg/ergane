@@ -12,7 +12,11 @@ from temporalio.testing import WorkflowEnvironment
 
 from factory.activities import roadmap_activities as ra
 from factory.roadmap.models import LandedKind, LandedStatus, SpecState
-from factory.roadmap.workflow import _FAST, RoadmapWorkflow
+from factory.roadmap.workflow import (
+    _FAST,
+    RoadmapStatus,
+    RoadmapWorkflow,
+)
 from factory.worker import ACTIVITIES
 from tests.roadmap_script import _SCRIPT
 from tests.test_roadmap_scheduler import (
@@ -300,3 +304,112 @@ async def test_a_built_but_drifted_ready_spec_is_read_and_dispatched(
     assert child_starts == ["001-amended"]
     assert world.clone_calls == ["/srv/factory/targets/library"]
     assert any(name == "onboard_target" for name, _ in activity_calls)
+
+
+def _ready_only_drift() -> Any:
+    """Fault injection: narrow the drift read away from attested landed specs."""
+    from temporalio import workflow
+
+    async def compute_drift(self: Any, request: Any) -> dict[str, bool]:
+        drift: dict[str, bool] = {}
+        for entry in self._roadmap.entries:
+            if entry.state is not SpecState.READY:
+                continue
+            spec_text = await self._spec_text(request.specs_root, entry.spec_dir)
+            drift[entry.spec_dir] = await workflow.execute_activity(
+                ra.drift_for_spec,
+                ra.DriftInput(
+                    target_repo=request.target_repo,
+                    spec_dir=entry.spec_dir,
+                    spec_text=spec_text,
+                ),
+                **_FAST,
+            )
+        return drift
+
+    return compute_drift
+
+
+@pytest.mark.asyncio
+async def test_a_landed_amended_spec_still_renders_amended(
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The widened drift read preserves today's amended render for landed specs."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-amended": dict(state=SpecState.LANDED),
+            "002-held": dict(state=SpecState.READY),
+        },
+    )
+    world = RoadmapWorld(drift_runner=lambda _request: True)
+    activity_calls: list[tuple[str, str | None]] = []
+    queried: RoadmapStatus | None = None
+    async with run_roadmap(
+        temporal_env,
+        world,
+        str(specs_root),
+        hold_specs={"epic-002-held"},
+        interceptors=[_ActivityRecordingInterceptor(activity_calls)],
+    ) as handle:
+        for _ in range(100):
+            if any(
+                name == "drift_for_spec" and account == "001-amended"
+                for name, account in activity_calls
+            ):
+                break
+            await asyncio.sleep(0.01)
+        candidate = await handle.query("roadmap_status", result_type=RoadmapStatus)
+        queried = candidate
+        assert queried is not None
+        amended = next(spec for spec in queried.specs if spec.spec_dir == "001-amended")
+        assert amended.drifted is True
+        assert amended.rendered_state == "amended"
+        assert any(
+            name == "drift_for_spec" and account == "001-amended"
+            for name, account in activity_calls
+        )
+        await handle.cancel()
+
+
+@pytest.mark.asyncio
+async def test_amendment_control_detects_a_narrowed_drift_read(
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The amendment control fails if the landed-state branch is removed."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-amended": dict(state=SpecState.LANDED),
+            "002-held": dict(state=SpecState.READY),
+        },
+    )
+    world = RoadmapWorld(drift_runner=lambda _request: True)
+    activity_calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(RoadmapWorkflow, "_compute_drift", _ready_only_drift())
+    async with run_roadmap(
+        temporal_env,
+        world,
+        str(specs_root),
+        hold_specs={"epic-002-held"},
+        interceptors=[_ActivityRecordingInterceptor(activity_calls)],
+    ) as handle:
+        for _ in range(100):
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            if any(spec.spec_dir == "001-amended" for spec in status.specs):
+                amended = next(
+                    spec for spec in status.specs if spec.spec_dir == "001-amended"
+                )
+                break
+            await asyncio.sleep(0.01)
+        assert amended.drifted is False
+        assert amended.rendered_state == "landed"
+        assert not any(
+            name == "drift_for_spec" and account == "001-amended"
+            for name, account in activity_calls
+        )
+        await handle.cancel()
