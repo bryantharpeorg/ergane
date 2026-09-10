@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import sqlite3
 import subprocess
@@ -1512,6 +1513,7 @@ def attempts_command(args: argparse.Namespace) -> int:
     errors — the only refusal is a store this process cannot read, which is a
     transport failure and says so.
     """
+    as_json = getattr(args, "as_json", False)
     path = _verification_store_path()
     if not path.exists():
         # Absent is "nothing has been recorded here", the same answer
@@ -1536,6 +1538,21 @@ def attempts_command(args: argparse.Namespace) -> int:
         ) from error
     finally:
         conn.close()
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "epic_id": args.epic_id,
+                    "attempts": [
+                        dataclasses.asdict(result) for result in results
+                    ],
+                    "evidence_store": {"state": "available", "path": str(path)},
+                },
+                indent=2,
+            )
+        )
+        return EXIT_OK
 
     if not results:
         print(_no_attempts_line(args.epic_id, path))
@@ -2826,6 +2843,12 @@ def add_parser(subparsers: Any) -> None:
         ),
     )
     attempts.add_argument("epic_id", help="the epic id (the spec directory's name)")
+    attempts.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="print the typed verification rows as JSON",
+    )
     attempts.set_defaults(run=attempts_command)
 
     why = commands.add_parser(

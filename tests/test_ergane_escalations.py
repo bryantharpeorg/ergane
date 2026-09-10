@@ -57,6 +57,7 @@ from factory.verify.models import EscalationChoice
 
 from tests.test_escalation_workflow import (
     ABANDONED_ID,
+    DEFAULT_CHOICES,
     PRESS_AT,
     QUESTION,
     TASK_QUEUE,
@@ -198,6 +199,10 @@ async def test_open_escalations_reports_workflows_and_not_the_store(
         assert {item.node_id for item in listed} == {"us2", "us3"}
         assert all(item.question == QUESTION for item in listed)
         assert all(item.expires_at for item in listed)
+        assert all(
+            item.choices == tuple(str(choice) for choice in DEFAULT_CHOICES)
+            for item in listed
+        )
 
         # The question came from the workflow, not from the row: the store's
         # own text for these escalations says something else entirely.
@@ -262,6 +267,7 @@ async def test_ergane_escalations_list_prints_what_is_waiting(
         document = as_json.json
         assert [item["escalation_id"] for item in document] == [handle.id]
         assert document[0]["question"] == QUESTION
+        assert document[0]["choices"] == list(DEFAULT_CHOICES)
 
         # Drained once it is answered.
         await handle.signal(SIGNAL_NAME, args=[handle.id, "KILL", "@bryan"])

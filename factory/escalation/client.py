@@ -165,4 +165,9 @@ def _as_open_escalation(document: Any) -> OpenEscalation:
         question=document["question"],
         expires_at=document["expires_at"],
         resolution=document.get("resolution"),
+        choices=(
+            None
+            if "choices" not in document
+            else tuple(document["choices"] or ())
+        ),
     )

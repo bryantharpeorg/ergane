@@ -215,6 +215,7 @@ class OpenEscalation:
     question: str
     expires_at: str
     resolution: str | None = None
+    choices: tuple[str, ...] | None = None
 
 
 def child_correlation_id() -> str:
@@ -300,6 +301,11 @@ class EscalationWorkflow:
             question=_question(request),
             expires_at=self._expires_at,
             resolution=self._resolution,
+            choices=(
+                None
+                if request is None
+                else tuple(EscalationChoice(choice).value for choice in request.choices)
+            ),
         )
 
     # --- the lifecycle -------------------------------------------------------

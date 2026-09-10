@@ -4,7 +4,6 @@ import dataclasses
 import importlib.util
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -120,7 +119,7 @@ def attempt_rows() -> list[dict[str, Any]]:
 def unavailable_services() -> dict[str, Any]:
     return {
         "temporal": {"state": "unavailable", "reason": "socket unavailable"},
-        "landing_head": {"state": "unavailable", "reason": "target repo absent"},
+        "landing_head": {"state": "unavailable", "reason": "target repo unavailable"},
         "process": {"state": "unavailable", "reason": "not running"},
     }
 
@@ -151,8 +150,8 @@ def test_floor_status_renders_recorded_history_without_registry(
     assert "runner promotion-debugger" in rendered
     assert "model claude-sonnet-5" in rendered
     assert "route subscription" in rendered
-    assert "dispatch workflow-run-158a" in rendered
-    assert "dispatch workflow-run-158b" in rendered
+    assert "dispatch 1 of 2: workflow-run-158a" in rendered
+    assert "dispatch 2 of 2: workflow-run-158b" in rendered
     assert "dispatch 1 of 2" in rendered
     assert "evidence verification-store" in rendered
     assert "today-changed-model" not in rendered
@@ -294,3 +293,72 @@ def test_read_only_helpers_run_against_denied_mutation_fakes() -> None:
     assert "no recorded attempts" in floor_report
     assert "proposed answer: KILL_EPIC" in escalation_brief
     assert mutations.calls == []
+
+
+def test_committed_fixture_transcript_shows_unavailable_and_no_actions() -> None:
+    """The committed transcript is the executable fixtures' actual output."""
+    renderer = load_skill_script("floor_render.py")
+    escalation_renderer = load_skill_script("escalation_render.py")
+    mutations = DeniedMutations()
+    floor = renderer.render_floor(
+        status=status_fixture_document(),
+        attempts=attempt_fixture_document()["attempts"],
+        services=unavailable_services(),
+        registry={},
+        mutations=mutations,
+    )
+    brief = escalation_renderer.render_brief(
+        {
+            "escalation_id": "esc158",
+            "epic_id": "158-operator-skills-report-and-act-by-declared-intent",
+            "node_id": "us1",
+            "question": "retry available?",
+            "expires_at": "2026-09-09T18:00:00Z",
+            "choices": ["RETRY", "KILL_EPIC"],
+            "recovery_evidence": {
+                "classification": "deterministic",
+                "tested_sha": "60943a0",
+                "branch_moved": False,
+            },
+        },
+        mutations=mutations,
+    )
+
+    transcript = (FLOOR_SKILL / "fixtures/transcript.txt").read_text(encoding="utf-8")
+    assert "unavailable: temporal socket unavailable" in transcript
+    assert "no action seam was called" in transcript
+    assert mutations.calls == []
+    assert floor in transcript
+    assert brief in transcript
+
+
+def test_helpers_execute_the_committed_fixtures() -> None:
+    """The helper entrypoints render the committed fixture files unchanged."""
+    floor_run = subprocess.run(
+        [
+            "python3",
+            str(FLOOR_SKILL / "floor_render.py"),
+            str(FLOOR_SKILL / "fixtures/status.json"),
+            str(FLOOR_SKILL / "fixtures/attempts.json"),
+            str(FLOOR_SKILL / "fixtures/services.json"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    escalation_run = subprocess.run(
+        [
+            "python3",
+            str(ESCALATION_SKILL / "escalation_render.py"),
+            str(ESCALATION_SKILL / "fixtures/escalation.json"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert "runner debugger" in floor_run.stdout
+    assert "unavailable: landing head target repo unavailable" in floor_run.stdout
+    assert "proposed answer: RETRY" in escalation_run.stdout
