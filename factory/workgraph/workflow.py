@@ -491,6 +491,17 @@ _ADAPTER_GRACE_S = 120
 _AGENT_HEARTBEAT_TIMEOUT_FLOOR = timedelta(seconds=5 * HEARTBEAT_INTERVAL_S)
 _AGENT_HEARTBEAT_TIMEOUT_CEILING = timedelta(seconds=120)
 
+#: How long Temporal may hold a scheduled `run_agent_attempt` before reporting
+#: that no worker accepted it. This is a dedicated-queue availability bound,
+#: not a work deadline: the same value applies to a twelve-second and a
+#: four-hour attempt. Temporal says this option is for worker-specific task
+#: queues, which is exactly this deployment — one `build_worker` serves the
+#: `workgraph` queue, so a restart, outage or retirement can leave a task
+#: accepted by nobody. The expiry is non-retryable at the server, so this is
+#: deliberately well past a ten-second unit restart and the ordinary minutes
+#: an operator needs to stop, land, and restart; a shorter bound would turn a
+#: routine restart into a launch fault.
+_AGENT_SCHEDULE_TO_START_TIMEOUT = timedelta(minutes=45)
 
 def _agent_heartbeat_timeout(timeout_s: float) -> timedelta:
     """Heartbeat timeout for one attempt: half its deadline, within both bounds.
@@ -2477,6 +2488,7 @@ class EpicWorkflow:
             start_to_close_timeout=timedelta(
                 seconds=context.timeout_s + _ADAPTER_GRACE_S
             ),
+            schedule_to_start_timeout=_AGENT_SCHEDULE_TO_START_TIMEOUT,
             heartbeat_timeout=_agent_heartbeat_timeout(context.timeout_s),
             retry_policy=_AGENT_RETRIES,
         )
