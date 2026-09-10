@@ -41,6 +41,7 @@ that was true when it was written has since stopped being true.
 from __future__ import annotations
 
 import ast
+import copy
 import re
 import sys
 import traceback
@@ -537,12 +538,24 @@ def magnitudes_inspected(test: ast.AST) -> set[str]:
     which is validation; `spend > cap` asks whether it is too large, which is
     the enforcement this component does not have.
     """
+    class MeasurementChecks(ast.NodeTransformer):
+        def visit_Compare(self, node: ast.Compare):
+            # Existence checks ask whether anything was measured. Exclude them
+            # structurally, as the guard's contract above has always intended.
+            if all(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops) and all(
+                isinstance(value, ast.Constant) and value.value is None for value in node.comparators
+            ):
+                return ast.Constant(True)
+            return self.generic_visit(node)
+
+    test = MeasurementChecks().visit(copy.deepcopy(test))
     guarded: set[str] = set()
     for child in ast.walk(test):
         if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
             if child.func.id in {"isinstance", "issubclass"}:
                 guarded |= identifiers(child)
     return (identifiers(test) & USAGE_MAGNITUDES) - guarded
+
 
 
 @pytest.mark.parametrize("path", COMPONENT_MODULES, ids=module_id)
@@ -737,6 +750,8 @@ async def test_a_runaway_attempt_is_treated_exactly_like_a_cheap_one(
         "GET /key/info",  # the heartbeat poll
         "GET /key/info",  # teardown's final read (R3 step 1)
         "GET /spend/logs/v2",
+        "GET /key/info",  # second snapshot confirms stable detail
+        "GET /spend/logs/v2",
         "POST /key/delete",  # last, always (R3)
     ]
 
@@ -773,3 +788,10 @@ async def test_an_enormous_spend_still_only_gets_an_uncapped_key(
     assert snapshot.spend_usd == pytest.approx(50_000.0)
     assert worker.proxy.routes[marker:] == ["GET /key/info"]
     assert lease.key in worker.proxy.keys
+
+
+def test_measurement_checks_do_not_allow_spending_thresholds():
+    for expression in ("spend > 100", "record.prompt_tokens > 5000", "spend > limit", "spend + 100 > spend"):
+        assert magnitudes_inspected(ast.parse(expression, mode="eval"))
+    for expression in ("record.prompt_tokens is not None", "spend is None"):
+        assert not magnitudes_inspected(ast.parse(expression, mode="eval"))

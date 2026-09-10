@@ -1450,3 +1450,30 @@ stands at two, and the two are one mechanism seen from opposite ends.
 
 Supersedes nothing. Widens Principle IX's refusal-over-fallback rule from values a program
 reads to coordinates an agent reads.
+
+
+## D-056 · Usage completeness is distinct from measured counters (decided)
+
+**2026-09-10.** An operator-approved accounting repair supersedes the usage
+parts of D-018/D-021 and the original component-1 teardown contract.
+
+LiteLLM used provider response IDs as spend-log primary keys. Ollama reused
+`chatcmpl-1` through `chatcmpl-999`; its request rows were discarded while daily
+usage and key spend continued increasing. A successful spend-log read therefore
+never established completeness. Gateway teardown now preserves independent cost
+and partial token measurements, retries delayed writes within a bound, and
+confirms only stable, consistent detail. Repeated teardown preserves better
+measurements. Historical rows remain explicitly legacy until reconciled.
+
+Subscription routes have no gateway key. Their structured Claude/Codex session
+telemetry is now an approved usage source, parsed inside activities after archive,
+with dispatch-route, execution-time and attempt attribution. It does not influence
+workflow decisions or expand AdapterResult. Repeated Claude message blocks and
+Codex cumulative counters must not be added repeatedly. Interrupted or truncated
+telemetry is partial. Subscription charges remain unknown; proxy prices are
+labelled estimates. Measured subtotals and completeness are reported separately.
+
+The migration is additive; old Temporal payloads remain valid, and read-only CLI
+calls do not migrate stores. No new dependency, enforcement rule, or model route
+is introduced. Historical writes and deployment during active attempts are outside
+the repair rollout.

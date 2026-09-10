@@ -136,10 +136,11 @@ class UsageRecord:
     and the DDL's 0/1 INTEGER there, and `termination` is the enum here and its
     lowercase value there.
 
-    On the confirmed path every field is populated from proxy data. On the
-    fallback path `final_usage_confirmed` is False, `spend_usd` comes from the
-    last snapshot (or is `None` if there never was one), and the token fields
-    stay `None` — the row exists, flagged, rather than being invented (FR-005).
+    Measurements may come from gateway records or subscription runner telemetry.
+    `usage_status` distinguishes complete, partial, unknown, and legacy readings.
+    Independent cost survives missing token detail; subscription cost is unknown.
+    `final_usage_confirmed` is true only for complete new readings. Optional cache
+    counters and request counts can remain unknown even with complete tokens.
 
     `id` is assigned by SQLite, so it is `None` until the row has been written.
     """
@@ -161,3 +162,7 @@ class UsageRecord:
     issued_at: str
     torn_down_at: str
     id: int | None = None
+    #: Additive fields: old Temporal payloads and old rows retain their provenance.
+    usage_source: str = "legacy"
+    usage_status: str = "legacy"
+    cost_basis: str = "unknown"

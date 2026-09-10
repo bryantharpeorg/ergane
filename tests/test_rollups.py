@@ -432,7 +432,7 @@ def test_the_result_echoes_the_dimension_and_filters(
     unfiltered = rollup(ledger, by="spec-ref")
     assert unfiltered["by"] == "spec-ref"
     assert unfiltered["filters"] == {"epic": None, "since": None}
-    assert set(unfiltered) == {"by", "filters", "groups", "totals"}
+    assert set(unfiltered) == {"by", "filters", "groups", "totals", "coverage"}
 
     filtered = rollup(ledger, by="node", epic="epic-a", since="2026-07-21")
     assert filtered["by"] == "node"
