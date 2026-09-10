@@ -351,15 +351,16 @@ and no query answer can carry it. `factory/cli/nouns/build.py:429` —
 argument for US2 living entirely in the CLI, and for the "not a new `NodeState`"
 paragraph in spec.md.
 
-**Two facts about the deployment that make the unbounded wait reachable rather
-than theoretical.** `factory/worker.py:272` — `build_worker` registers every
-activity on one task queue at `factory/worker.py:285` — `build_worker` and sets
-no `max_concurrent_activities`, so the SDK default applies and an agent activity
-is never queued behind other work — a SCHEDULED agent activity means nobody is
-polling. And `factory/versioning.py:57` names `ERGANE_WORKER_BUILD_ID`, while
-`factory/versioning.py:163` — `strandable_epics` guards only the retirement of
-the **unversioned** worker: a PINNED epic whose deployment version is retired
-routes to a version nobody serves, with no refusal in the way.
+**The deployment makes an unaccepted activity reachable, but does not prove
+why it is unaccepted.** `factory/worker.py:272` — `build_worker` registers
+workflows and activities on one task queue. A pinned version can temporarily
+have no accepting worker during a stop or outage. SCHEDULED alone does not prove
+that no poller exists: leaving concurrency options at SDK defaults does not
+prove unlimited capacity. Preserve that distinction in operator wording.
+Normal version retirement already has an open-work guard in
+`factory/supervision/deploy.py:168` — `reapable`, with a second check in
+`factory/supervision/deploy.py:605` — `_reap`. This spec neither replaces nor
+weakens those guards; its subject is the bounded pending activity.
 
 ## Traps
 
@@ -382,12 +383,12 @@ repository is the exception it names.** The pinned SDK's command proto says of
 `schedule_to_start_timeout`: "This timeout should usually not be set: it's useful
 in specific scenarios like worker-specific task queues." An implementer who finds
 that sentence will be tempted to close the story as won't-fix. Read the next
-clause of the same comment and the two facts above: the factory runs one
-worker-specific task queue (`factory/worker.py:283` — `build_worker`), sets no
-activity concurrency limit, and can route a PINNED epic to a retired deployment
-version that nobody serves (`factory/versioning.py:163` — `strandable_epics`
-guards only the unversioned worker). This is the specific scenario. Put that
-reasoning in the constant's docstring, not in a commit message.
+clause of the same comment and the deployment facts above: the factory runs a
+dedicated task queue (`factory/worker.py:283` — `build_worker`), and a PINNED
+epic can temporarily have no accepting worker during an outage. This is the
+specific scenario; it does not depend on unlimited activity capacity or
+unguarded normal retirement. Put that reasoning in the constant's docstring,
+not in a commit message.
 
 **Trap 3 — THE EXPIRY ITSELF IS NON-RETRYABLE AT THE SERVER, so once it fires
 `_AGENT_RETRIES` buys nothing and the workflow's own launch bound is the only
@@ -650,19 +651,14 @@ blast radius. The one case that stays ambiguous is an attempt that died before
 its first heartbeat; FR-015 states out loud that it is classified as never
 started, which spends nothing and re-dispatches.
 
-**Trap 20 — YOUR REASON FUNCTION IS NOT THE LAST WRITER OF `terminal_reason` IN
-PRODUCTION.** FR-006 makes one function own the node's terminal reason, and
-`factory/workgraph/workflow.py:3152` — `EpicWorkflow._close_out` overwrites it:
-on every non-parked terminal state the archive step assigns
-`record.terminal_reason = "; ".join(report)` whenever that report is non-empty
-(126-US2, landed 2026-09-02). It is invisible in the suite — the scripted world
-returns an empty report, so US1-S5's exact-equality assertion is honest and
-stays honest — and it is not this spec's to repair. Two consequences to hold.
-Do not "fix" it here: widening scope to the archive report is a second story's
-work and would put US1 over its sizing. And do not send the operator looking for
-the reason on the terminal record alone: operator step 2 reads the server's own
-timed-out event first, and the escalation summary — which `_close_out` does not
-touch — second.
+**Trap 20 — THE ARCHIVE-REASON OVERWRITE WAS ALREADY REPAIRED BY 127.** Checked
+again before dispatch on 2026-09-09: `factory/workgraph/workflow.py:3128` —
+`EpicWorkflow._close_out` now writes a non-empty archive report to
+`record.housekeeping_report`, not `terminal_reason`. The earlier version of this
+plan described the pre-127 overwrite. Preserve the separation and the landed
+127 tests; do not rebuild that fix or accept the overwrite as a current caveat.
+FR-006's reason and the housekeeping report must remain distinct. The server's
+timed-out event remains the primary evidence that the new bound actually fired.
 
 **Trap 21 — 156 CLOSED THE PRE-DISPATCH HALF OF THIS PROBLEM, NOT THIS HALF.**
 Spec 156 landed complete on 2026-09-08 (`61f63ca`, `3efb131`, `1c96876`). It
@@ -732,8 +728,15 @@ transcript.
 ## Verification the operator will run, independent of the gate
 
 Per constitution VIII and D-037 the judge sees the diff and the criteria only, so
-runtime evidence is committed as pasted output. Beyond that, on the operator's
-own host:
+runtime evidence is committed as pasted output. Beyond that, the operator runs
+the sequence below. **Fault injection in steps 2–6 belongs only in a disposable,
+isolated test worker/server, task queue and synthetic target, with no real
+builder credentials or production publication path.** It does not authorize
+stopping the live worker, interrupting another build, forcing a real landing
+rejection or pressing a real escalation button. Read-only live status checks
+are separate observations. If that isolation is unavailable, report the runtime
+qualification as unrun and request a maintenance window; do not invent evidence
+or substitute a production outage.
 
 1. Start an epic, and while a node's agent is working run `ergane build status
    <epic-id>`. The node line must carry its state, its spend figure and the time
@@ -776,11 +779,9 @@ own host:
    `EpicWorkflow._run_node` and the ending becomes operator-visible: the node
    ends, and the escalation sent at `factory/workgraph/workflow.py:2243` —
    `EpicWorkflow._run_node` must name the schedule-to-start cause and must not
-   name `AGENT_LAUNCH_FAILED`. Read it with `ergane escalations list`, which is
-   the surface the archive overwrite of trap 20 does not touch; the node's
-   `terminal_reason` should say the same and may have been replaced by an archive
-   report (`factory/workgraph/workflow.py:3152` — `EpicWorkflow._close_out`),
-   which is trap 20 and not a regression in this spec.
+   name `AGENT_LAUNCH_FAILED`. Read it with `ergane escalations list`. The node's
+   `terminal_reason` must preserve that cause; an archive report belongs in
+   `housekeeping_report`, separately, as already established by 127 and trap 20.
 4. Restart the worker and confirm an ordinary restart, well inside the bound,
    costs nothing: the attempt is re-scheduled, picked up, and the node continues.
    This is the false-positive check, and it is the one that decides whether the

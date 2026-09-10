@@ -564,6 +564,24 @@ do not read a green result as proof, because the symbol tier does not see an
 anchor whose path and symbol are split across two lines.
 
 
+**Trap 23 — THE SPLIT MUST NOT PUT AN ACTIVITY AFTER ITS CONSUMER.** The
+2026-09-08 split left T031 in US3 calling a landed-read activity whose creation
+and registration, T030, were assigned to US5. But US5 depends on US3's landing.
+That is a producer/consumer inversion the structural validator cannot detect:
+US3 cannot pass its real scheduling tests with a production activity that does
+not exist until a later story. T030 now belongs to US3, before T031, preserving
+all story numbers, merge edges, requirements and acceptance scenarios.
+
+US3 must land the complete registered activity and its consumer, with the
+blocking read off the event loop from the outset. US5 owns the dedicated
+threading and bounded-read regression controls. Its baseline may already pass;
+prove those controls detect isolated faults and report that honestly instead of
+duplicating the activity, disabling correct behavior, or fabricating red output.
+No live worker restart, live scheduling disturbance or shared-corpus edit is
+authorized merely to reproduce the historical examples in this plan. Use an
+isolated fixture for fault injection and for examples no longer present on the
+real floor; label that evidence separately from live post-landing observations.
+
 ## Sizing
 
 US1 touches `factory/cli/status.py` — the `RoadmapDisposition` record
