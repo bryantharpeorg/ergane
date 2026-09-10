@@ -179,3 +179,61 @@ def test_status_truth_table_reports_state_and_remedy(
             item.remedy == expected_remedy for item in status.entries
         )
     assert "modification time" not in status.rendered.lower()
+
+
+def test_checkout_without_package_metadata_or_manifest_is_explicitly_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    home.mkdir()
+    state.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+
+    def refuse(name: str):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", refuse)
+    status = skills_status()
+
+    assert status.manifest_status == "unavailable-version"
+    assert status.package_version is None
+    assert all(item.installed_version is None for item in status.entries)
+    assert all(item.state == "unavailable-version" for item in status.entries)
+    assert all(
+        "timestamp" not in item.remedy.lower() for item in status.entries
+    )
+
+
+def test_newer_incompatible_manifest_is_explicitly_unsupported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    state = tmp_path / "state"
+    home.mkdir()
+    state.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    manifest_path(home).parent.mkdir(parents=True)
+    manifest_path(home).write_text(
+        json.dumps(
+            {
+                "schema": 2,
+                "package_version": "0.6.0",
+                "canonical_destination": ".agents/skills",
+                "compatibility_destination": ".claude/skills",
+                "entries": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    status = skills_status()
+
+    assert status.manifest_status == "unsupported-manifest"
+    assert status.package_version == "0.5.0"
+    assert all(item.installed_version == "0.6.0" for item in status.entries)
+    assert all(item.state == "unsupported-manifest" for item in status.entries)
+    assert status.manifest_schema == 2
