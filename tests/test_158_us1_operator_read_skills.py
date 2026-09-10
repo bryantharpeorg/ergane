@@ -5,10 +5,19 @@ import importlib.util
 import json
 import re
 import subprocess
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from factory.env import (
+    ERGANE_VERIFICATION_DB_PATH_ENV,
+    FACTORY_VERIFICATION_DB_PATH_ENV,
+)
+from factory.verify.store import connect, upsert_result
+from tests.test_117_dispatch_scoped_rows import EPIC, make_result
+from tests.test_092_abridged_is_recorded import invoke
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,6 +27,10 @@ FORBIDDEN_ACTION_RE = re.compile(
     r"\b(?:git\s+(?:fetch|merge|push|checkout|reset)|gh\s+(?:pr\s+merge|run\s+rerun)|"
     r"ergane\s+(?:build\s+ship|build\s+(?:pause|resume|kill|answer|resolve)|"
     r"findings\s+apply|spec\s+ship)|systemctl\s+(?:start|restart|stop|kill|reload))\b"
+)
+FORBIDDEN_IMPORT_RE = re.compile(
+    r"^(?:import|from)\s+(?:subprocess|os|shutil|socket|httpx|requests)\b",
+    re.MULTILINE,
 )
 
 
@@ -192,6 +205,11 @@ def test_status_only_skills_and_helpers_have_no_forbidden_commands() -> None:
             f"{path.name} names an action seam: "
             f"{FORBIDDEN_ACTION_RE.search(text).group(0)}"
         )
+        if path.suffix == ".py":
+            assert not FORBIDDEN_IMPORT_RE.search(text), (
+                f"{path.name} reaches a network or process seam: "
+                f"{FORBIDDEN_IMPORT_RE.search(text).group(0)}"
+            )
 
 
 def test_escalation_brief_uses_the_choices_actually_offered() -> None:
@@ -362,3 +380,31 @@ def test_helpers_execute_the_committed_fixtures() -> None:
     assert "runner debugger" in floor_run.stdout
     assert "unavailable: landing head target repo unavailable" in floor_run.stdout
     assert "proposed answer: RETRY" in escalation_run.stdout
+
+
+def test_build_attempts_json_carries_recorded_builder_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The attempt JSON is the typed surface the floor helper consumes."""
+    path = tmp_path / "verification.db"
+    monkeypatch.setenv(ERGANE_VERIFICATION_DB_PATH_ENV, str(path))
+    monkeypatch.setenv(FACTORY_VERIFICATION_DB_PATH_ENV, str(path))
+    with closing(connect(path)) as store:
+        upsert_result(
+            store,
+            make_result(
+                persona="debugger",
+                model_alias="claude-opus-5",
+                route="gateway",
+            ),
+        )
+
+    run = invoke("build", "attempts", EPIC, "--json")
+
+    assert run.code == 0, run.stderr
+    attempts = json.loads(run.stdout)["attempts"]
+    assert attempts[0]["dispatch"] == make_result().dispatch
+    assert attempts[0]["persona"] == "debugger"
+    assert attempts[0]["model_alias"] == "claude-opus-5"
+    assert attempts[0]["route"] == "gateway"
