@@ -209,3 +209,11 @@ re-run green after the addition, and the diff stays far under budget:
     1284
 
 This repair's own additions are the test above (≈1.2 KiB) and this note.
+
+## Declared full gate, re-run after the repair
+
+    $ uv run pytest -q
+    ========== 5959 passed, 58 skipped, 15 warnings in 599.75s (0:09:59) ===========
+
+5959 = the first attempt's 5958 + this repair's one test; the 58 skips
+are unchanged in kind (the same live-path skips identified above).
