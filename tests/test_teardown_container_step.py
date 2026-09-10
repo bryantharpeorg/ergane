@@ -424,8 +424,8 @@ def test_the_engine_comes_down_before_the_units_and_before_the_state_goes(
     forgotten = next(i for i, event in enumerate(verbs) if event[:1] == ("delete",))
     assert paused < forgotten < downed < stopped
 
-    assert f"3/6 {STOP_ENGINE_CONTAINER}" in result.stdout
-    assert f"4/6 {STOP_AND_REMOVE_UNITS}" in result.stdout
+    assert f"3/7 {STOP_ENGINE_CONTAINER}" in result.stdout
+    assert f"4/7 {STOP_AND_REMOVE_UNITS}" in result.stdout
 
 
 def test_the_check_plan_and_the_performed_plan_still_come_from_one_table(

@@ -36,6 +36,7 @@ import json
 import math
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -750,6 +751,18 @@ def _docker_daemon_unavailable_in_tests(monkeypatch: pytest.MonkeyPatch) -> None
 #: registered tomorrow is reported the day it is registered, with no second list
 #: here to remember to update.
 LIVE_MARKER_PREFIX = "live_"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Give each pytest session its own temp base outside pytest's numbered root.
+
+    Some tests run nested pytest sessions.  A child otherwise deletes enough of
+    the numbered `pytest-of-...` history to remove its parent's base while that
+    parent is still using it.  A uniquely prefixed base keeps the nested cleanup
+    away from the live session without moving state outside the system tmp tree.
+    """
+    if config.option.basetemp is None:
+        config.option.basetemp = tempfile.mkdtemp(prefix="pytest-ergane-")
 
 #: The phrase each live registration uses to introduce its own precondition —
 #: `"live_epic: runs a live one-node epic; auto-skips unless Tier 1 env is set"`.

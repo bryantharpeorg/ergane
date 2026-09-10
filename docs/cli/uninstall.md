@@ -20,8 +20,9 @@ Teardown runs in a declared order, naming each step as it completes:
 2. forget repositories
 3. stop the engine container
 4. stop and remove units
-5. clear state
-6. account for the git refs
+5. skill teardown
+6. clear state
+7. account for the git refs
 
 **A step with nothing to do says so.** **A step that refuses stops the verb
 before the next one acts.** That second property is why the order matters: a
@@ -49,6 +50,14 @@ branches and `refs/salvage/` refs are where unlanded work survives an epic that
 did not finish, and the default is to tell you they exist rather than to delete
 them. Read the count before passing the flag; [`ergane build salvage`](build.md)
 is how to see what is on them.
+
+**Retained skill evidence is the one state-purge exception.** Teardown removes
+skill entries whose installed bytes or alias targets still match the ownership
+manifest. A modified canonical file or retargeted compatibility alias stays, and
+the manifest is rewritten to name only those kept paths. When that record
+survives, `--purge` removes neighboring Ergane state but not the manifest or its
+parent directories, so a later uninstall can still explain why the operator's
+skill entries were kept.
 
 ## Export before you forget
 

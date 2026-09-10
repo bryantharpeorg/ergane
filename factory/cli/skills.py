@@ -123,6 +123,236 @@ class ResourceRecord:
     symlink_target: str | None = None
 
 
+@dataclass(frozen=True)
+class SkillTeardownResult:
+    """The exact result of removing manifest-owned skill entries."""
+
+    manifest_path: Path
+    removed: tuple[str, ...]
+    preserved: tuple[str, ...]
+    already_absent: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SkillTeardownPlan:
+    """The read-only plan built from the ownership manifest."""
+
+    manifest_path: Path
+    plan: str
+    subjects: tuple[str, ...]
+    notes: tuple[str, ...]
+    nothing_to_do: bool
+    retained_manifest: Path | None
+
+
+def _teardown_home() -> Path:
+    home_value = os.environ.get("HOME")
+    if not home_value:
+        raise SkillPackagingError("HOME-DECLARATION-MISSING: HOME")
+    return Path(home_value)
+
+
+def _prune_installed_directories(
+    home: Path,
+    entries: Mapping[str, Mapping[str, Any]],
+) -> None:
+    canonical_root = home / CANONICAL_SKILLS_ROOT
+    compatibility_root = home / COMPATIBILITY_SKILLS_ROOT
+    for root in (canonical_root, compatibility_root):
+        if not root.is_dir():
+            continue
+        for relative in sorted(
+            {
+                "/".join(PurePosixPath(path).parts[:-1])
+                for path in entries
+                if path.startswith(str(root.relative_to(home).as_posix()) + "/")
+            },
+            key=lambda value: value.count("/"),
+            reverse=True,
+        ):
+            directory = home / relative
+            if directory.is_dir() and not directory.is_symlink():
+                try:
+                    directory.rmdir()
+                except OSError:
+                    continue
+        for relative in (
+            str(root.relative_to(home)),
+            str(root.parent.relative_to(home)),
+        ):
+            directory = home / relative
+            if directory.is_dir() and not directory.is_symlink():
+                try:
+                    directory.rmdir()
+                except OSError:
+                    continue
+
+
+def _classify_teardown_entry(
+    home: Path,
+    path: str,
+    entry: Mapping[str, Any],
+) -> tuple[str, str | None]:
+    absolute = home / path
+    current = _lstat_kind(absolute)
+    if current is None:
+        return "already-absent", None
+    kind, current_digest, current_target = current
+    if entry.get("kind") == "file":
+        if kind != "file" or current_digest != entry["digest"]:
+            return "modified-owned", None
+        return "unchanged-owned", absolute
+    if kind != "symlink" or current_target != entry["target"]:
+        return "modified-owned", None
+    return "unchanged-owned", absolute
+
+
+def _write_teardown_manifest(path: Path, entries: dict[str, dict[str, Any]]) -> None:
+    if not entries:
+        path.unlink(missing_ok=True)
+        return
+    source, _, _ = _status_manifest(path)
+    if source == "available":
+        try:
+            prior = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            prior = {}
+    else:
+        prior = {}
+    document = {
+        "schema": MANIFEST_VERSION,
+        "source_version": prior.get("source_version"),
+        "package_version": prior.get("package_version"),
+        "canonical_destination": CANONICAL_DESTINATION,
+        "compatibility_destination": COMPATIBILITY_DESTINATION,
+        "entries": entries,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    temporary = path.with_name(f".{MANIFEST_NAME}.ergane-teardown-{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def skills_teardown() -> SkillTeardownResult:
+    """Remove unchanged manifest-owned skill entries and preserve the rest."""
+
+    home = _teardown_home()
+    path = manifest_path()
+    _, entries = _read_manifest(path)
+    if not entries:
+        return SkillTeardownResult(
+            manifest_path=path, removed=(), preserved=(), already_absent=()
+        )
+
+    removed: list[str] = []
+    preserved: list[str] = []
+    already_absent: list[str] = []
+    retained: dict[str, dict[str, Any]] = {}
+    for owned_path, owned_entry in sorted(entries.items()):
+        state, removable_path = _classify_teardown_entry(
+            home, owned_path, owned_entry
+        )
+        if state == "unchanged-owned" and removable_path is not None:
+            removed.append(owned_path)
+            removable_path.unlink(missing_ok=True)
+        elif state == "already-absent":
+            already_absent.append(owned_path)
+        else:
+            preserved.append(owned_path)
+            retained[owned_path] = dict(owned_entry)
+
+    try:
+        _write_teardown_manifest(path, retained)
+    except OSError as failure:
+        raise ManifestError(f"MANIFEST-UNWRITABLE: {path}: {failure}") from failure
+    _prune_installed_directories(home, entries)
+    return SkillTeardownResult(
+        manifest_path=path,
+        removed=tuple(removed),
+        preserved=tuple(preserved),
+        already_absent=tuple(already_absent),
+    )
+
+
+def survey_skills_teardown() -> SkillTeardownPlan:
+    """Classify manifest entries without changing the filesystem."""
+
+    home = _teardown_home()
+    path = manifest_path()
+    _, entries = _read_manifest(path)
+    if not entries:
+        return SkillTeardownPlan(
+            manifest_path=path,
+            plan="nothing to do: no skill ownership manifest is available",
+            subjects=(),
+            notes=(),
+            nothing_to_do=True,
+            retained_manifest=None,
+        )
+
+    removed: list[str] = []
+    preserved: list[str] = []
+    already_absent: list[str] = []
+    for owned_path, owned_entry in sorted(entries.items()):
+        state, _ = _classify_teardown_entry(home, owned_path, owned_entry)
+        if state == "unchanged-owned":
+            removed.append(owned_path)
+        elif state == "already-absent":
+            already_absent.append(owned_path)
+        else:
+            preserved.append(owned_path)
+
+    counts = []
+    if removed:
+        counts.append(f"remove {len(removed)} unchanged digest-owned entry")
+    if already_absent:
+        counts.append(f"{len(already_absent)} already absent")
+    if preserved:
+        counts.append(f"keep {len(preserved)} modified or unusable entry")
+    plan = (
+        "no skill ownership manifest is available"
+        if not counts
+        else "; ".join(counts)
+    )
+    notes: list[str] = [
+        f"already absent: {path}" for path in already_absent
+    ]
+    notes.extend(
+        f"kept: {path} (digest/target mismatch; manifest evidence retained)"
+        for path in preserved
+    )
+    return SkillTeardownPlan(
+        manifest_path=path,
+        plan=plan,
+        subjects=tuple(str(home / owned_path) for owned_path in removed),
+        notes=tuple(notes),
+        nothing_to_do=not removed,
+        retained_manifest=path if preserved else None,
+    )
+
+
+def perform_skills_teardown(
+    plan: SkillTeardownPlan | None = None,
+) -> tuple[str, ...]:
+    """Apply the survey's removal plan and report kept entries by name."""
+
+    result = skills_teardown()
+    said: list[str] = []
+    said.extend(f"removed: {path}" for path in result.removed)
+    said.extend(
+        f"already absent: {path}" for path in result.already_absent
+    )
+    said.extend(
+        f"kept: {path} (digest/target mismatch; manifest evidence retained)"
+        for path in result.preserved
+    )
+    return tuple(said)
+
+
 _CREDENTIAL_NAME_PATTERNS = (
     re.compile(r"(?:^|/)\.env(?:\..+)?$", re.IGNORECASE),
     re.compile(r"(?:^|/)id_(?:rsa|ed25519|ecdsa)(?:\..*)?$", re.IGNORECASE),
