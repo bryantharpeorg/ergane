@@ -106,12 +106,25 @@ def attempt_rows() -> list[dict[str, Any]]:
             "attempt": 1,
             "form": "NODE",
             "verdict": "PASS",
-            "persona": "promotion-debugger",
-            "model_alias": "claude-sonnet-5",
+            "persona": "debugger",
+            "model_alias": "claude-opus-5",
             "route": "subscription",
             "evidence_source": "verification-store",
             "started_at": "2026-09-09T10:00:00Z",
             "finished_at": "2026-09-09T10:30:00Z",
+        },
+        {
+            "node_id": "us2",
+            "dispatch": "workflow-run-158c",
+            "attempt": 1,
+            "form": "NODE",
+            "verdict": "PASS",
+            "persona": "promotion-debugger",
+            "model_alias": "claude-sonnet-5",
+            "route": "gateway",
+            "evidence_source": "verification-store",
+            "started_at": "2026-09-09T11:00:00Z",
+            "finished_at": "2026-09-09T11:10:00Z",
         },
         {
             "node_id": "us2",
@@ -160,6 +173,7 @@ def test_floor_status_renders_recorded_history_without_registry(
     assert "runner debugger" in rendered
     assert "model claude-opus-5" in rendered
     assert "route gateway" in rendered
+    assert "route subscription" in rendered
     assert "runner promotion-debugger" in rendered
     assert "model claude-sonnet-5" in rendered
     assert "route subscription" in rendered
