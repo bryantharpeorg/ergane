@@ -838,7 +838,14 @@ async def test_status_reads_live_spend_off_the_running_attempt(
 
     assert mid_json.code == 0
     assert mid_json.json["nodes"]["us2"]["state"] == "RUNNING"
-    assert mid_json.json["live_spend"]["us2"] == {
+    live_spend = mid_json.json["live_spend"]["us2"]
+    assert live_spend["state"] == "STARTED"
+    assert isinstance(live_spend["activity_attempt"], int)
+    assert isinstance(live_spend["last_heartbeat_at"], str)
+    assert {
+        "spend_usd": live_spend["spend_usd"],
+        "captured_at": live_spend["captured_at"],
+    } == {
         "spend_usd": 6.25,
         "captured_at": "2026-08-05T09:31:00Z",
     }

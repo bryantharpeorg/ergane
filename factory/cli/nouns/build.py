@@ -40,8 +40,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from temporalio.client import Client, WorkflowQueryFailedError, WorkflowQueryRejectedError
+from temporalio.api.enums.v1.workflow_pb2 import PendingActivityState
 from temporalio.exceptions import WorkflowAlreadyStartedError
 from temporalio.service import RPCError, RPCStatusCode
+from datetime import timezone
 
 #: The server answered but the workflow would not answer this query. A read that
 #: is refused degrades: the command reports the cause and still exits 0.
@@ -453,25 +455,34 @@ async def _live_spend(
             continue
         if activity_info.activity_type.name != "run_agent_attempt":
             continue
-        if converter is None or not activity_info.HasField("heartbeat_details"):
+        if converter is None:
             continue
         node_id = activity_info.activity_id
         if node_id not in nodes:
             continue
-        try:
-            decoded = await converter.decode(
-                list(activity_info.heartbeat_details.payloads),
-                [UsageSnapshot | None],
-            )
-        except Exception:
-            continue
-        snapshot = decoded[0]
-        if snapshot is None:
-            continue
-        live[node_id] = {
-            "spend_usd": snapshot.spend_usd,
-            "captured_at": snapshot.captured_at,
+        entry: dict[str, Any] = {
+            "state": PendingActivityState.Name(
+                activity_info.state
+            ).removeprefix("PENDING_ACTIVITY_STATE_"),
+            "activity_attempt": activity_info.attempt,
         }
+        if activity_info.HasField("last_heartbeat_time"):
+            entry["last_heartbeat_at"] = (
+                activity_info.last_heartbeat_time.ToDatetime(tzinfo=timezone.utc)
+            ).isoformat()
+        if activity_info.HasField("heartbeat_details"):
+            try:
+                decoded = await converter.decode(
+                    list(activity_info.heartbeat_details.payloads),
+                    [UsageSnapshot | None],
+                )
+            except Exception:
+                continue
+            snapshot = decoded[0]
+            if snapshot is not None:
+                entry["spend_usd"] = snapshot.spend_usd
+                entry["captured_at"] = snapshot.captured_at
+        live[node_id] = entry
     return live
 
 
@@ -505,9 +516,7 @@ def render_status(
     lines.extend(_halt_after_pass_lines(document))
     for node_id, node in nodes.items():
         figure = live.get(node_id)
-        spend_token = (
-            f"  spend ${figure['spend_usd']:.2f}" if figure is not None else ""
-        )
+        live_token = _live_agent_token(figure)
         provenance = node.get("provenance")
         external_token = (
             f"  external completion: {provenance}" if provenance else ""
@@ -516,7 +525,7 @@ def render_status(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
             f"attempt {node['attempt']}  {node['branch']}"
             f"{_routing_token(node)}{_base_token(node, landing_head)}"
-            f"{spend_token}{external_token}{_reason_token(node)}"
+            f"{live_token}{external_token}{_reason_token(node)}"
             f"{_housekeeping_token(node)}"
         )
         lines.extend(_attempt_note_lines(node))
@@ -814,6 +823,25 @@ def _routing_token(node: Mapping[str, Any]) -> str:
     if not persona:
         return ""
     return f"  persona {persona}  model {node.get('model_alias', '')}"
+
+
+def _live_agent_token(figure: Mapping[str, Any] | None) -> str:
+    """What the pending agent attempt is doing, and when spend was measured.
+
+    The state is the pending activity's, not the node's own state: the workflow
+    cannot see an activity's acceptance, so `describe()` is the only reading
+    that answers it. Spend stays optional; when it is present, the capture time
+    travels beside it so a value retained across a retry cannot read as fresh.
+    """
+    if figure is None:
+        return ""
+    token = f"  agent {figure['state']}"
+    if "spend_usd" in figure:
+        token += (
+            f"  spend ${figure['spend_usd']:.2f} "
+            f"captured {figure['captured_at']}"
+        )
+    return token
 
 
 # --- commands -----------------------------------------------------------------
