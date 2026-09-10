@@ -8,7 +8,7 @@
 - `factory/verify/models.py:291` — `FactoryConfig` owns the target manifest's gates.
 - `factory/cli/repo.py:105` — `add_repo_parser` is the installed-package CLI boundary for listing and checking paths.
 - `factory/workgraph/worktree.py:191` — `resolve_factory_root` proves the runtime root may be relocated; node detection cannot key on one directory name.
-- Official Codex hook contract and trust model: https://learn.chatgpt.com/docs/hooks . For the qualified event, `apply_patch` supplies patch text in `tool_input.command`; non-managed project hooks load only after the exact definition is trusted.
+- Official Codex hook contract and trust model: https://learn.chatgpt.com/docs/hooks . Re-fetched 2026-09-10: `apply_patch` supplies patch text in `tool_input.command`. Project-local hook loading requires trust in the project configuration layer, and execution of a non-managed hook separately requires trust in its exact definition hash. Neither check substitutes for the other.
 - Claude's supported binding is its documented PreToolUse `Write`/`Edit` event with `tool_input.file_path`. Freeze exact JSON fixtures from the supported installed version instead of inventing a shared schema.
 
 ## Package boundary
@@ -74,9 +74,12 @@ The synchronous Codex deny response uses `hookSpecificOutput` with
 only as the documented alternative, not the ordinary parser status. Init can
 report files installed and trust required, but only a separately authorized
 fresh-client run in a disposable repository can record verified active
-enforcement. Record exact definition bytes/hash because Codex trust is bound to
-that definition, and invalidate qualification when version, bytes/hash, trust,
-or enabled state changes.
+enforcement. Record exact definition bytes/hash and distinguish project-layer
+trust from hook-definition trust. Invalidate qualification when version,
+bytes/hash, either trust state, or enabled state changes. A remembered trusted
+definition does not prove an untrusted project's hook layer loaded. Test each
+trust prerequisite independently with the other satisfied; do not synthesize
+trusted client records or treat these fixture controls as actual enforcement.
 
 ## Traps
 
@@ -89,7 +92,7 @@ or enabled state changes.
 7. **Fail-open must be loud.** Unreadable or unsupported input reports not enforced; it never claims protection.
 8. **Node detection cannot use `.factory` as identity.** The runtime root is configurable.
 9. **The escape is operator-visible and non-ambient.** Init never writes it and the adapter never propagates it.
-10. **Written is not trusted.** Non-managed Codex project hooks require trust of the exact definition.
+10. **Two trust checks, not one.** A non-managed project hook needs both a trusted project configuration layer and trust of the exact hook definition. Writing files, trusting only the project, or retaining an old definition-trust record is insufficient. Qualification never grants either trust on the operator's behalf.
 11. **No trust bypass.** Qualification uses normal client trust and separate operator authority, never a bypass option.
 12. **Coverage is narrow.** Shell and MCP mutations are outside the qualified tool set.
 13. **Collision handling is per file.** One operator-owned settings file must not prevent safe siblings from updating.

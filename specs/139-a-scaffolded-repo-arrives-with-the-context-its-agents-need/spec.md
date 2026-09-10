@@ -113,10 +113,10 @@ has actually trusted and enforced.
 1. **Given** no collisions, **When** init installs both hook bindings, **Then** its report distinguishes `installed`, `preserved collision`, `trust required`, and `verified active enforcement` per client; writing a hook file alone never produces the last state — proven by report-model tests.
 2. **Given** Claude returns its ordinary CLI-parser status from an older or missing verb, **When** the wrapper runs, **Then** it reports not enforced and allows rather than translating that status into a write refusal; only Ergane's dedicated refusal result becomes Claude's documented blocking response — proven by status-composition tests.
 3. **Given** Ergane returns its dedicated refusal to the Codex binding, **When** the synchronous response is rendered, **Then** it uses the documented `hookSpecificOutput` for `PreToolUse` with `permissionDecision: deny` and a redacted `permissionDecisionReason` naming the covered path/rule, while ordinary CLI parser status remains not enforced — proven by exact response fixtures.
-4. **Given** a non-managed Codex project hook whose exact definition hash is not trusted, **When** init completes, **Then** it reports trust required and does not grant trust, start a client, or invoke a trust-bypass option — proven by an invocation-boundary test.
+4. **Given** a non-managed Codex project hook whose project configuration layer or exact definition hash is not trusted, **When** init completes, **Then** it reports trust required and does not grant either kind of trust, start a client, or invoke a trust-bypass option — proven by independent project-untrusted and definition-untrusted invocation-boundary controls.
 5. **Given** disposable repositories and freshly started supported clients, **When** an operator separately authorizes qualification, **Then** committed redacted evidence shows one unprotected allow and one protected refusal through Claude `Write`/`Edit` and Codex `apply_patch`, plus the client versions and exact trusted definition hash — proven by an evidence parser and digest check.
 6. **Given** shell execution, MCP mutation, an unsupported tool, or an untrusted/disabled hook, **When** coverage is reported, **Then** it is explicitly outside verified enforcement — proven by negative capability rows.
-7. **Given** previously verified evidence, **When** the client version, hook bytes/hash, trust state, or enabled state changes, **Then** `verified active enforcement` is invalidated and reverts to the applicable installed/trust-required state until requalified — proven by state-transition tests.
+7. **Given** previously verified evidence, **When** the client version, hook bytes/hash, either project-layer or hook-definition trust state, or enabled state changes, **Then** `verified active enforcement` is invalidated and reverts to the applicable installed/trust-required state until requalified — proven by independent state-transition tests.
 
 **Why this priority**: Installed configuration is not evidence that a client loaded, trusted, or applied it.
 
@@ -150,7 +150,7 @@ has actually trusted and enforced.
 - **FR-024**: Init and qualification MUST NOT grant trust or invoke `--dangerously-bypass-hook-trust` or an equivalent override.
 - **FR-025**: Coverage claims MUST exclude shell, MCP, unsupported tools, disabled hooks, untrusted definitions, and client behavior not present in committed evidence.
 - **FR-026**: Every client path MUST be canonicalized to a repository-root-relative identity before comparison; canonically equivalent paths MUST decide identically, while ambiguous, unresolved, escaping, or outside-root inputs MUST return visible not-enforced rather than false protection.
-- **FR-027**: Verified enforcement MUST be invalidated by any change to client version, hook bytes/hash, trust state, or enabled state.
+- **FR-027**: Verified enforcement MUST be invalidated by any change to client version, hook bytes/hash, project-layer trust, hook-definition trust, or enabled state. Trust in the project and trust in the exact non-managed hook definition MUST be qualified separately; neither implies the other.
 
 ## Work Graph
 
