@@ -1,7 +1,6 @@
 ---
 state: draft
 depends_on_landed:
-  - 112-a-subscription-is-a-starting-position
   - 159-a-subscription-credential-has-one-durable-owner
   - 160-each-codex-attempt-owns-its-evidence
 ---
@@ -10,17 +9,38 @@ depends_on_landed:
 
 ## Provenance and qualification hold
 
-This spec closes audit finding F5 and is work package E. Landed spec 155 proves
-the pinned executable can be resolved in synthetic host/package tests. It does
-not prove that generated engine deployment delivers the declared credential,
-that the standalone and npm layouts expose the same bundled tools, or that a real
-Codex turn can search, edit, test, commit, cancel, and archive inside Ergane's
-actual confinement boundary.
+This spec qualifies the current-deployment portion of audit finding F5 and work
+package E. It does not claim the broader, unused deployment matrix is qualified.
+Landed spec 155 proves executable resolution in synthetic host/package tests.
+It does not prove that the current worker delivers the declared credential and
+tool payload, or that a real account-backed Codex turn can search, edit, test,
+commit, cancel, and archive inside Ergane's actual confinement boundary.
 
 Implementation tests use synthetic credentials and fake/local payloads. The final
 account-backed qualification is a distinct, held story: it may run only after the
 operator approves the credential-owner arrangement and names an eligible private
 pilot target. Nothing here changes a live unit or worker in place.
+
+### Approved final-phase scope
+
+The 2026-09-09 migration runbook narrows this phase to the deployment actually
+in use: a systemd-user worker launching the installed standalone Codex through
+the existing host `BwrapBackend`. Container-engine deployment, new npm/standalone
+parity, additional host layouts, and subscription-only onboarding in spec 112
+are outside this epic. Existing container/npm and gateway/Claude behavior remain
+regression controls, not new support claims or prerequisites for the pilot.
+
+At the 2026-09-10 preparation snapshot the host resolves standalone Codex
+0.154.0; `CODEX_RUNNER_VERSION` separately names the engine image's npm 0.153.4
+pin. Neither a path nor a version command qualifies the payload. The pilot
+must record and verify its own exact executable, version, installation payload,
+worker revision and confinement declaration before dispatch, without silently
+upgrading the image pin or following a changed host symlink.
+
+This remains a draft. Before dispatch, spec 159 and spec 160 must be landed and
+the subscription governance/private-target holds must be resolved. Narrowing
+the implementation matrix does not approve that policy, supply an account,
+name a pilot target, start a login, or authorize a future-default switch.
 
 ### User Story 1 - Deployment carries the declared owner, not an operator home (Priority: P1)
 
@@ -30,29 +50,29 @@ attempt copy.
 
 **Acceptance Scenarios**:
 
-1. **Given** container and systemd deployment models for Codex subscription, **When** their project/unit files are rendered, **Then** each exposes the declared read-only bootstrap source and host-global owner state only to host-side factory policy, while the Codex child receives one staged attempt copy and never the owner store or operator's whole home — proven by generated-artifact and mount-boundary tests.
+1. **Given** the current systemd-user worker declaration for Codex subscription, **When** its unit and host launch artifacts are rendered, **Then** the declared read-only bootstrap source and host-global owner state are accessible only to host-side factory policy, while the bwrap-confined Codex child receives one staged attempt copy and never the owner store or operator's whole home — proven by generated-artifact and mount-boundary tests.
 2. **Given** gateway-only or Claude-only deployment, **When** artifacts are rendered, **Then** no Codex subscription credential mount or secret-bearing environment value appears and existing output remains unchanged — proven by golden semantic comparisons.
 3. **Given** a declared source is absent, inaccessible, wrong-mode, or mounted at a different path, **When** install verification and worker preflight run, **Then** both refuse before dispatch with the same redacted status code and remedy from spec 159 — proven by temporary-layout tests.
 4. **Given** a deployment is regenerated or uninstalled, **When** ownership is reconciled, **Then** operator-created credentials and valid durable generations are preserved unless the operator explicitly targets them; generated declarations are removed only under digest ownership — proven by filesystem-difference tests.
 
-**Why this priority**: A binary inside a container cannot discover a credential that was never delivered there.
+**Why this priority**: A confined child cannot use a credential that the host policy never staged for its attempt.
 
-**Independent Test**: Render both deployment shapes into a temporary install root and validate mounts, permissions, status, and teardown without starting services.
+**Independent Test**: Render the current systemd-user/host-bwrap deployment into a temporary install root and validate permissions, staging, status, and teardown without starting services.
 
-### User Story 2 - Every supported Codex layout exposes one qualified toolchain (Priority: P1)
+### User Story 2 - The deployed Codex layout exposes one qualified toolchain (Priority: P1)
 
 As the worker, I either resolve a fully supported Codex executable and its runtime
 payload or refuse the layout before a node is charged.
 
 **Acceptance Scenarios**:
 
-1. **Given** the pinned npm installation, supported standalone installation, missing payload, mismatched version, and executable-only leaf bind, **When** toolchain resolution runs, **Then** supported layouts return executable, install-root, version, and bundled-tool facts while every incomplete layout refuses by a stable code — proven by planted-layout tests.
-2. **Given** container image and host unit artifacts, **When** their PATH/bind/install-root configuration is inspected, **Then** each matches the layout contract rather than assuming a successful `--version` proves bundled tools are reachable — proven by artifact-to-resolver tests.
+1. **Given** the explicitly selected current standalone installation, missing payload, mismatched declared version, and executable-only leaf bind, **When** toolchain resolution runs, **Then** the qualified layout returns executable, install-root, version, and required-tool facts while every incomplete layout refuses by a stable code; existing npm resolution remains unchanged — proven by planted-layout and regression tests.
+2. **Given** the current systemd-user unit and host bwrap artifacts, **When** their PATH/bind/install-root configuration is inspected, **Then** each matches the selected layout contract rather than assuming a successful `--version` proves required tools are reachable — proven by artifact-to-resolver tests.
 3. **Given** a newer Codex version appears on the host, **When** the worker is configured for the pinned baseline, **Then** it does not silently select the newer binary; qualification and version change require a separate declared update — proven by multi-version search tests.
 
 **Why this priority**: A planted shell stub and an executable version check do not exercise the installation shape Codex uses.
 
-**Independent Test**: Resolve planted npm, standalone, partial, and competing-version trees through the production resolver.
+**Independent Test**: Resolve the selected standalone, partial, and competing-version trees through the production resolver, retaining the existing npm regression control without claiming a new container qualification.
 
 ### User Story 3 - Startup proves confinement before dispatch (Priority: P1)
 
@@ -61,7 +81,7 @@ Codex receives a permission-bypass flag inside that outer boundary.
 
 **Acceptance Scenarios**:
 
-1. **Given** each supported deployment shape, **When** a local qualification probe runs through the production launch builder, **Then** the child can read its worktree, write only the allowed worktree/node-home paths, use its declared tool payload, and cannot read the host owner store or an outside canary — proven by committed synthetic-boundary evidence and tests.
+1. **Given** the selected systemd-user worker and host bwrap deployment, **When** a local qualification probe runs through the production launch builder, **Then** the child can read its worktree, write only the allowed worktree/node-home paths, use its declared tool payload, and cannot read the host owner store or an outside canary — proven by committed synthetic-boundary evidence and tests.
 2. **Given** the confinement profile, mount set, executable path, or worker revision differs from the declared deployment, **When** preflight runs, **Then** it refuses dispatch and names the mismatched fact rather than weakening the boundary or adding a bypass — proven by mutation tests.
 3. **Given** cancellation and a spawned descendant, **When** the launch path terminates, **Then** the whole process group is reaped, the attempt archive finalizes, and the credential owner can prove no child remains before releasing state — proven by a real local process test.
 
@@ -87,7 +107,7 @@ guidance without pretending the current public-only merge predicate supports it.
 
 ### User Story 4 - A private pilot proves a complete Codex attempt (Priority: P1)
 
-As the operator deciding whether to enable Codex-primary builders, I receive one
+As the operator qualifying the configured Codex subscription upper rung, I receive one
 account-backed end-to-end record from the actual supported deployment.
 
 **Acceptance Scenarios**:
@@ -104,11 +124,11 @@ account-backed end-to-end record from the actual supported deployment.
 
 ## Functional Requirements
 
-- **FR-001**: Supported deployments MUST expose bootstrap and owner state only to host-side factory policy; the Codex child MUST receive one staged attempt copy and MUST NOT see the durable owner store or operator's whole home.
+- **FR-001**: The selected systemd-user/host-bwrap deployment MUST expose bootstrap and owner state only to host-side factory policy; the Codex child MUST receive one staged attempt copy and MUST NOT see the durable owner store or operator's whole home.
 - **FR-002**: Gateway-only and Claude-only deployments MUST NOT acquire Codex credential mounts or secret-bearing environment values.
 - **FR-003**: Install verification and worker preflight MUST consume spec 159's shared readiness contract and refuse path/mode/access mismatches before dispatch.
 - **FR-004**: Regeneration and uninstall MUST preserve operator credentials and valid generations unless separately and explicitly targeted.
-- **FR-005**: Toolchain resolution MUST validate executable, version, install root, and required runtime payload for each supported layout.
+- **FR-005**: Toolchain resolution MUST validate executable, declared version, install root, and required runtime payload for the selected current standalone layout, while preserving existing npm/container behavior without claiming new qualification of those layouts.
 - **FR-006**: An executable leaf or `--version` success alone MUST NOT establish toolchain readiness.
 - **FR-007**: Worker resolution MUST NOT silently select an unqualified version.
 - **FR-008**: A synthetic qualification MUST exercise the production launch builder and prove worktree access, allowed writes, outside denial, and owner-store denial.

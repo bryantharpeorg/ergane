@@ -4,24 +4,30 @@ Do not touch a live worker, unit, credential, registry, or public account-backed
 target. Stories 1–3 and 5 are implementation tests; story 4 begins only after explicit
 operator approval of the owner and private pilot.
 
+This is the approved current-deployment slice: systemd-user worker, host bwrap,
+and the selected installed standalone Codex. Spec 112 onboarding, new container
+credential delivery, cross-layout parity and image-pin changes are outside it.
+The whole trio stays draft until its dependencies and governance/target holds
+are resolved; this scope refinement is not operational approval.
+
 ## Phase 1: User Story 1 — Deployment carries the declared owner, not an operator home
 
-- [ ] [US1-S1] Add failing container/systemd artifact tests proving host-side policy can read narrow bootstrap/owner paths while the Codex child receives only a staged copy and cannot mount the owner.
+- [ ] [US1-S1] Add failing systemd-user/host-bwrap artifact tests proving host-side policy can read narrow bootstrap/owner paths while the Codex child receives only a staged copy and cannot mount the owner.
 - [ ] [US1-S2] Add gateway-only and Claude-only semantic controls requiring no Codex mounts or secret values.
 - [ ] [US1-S3] Add absent, inaccessible, wrong-mode, and mismounted path tests shared across install verification and worker preflight.
 - [ ] [US1-S4] Add regeneration/uninstall filesystem-difference tests preserving operator and durable-generation files.
-- [ ] [US1] Extend `factory/supervision/container_project.py`, `factory/supervision/units.py`, install layout, and uninstall ownership to carry declarations only.
+- [ ] [US1] Extend `factory/supervision/units.py`, the current host install/launch layout, and uninstall ownership to carry declarations only; leave container credential wiring outside this slice.
 
-## Phase 2: User Story 2 — Every supported Codex layout exposes one qualified toolchain
+## Phase 2: User Story 2 — The deployed Codex layout exposes one qualified toolchain
 
-- [ ] [US2-S1] Add planted npm, standalone, missing-payload, mismatched-version, and leaf-bind failing tests for `factory/verify/toolchain.py`.
-- [ ] [US2-S2] Add artifact-to-resolver tests for `Dockerfile` and generated host/container PATH and bind layout.
+- [ ] [US2-S1] Add selected-standalone, missing-payload, mismatched-declared-version, and leaf-bind failing tests for `factory/verify/toolchain.py`; preserve existing npm behavior as a compatibility control.
+- [ ] [US2-S2] Add artifact-to-resolver tests for generated systemd-user/host-bwrap PATH and bind layout, proving required tools work beyond `--version`; leave the image npm pin unchanged.
 - [ ] [US2-S3] Add competing-version tests proving no silent host-newest selection.
-- [ ] [US2] Implement one explicit layout result containing executable, install root, version, and payload facts; refuse any standalone shape not actually supported.
+- [ ] [US2] Implement the selected layout result containing executable, install root, declared/observed version, and payload facts; refuse an unqualified or changed selection rather than silently installing another layout or choosing the host's newest version.
 
 ## Phase 3: User Story 3 — Startup proves confinement before dispatch
 
-- [ ] [US3-S1] Add a failing real-backend synthetic task that reads/writes allowed paths and is denied host-owner and outside-canary reads.
+- [ ] [US3-S1] Add a failing production host-bwrap synthetic task that reads/writes allowed paths, exercises its declared tools, and is denied host-owner and outside-canary reads.
 - [ ] [US3-S2] Add one-at-a-time mutation tests for profile, mounts, executable, payload, and worker revision, all requiring preflight refusal.
 - [ ] [US3-S3] Add a local descendant-process cancellation test requiring group reap, current archive finalization, and owner fencing.
 - [ ] [US3] Implement the production-path qualification probe and stable refusal codes without adding bypasses or unconfined fallback.
@@ -46,4 +52,5 @@ operator approval of the owner and private pilot.
 ## Verification
 
 - [ ] Run focused deployment, unit, toolchain, confinement, uninstall, credential, evidence, and 155 regressions, then the declared repository gate.
+- [ ] Keep existing npm/container compatibility controls green without labelling them new deployment qualification; preserve the explicit gateway builders, independent gateway judge and Claude alternatives.
 - [ ] Re-derive every account-backed artifact field from the approved private execution and observed landing before recommending any default change.
