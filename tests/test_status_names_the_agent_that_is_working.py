@@ -93,6 +93,16 @@ def _document() -> dict[str, Any]:
     }
 
 
+def _live(state: str) -> dict[str, Any]:
+    return {
+        NODE: {
+            "state": state,
+            "activity_attempt": 2,
+            "last_heartbeat_at": "2026-08-05T09:30:00+00:00",
+        }
+    }
+
+
 @pytest.mark.asyncio
 async def test_a_pending_agent_attempt_without_a_payload_is_still_visible() -> None:
     """US2-S1/FR-007: no payload leaves the activity, not its liveness fields."""
@@ -113,3 +123,16 @@ async def test_a_pending_agent_attempt_without_a_payload_is_still_visible() -> N
     assert isinstance(live[NODE]["state"], str)
     assert isinstance(live[NODE]["activity_attempt"], int)
     assert isinstance(live[NODE]["last_heartbeat_at"], str)
+
+
+def test_a_pending_activity_state_changes_the_node_line() -> None:
+    """US2-S2/FR-009: the state is named, not merely the reason the lines differ."""
+    scheduled = render_status(
+        "epic-us2", _document(), "RUNNING", live_spend=_live("SCHEDULED")
+    ).splitlines()[-1]
+    started = render_status(
+        "epic-us2", _document(), "RUNNING", live_spend=_live("STARTED")
+    ).splitlines()[-1]
+
+    assert scheduled != started
+    assert "SCHEDULED" in scheduled
