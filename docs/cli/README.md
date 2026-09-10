@@ -3,6 +3,10 @@
 Reference documentation for every noun and verb the operator command exposes.
 One page per noun, listed below.
 
+For a new installation, start with [operator setup](../getting-started.md).
+The [Codex gateway guide](../codex-gateway-setup.md) separates your operator
+session from builder and judge configuration.
+
 This is **descriptive**. It says what the commands do and how they behave. It
 binds nobody: `.specify/memory/constitution.md` is the normative document, and
 `docs/architecture.md` describes the machinery these commands drive.
@@ -102,8 +106,12 @@ Script against the JSON.
 
 **Read-only verbs say so.** `status`, `env`, `usage`, `findings list`,
 `escalations list`, `build salvage`, `build attempts`, `repo list`, and
-`--check` on `init`, `install` and `uninstall` write nothing, signal nothing,
+`--check` on `init` and `uninstall` write nothing, signal nothing,
 and create nothing.
+
+Installation health is checked with `ergane install --verify`, not an
+`install --check` flag. Verification exercises declared subsystem probes;
+do not describe those live checks as an offline dry run.
 
 **`--target-repo` is a worker-host path, not a URL and not a remote.** Several
 verbs require it because the compiled artifact records it and the worker

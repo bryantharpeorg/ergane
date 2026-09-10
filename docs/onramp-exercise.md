@@ -24,7 +24,12 @@ nothing passes `-m` in CI or in this repository's gate.
   user-owned repository cannot carry the merge-queue ruleset.
 - **`gh` on `PATH`, authenticated** — `gh auth login`, with rights to create and
   delete repositories in that organization and configure rulesets.
-- **`claude` on `PATH`** — the agent the dispatched epic runs (D-018).
+- **`claude` on `PATH`** — the current exercise's hard-coded collection guard.
+  This `claude` prerequisite is not the runtime runner selection: the dispatched
+  persona is resolved from the copied persona registry. If that persona uses
+  Codex, its actual CLI, provider, sandbox and tool configuration must also work.
+  Passing this guard is not a Codex-specific qualification or a check of every
+  supported runner. See [Codex gateway setup](codex-gateway-setup.md).
 - **`LITELLM_PROXY_URL`, `LITELLM_MASTER_KEY`** — a LiteLLM proxy *with key
   management enabled* (started with a `DATABASE_URL`). A config-only proxy stops
   the run at the install stage, which is 061/US1 working.
@@ -33,7 +38,14 @@ nothing passes `-m` in CI or in this repository's gate.
 - **A persona registry naming real aliases** — the shipped one carries
   `CHANGEME`. The run copies yours into its workspace rather than editing it.
 
+Use a dedicated test namespace and a deliberately selected gateway registry.
+The exercise talks to the declared external services even though its queue and
+local workspace are run-scoped. It does not provision every missing service or
+prove that the current worker deployment and a packaged release match.
+
 `ERGANE_ONRAMP_TIMEOUT_S` sets the node's attempt deadline (default 1200s).
+Review the source and scratch organization before exporting the opt-in variable;
+it authorizes creation and deletion of a public scratch repository.
 
 ```bash
 eval "$(scripts/ergane-env.sh)"
@@ -55,9 +67,10 @@ created and deleted, one pull request, and the Actions minutes for its required
 check on both `pull_request` and `merge_group`. **One Temporal workflow**, one
 worker on a run-scoped queue, and virtual keys minted and revoked per attempt.
 
-Nothing accumulates, and nothing of yours is touched. The scratch repository is
-deleted and the temporary root removed on the failure path as well as the
-success one. Every path the run resolves — config, registry, runtime root,
+Cleanup attempts to delete the scratch repository and remove its temporary
+root on both success and failure; a cleanup error is reported, not a guarantee
+that every artifact is gone. Gateway usage, GitHub audit/Actions records and
+Temporal history remain external effects. Every local path the run resolves — config, registry, runtime root,
 ledger, evidence store — derives from a `tmp_path` it was handed, with `HOME`,
 both XDG variables and every `ERGANE_*`/`FACTORY_*` path variable relocated
 beneath it. Cleanup deletes the exact slug `gh repo create` answered for, and

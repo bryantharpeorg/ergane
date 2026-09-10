@@ -50,13 +50,16 @@ and make it current.
 | --- | --- | --- |
 | `<revision>` | `HEAD` | the commit to deploy — sha, tag or branch |
 
-**Nothing is restarted, so every attempt in flight finishes on the version it
-started with.** That is the whole reason this verb exists. An in-place restart
-of a worker mid-attempt loses the attempt; deploy sidesteps the question by
-never touching the running one.
+**Nothing is restarted, so in-flight work stays pinned to its original version.**
+An in-place restart interrupts accepted activities and invokes their recovery
+behavior. Versioned deployment avoids that interruption by starting the new
+version separately.
 
-**Refused while the tree is dirty.** A deploy ships commits, so there has to be
-a commit to ship.
+**Without an explicit revision, a dirty source tree is refused.** Naming a
+revision deploys that committed snapshot, not local uncommitted changes. Preserve
+unrelated work; do not clean a checkout merely to make deployment succeed.
+This native deployment path requires a Git checkout; an installed wheel alone
+has no commit to freeze. Use an operator checkout or the container engine.
 
 ### Why the worker version matters
 
@@ -81,19 +84,27 @@ onto whichever version is current at its next work item.
 
 ## Operating the units
 
-They are `systemctl --user` units. Start, stop and inspect them that way:
+They are `systemctl --user` units. Use the versioned unit name printed by the
+deployment report, replacing `BUILD_ID` below with that exact identifier:
 
 ```bash
-systemctl --user status ergane-worker --no-pager
-systemctl --user restart ergane-worker.service
+systemctl --user status ergane-worker@BUILD_ID.service --no-pager
+journalctl --user -u ergane-worker@BUILD_ID.service -n 50 --no-pager
 ```
 
 **Never start a worker with `nohup` or a bare background process.** The slice is
 what bounds it, and a hand-started worker is outside it — which is how an
 orphaned process tree survives the thing that was supposed to own it.
 
-**Restart between attempts, never during one.** A restart mid-attempt leaves the
-activity pending behind its heartbeat, and the epic wedges.
+Do not use the retired `ergane-worker.service` as the name of a versioned
+worker. Deploy through the supported command; do not restart a pinned worker
+to import a new checkout. A stopped worker can leave its activities waiting
+for that version until the applicable recovery bounds expire.
+
+Before retiring an old version, check all workflows pinned to it, not only the
+one epic you were watching. Preserve its verification records, usage ledger and
+attempt evidence before cleanup. A deployment is successful only when its
+report and serving revision agree; a merged commit alone does not prove this.
 
 ## See also
 

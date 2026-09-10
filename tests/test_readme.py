@@ -226,6 +226,16 @@ def missing_readme_concepts(page_text: str) -> list[str]:
         page_text, "## Installing Ergane", ("## Configuring the control plane",)
     )
     install_low = _lower_words(install)
+    checkout_install = _section_between(
+        install,
+        "### To work on Ergane itself",
+        ("### The difference that will bite you",),
+    )
+    checkout_low = _lower_words(checkout_install)
+    registry_difference = _section_between(
+        install, "### The difference that will bite you", ()
+    )
+    registry_low = _lower_words(registry_difference)
 
     if not _any_subset_present(
         what_low,
@@ -267,7 +277,7 @@ def missing_readme_concepts(page_text: str) -> list[str]:
         missing.append(_MISSING_CONCEPT_NAMES["published_install"])
 
     if not _any_subset_present(
-        install_low,
+        checkout_low,
         [
             {"checkout", "editable"},
             {"git", "clone", "editable"},
@@ -277,7 +287,7 @@ def missing_readme_concepts(page_text: str) -> list[str]:
         missing.append(_MISSING_CONCEPT_NAMES["checkout_install"])
 
     if not _any_subset_present(
-        install_low,
+        registry_low,
         [
             {"resolve", "different", "personas"},
             {"resolve", "different", "registry"},
@@ -359,25 +369,20 @@ def _mutations() -> list[tuple[str, str]]:
         ),
         (
             "checkout_install",
-            (
-                lambda t: re.sub(
-                    r"### To work on Ergane itself\n\n.*?(?=### The difference that will bite you)",
-                    "",
-                    t,
-                    flags=re.S,
-                ).replace(
-                    "An editable\n"
-                    "checkout reads the `personas.yaml` at the root of that checkout, so editing it\n"
-                    "takes effect immediately.",
-                    "",
-                )
-            )(SETUP_TEXT),
+            re.sub(
+                r"### To work on Ergane itself\n\n.*?(?=### The difference that will bite you)",
+                "",
+                SETUP_TEXT,
+                flags=re.S,
+            ),
         ),
         (
             "resolve_differently",
-            SETUP_TEXT.replace(
-                "The two paths resolve the persona registry from different places.",
-                "Both paths use the same personas.yaml.",
+            re.sub(
+                r"### The difference that will bite you\n\n.*?(?=## Configuring the control plane)",
+                "### The difference that will bite you\n\nBoth paths use the same registry.\n\n",
+                SETUP_TEXT,
+                flags=re.S,
             ),
         ),
     ]
@@ -394,6 +399,32 @@ def test_missing_concept_is_detected(concept: str, mutated_text: str) -> None:
     assert expected in missing, (
         f"the `{concept}` mutation should have been reported as missing "
         f"`{expected}`, but the guard reported {missing}"
+    )
+
+
+@pytest.mark.parametrize(
+    "concept,mutated_text", _mutations(), ids=[name for name, _ in _mutations()]
+)
+def test_each_concept_mutation_changes_the_document(concept: str, mutated_text: str) -> None:
+    """A literal replacement that no longer matches is not a negative control."""
+    assert mutated_text != SETUP_TEXT, f"the {concept} mutation made no change"
+
+
+def test_registry_commentary_does_not_replace_checkout_install_instructions() -> None:
+    """Mentioning an editable checkout is not a procedure for installing one."""
+    without_procedure = re.sub(
+        r"### To work on Ergane itself\n\n.*?(?=### The difference that will bite you)",
+        "",
+        SETUP_TEXT,
+        flags=re.S,
+    )
+    without_procedure = without_procedure.replace(
+        "### The difference that will bite you\n",
+        "### The difference that will bite you\n\n"
+        "An editable checkout can use the operator registry.\n",
+    )
+    assert _MISSING_CONCEPT_NAMES["checkout_install"] in missing_readme_concepts(
+        without_procedure
     )
 
 
@@ -428,8 +459,9 @@ def test_reworded_equivalent_page_passes() -> None:
             "For development, clone the repository and install in editable mode.",
         )
         .replace(
-            "The two paths resolve the persona registry from different places.",
-            "The two install paths use different personas.yaml locations.",
+            "The two install paths have different final registry fallbacks, but explicit\n"
+            "configuration wins over both.",
+            "The install paths resolve their registry from different places when no override is present.",
         )
     )
     missing = missing_readme_concepts(reworded)
