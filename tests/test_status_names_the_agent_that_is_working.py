@@ -213,3 +213,12 @@ async def test_json_live_spend_stays_additive_and_loadable(
         assert isinstance(figure["state"], str)
         assert isinstance(figure["activity_attempt"], int)
         assert isinstance(figure["last_heartbeat_at"], str)
+
+
+def test_a_node_without_a_pending_activity_keeps_its_old_line() -> None:
+    """US2-S5/FR-012: no pending activity adds no state token or padding."""
+    unchanged = render_status("epic-us2", _document(), "RUNNING")
+    empty_live = render_status("epic-us2", _document(), "RUNNING", live_spend={})
+
+    assert empty_live == unchanged
+    assert empty_live.splitlines()[-1] == f"{NODE}  RUNNING  attempt 6  landing/us2"
