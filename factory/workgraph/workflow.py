@@ -114,6 +114,7 @@ from temporalio.exceptions import (
     ActivityError,
     ApplicationError,
     TimeoutError as ActivityTimeoutError,
+    TimeoutType,
 )
 
 with workflow.unsafe.imports_passed_through():
@@ -2538,16 +2539,29 @@ class EpicWorkflow:
         timeout = exc.cause
         snapshot: UsageSnapshot | None = None
         if isinstance(timeout, ActivityTimeoutError):
-            details = list(timeout.last_heartbeat_details)
-            if details and isinstance(details[0], dict):
-                # The heartbeat payload round-trips as a dict on the workflow
-                # side, not as the dataclass (the activity encoded it, the
-                # workflow decodes to the JSON shape).
-                payload = details[0]
-                snapshot = UsageSnapshot(
-                    spend_usd=payload["spend_usd"],
-                    captured_at=payload["captured_at"],
-                )
+            candidates = [timeout]
+            current = timeout.__cause__
+            for _ in range(_CAUSE_DEPTH):
+                if current is None:
+                    break
+                if isinstance(current, ActivityTimeoutError):
+                    candidates.append(current)
+                current = current.__cause__
+            for candidate in candidates:
+                details = list(candidate.last_heartbeat_details)
+                if details and isinstance(details[0], dict):
+                    # The heartbeat payload round-trips as a dict on the workflow
+                    # side, not as the dataclass (the activity encoded it, the
+                    # workflow decodes to the JSON shape). Temporal can retain it
+                    # either on the retry timeout itself or beneath its cause.
+                    payload = details[0]
+                    snapshot = UsageSnapshot(
+                        spend_usd=payload["spend_usd"],
+                        captured_at=payload["captured_at"],
+                    )
+                    break
+            if snapshot is None and timeout.type == TimeoutType.SCHEDULE_TO_START:
+                raise _LaunchFailed("no worker accepted the scheduled attempt") from exc
         record.last_snapshot = snapshot
         # No transcript: the worker died before the adapter could archive one,
         # so `transcript_path` stays its empty default rather than this module
