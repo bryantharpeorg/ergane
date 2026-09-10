@@ -49,7 +49,7 @@ the registry pin.
 ## Green (same suites, after the T005 repair)
 
     $ uv run pytest tests/test_164_us1_relative_home.py tests/test_164_us2_sandbox_launch.py tests/test_164_us3_two_node_controls.py tests/test_164_us4_route_isolation.py -q --no-header
-    ============================== 14 passed in 0.50s ==============================
+    ============================== 14 passed in 0.54s ==============================
 
     $ uv run pytest tests/test_164_us2_sandbox_launch.py -q --no-header
     ============================== 3 passed in 0.13s ==============================
@@ -68,9 +68,10 @@ own named reason (`bwrap not installed on this host …`).
 ## The declared full gate
 
     $ uv run pytest -q
-    ========== 5973 passed, 58 skipped, 16 warnings in 608.33s (0:10:08) ===========
+    ========== 5973 passed, 58 skipped, 15 warnings in 601.35s (0:10:01) ===========
 
-(exit 0. The 58 skips are the standing live tiers — capacity/epic/merge/
-onramp/proxy/telegram — each printing its own `did not run — runs when …`
-reason, unchanged by this story. Temporal gRPC connect errors after the run's
-last line are the live-tier teardown's own noise, after `pytest` exited 0.)
+(exit 0, on the final tree including the strengthened child-env assertions.
+The 58 skips are the standing live tiers — capacity/epic/merge/onramp/proxy/
+telegram — each printing its own `did not run — runs when …` reason, unchanged
+by this story. Temporal gRPC connect errors after the run's last line are the
+live-tier teardown's own noise, after `pytest` exited 0.)
