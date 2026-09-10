@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS usage_records (
     attempt                INTEGER NOT NULL CHECK (attempt >= 1),
     persona                TEXT    NOT NULL,
     spec_ref               TEXT    NOT NULL,
-    key_alias              TEXT    NOT NULL UNIQUE,          -- "{epic}:{node}:{attempt}"; idempotency guard
+    key_alias              TEXT    NOT NULL UNIQUE,          -- "{epic}:{node}:{attempt}:{persona}"; idempotency guard
     prompt_tokens          INTEGER,                          -- NULL = unknown (never fabricated 0)
     completion_tokens      INTEGER,
     cache_read_tokens      INTEGER,                          -- NULL = metric absent from backend
@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS usage_records (
                                ('completed', 'agent_error', 'timeout', 'killed',
                                 'question', 'auth_failure', 'pre_agent_failure')),
     issued_at              TEXT    NOT NULL,                 -- ISO 8601 UTC
-    torn_down_at           TEXT    NOT NULL                  -- ISO 8601 UTC
+    torn_down_at           TEXT    NOT NULL,                 -- ISO 8601 UTC
+    usage_source           TEXT    NOT NULL DEFAULT 'legacy',
+    usage_status           TEXT    NOT NULL DEFAULT 'legacy',
+    cost_basis             TEXT    NOT NULL DEFAULT 'unknown'
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_epic     ON usage_records (epic_id);

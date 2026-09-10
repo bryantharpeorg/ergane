@@ -487,6 +487,9 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
     non-retryable `AGENT_LAUNCH_FAILED` when there was no agent to run.
     """
     root = factory_root()
+    from datetime import datetime, timezone
+    usage_started_at = datetime.now(timezone.utc).isoformat()
+    usage_completed = False
     try:
         # 107 FR-012: the runner-visible session id is derived once, here, from
         # the workflow-issued id and this execution's attempt number. The first
@@ -560,6 +563,7 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         # byte of this, so a message no release has printed yet changes what an
         # operator is told and never what the attempt *is* (plan trap 1).
         result = _attach_pre_agent_detail(result)
+        usage_completed = result.termination == Termination.COMPLETED
         return result
     except asyncio.CancelledError:
         raise CancelledError(
@@ -581,6 +585,14 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         raise ApplicationError(
             str(exc), type=AGENT_LAUNCH_FAILED, non_retryable=True
         ) from exc
+    finally:
+        # Accounting must never turn a finished/cancelled agent into a retry.
+        from factory.usage.runner import archive_execution_usage
+        try:
+            archive_execution_usage(root, context, usage_started_at, usage_completed)
+        except (OSError, ValueError, TypeError):
+            activity.logger.warning("Could not archive runner usage for %s/%s attempt %s",
+                                    context.epic_id, context.node_id, context.attempt)
 
 
 def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult:

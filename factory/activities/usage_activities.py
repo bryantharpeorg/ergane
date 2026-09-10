@@ -19,11 +19,9 @@ handling here are the design rather than an implementation detail:
   key LAST. Deleting last removes any dependence on how the proxy's spend-log
   filters behave once the key is gone, and it means a ledger that refuses the
   row has not yet destroyed the only thing that could still produce it.
-- **A partial reading is not a reading.** If either read fails, the whole
-  confirmed path is abandoned for the flagged fallback — the last heartbeat's
-  dollar figure, `NULL` tokens, `final_usage_confirmed = 0`. Mixing a confirmed
-  spend with absent token detail would publish a row that looks measured and is
-  not (FR-005).
+- **Completeness is separate from measurement.** Independently measured cost
+  and partial token detail survive a failed read. Only stable, consistent usage
+  is confirmed; unknown detail stays NULL and partial detail is labelled.
 - **An anonymous row is worse than no row.** The one thing teardown will not
   degrade to is a row it cannot attribute. Every rollup groups by epic, node,
   persona or spec_ref (FR-006), so a row missing one of them does not merely
@@ -53,6 +51,8 @@ the environment, so a worker without one still fails.
 
 from __future__ import annotations
 
+import asyncio
+import math
 import os
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -87,6 +87,9 @@ KEY_ISSUANCE_FAILED = "KEY_ISSUANCE_FAILED"
 #: is (SC-003). Non-retryable by construction: the dimensions arrive with the
 #: dispatch, so a rerun rebuilds exactly the same unattributable row.
 ATTRIBUTION_INCOMPLETE = "ATTRIBUTION_INCOMPLETE"
+
+# Three bounded snapshots allow the proxy's asynchronous log writer to catch up.
+FINAL_READ_DELAYS = (1.0, 2.0)
 
 #: The dimensions every rollup groups by (FR-006) — the ones whose absence a
 #: reader of the ledger cannot detect, because the row simply is not in the
@@ -153,15 +156,13 @@ class TeardownInput:
 
 @dataclass(frozen=True)
 class _ConfirmedUsage:
-    """Both halves of a successful final reading (R3 steps 1–2).
+    """Independent cost and token measurements, with explicit completeness."""
 
-    They answer different questions and the row needs both: the key's own
-    counter is the attempt's authoritative dollar total, and the per-request
-    rows are the only place token and cache detail exists (R2).
-    """
-
-    spend_usd: float
+    spend_usd: float | None
     aggregate: AggregatedUsage
+    status: str = "complete"
+    source: str = "gateway"
+    cost_basis: str = "proxy_estimate"
 
 
 def open_client() -> LiteLLMClient:
@@ -477,6 +478,20 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
     on `key_alias`, so a teardown Temporal ran twice lands on the first run's
     row, and revoking an already-absent key is a normal outcome.
     """
+    if _is_subscription_lease(request.lease):
+        from factory.activities.agent_activities import factory_root
+        from factory.usage.runner import read_attempt_usage
+
+        measured = read_attempt_usage(factory_root(), request.lease)
+        reading = None if measured is None else _ConfirmedUsage(
+            spend_usd=None, aggregate=measured.aggregate, status=measured.status,
+            source=measured.source, cost_basis="unknown",
+        )
+        record = _record_for(request, reading)
+        _require_attribution(record)
+        with closing(ledger.connect(_ledger_path())) as conn:
+            return ledger.upsert_record(conn, record)
+
     client: LiteLLMClient | None
     try:
         client = open_client()
@@ -506,21 +521,51 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
 async def _read_final_usage(
     client: LiteLLMClient | None, lease: KeyLease
 ) -> _ConfirmedUsage | None:
-    """The confirmed reading, or `None` if any part of it failed (R3 steps 1–2).
+    """Read cost independently; bound retries and require stable usable detail.
 
-    The spend logs are read only once `/key/info` has answered: a key the proxy
-    no longer knows is a key whose spend-log filters can no longer be trusted to
-    resolve, so a dead key short-circuits to the fallback rather than to an
-    empty row set that would look like an attempt which never called anything.
+    A successful HTTP response is not evidence of a complete request log. The
+    proxy writes asynchronously and historically discarded duplicate provider IDs.
     """
     if client is None:
         return None
-    try:
-        spend_usd = await client.get_spend(lease.key)
-        rows = await client.fetch_spend_log_rows(lease.key, issued_at=lease.issued_at)
-    except LiteLLMError:
+    spend: float | None = None
+    best = aggregate_rows([])
+    previous: AggregatedUsage | None = None
+    for delay in (0.0, *FINAL_READ_DELAYS):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            spend = await client.get_spend(lease.key)
+        except LiteLLMError as error:
+            if error.status in (401, 403, 404):
+                break
+        try:
+            rows = await client.fetch_spend_log_rows(lease.key, issued_at=lease.issued_at)
+        except LiteLLMError:
+            previous = None
+            continue
+        current = aggregate_rows(rows)
+        best = max(best, current, key=_measurement_quality)
+        usable = bool(rows) and all(
+            isinstance(row.get(field), int) and not isinstance(row.get(field), bool) and row[field] >= 0
+            for row in rows for field in ("prompt_tokens", "completion_tokens")
+        )
+        consistent = spend is not None and math.isclose(current.spend_usd, spend, rel_tol=1e-6, abs_tol=1e-8)
+        if usable and consistent and current == previous:
+            return _ConfirmedUsage(spend, current)
+        previous = current
+    if spend is None and best.request_count is None:
         return None
-    return _ConfirmedUsage(spend_usd=spend_usd, aggregate=aggregate_rows(rows))
+    status = "partial" if best.prompt_tokens is not None or best.completion_tokens is not None else "unknown"
+    return _ConfirmedUsage(spend, best, status=status)
+
+
+def _measurement_quality(value: AggregatedUsage) -> tuple[int, int, int]:
+    return (
+        int(value.prompt_tokens is not None) + int(value.completion_tokens is not None),
+        value.request_count or 0,
+        int(value.cache_read_tokens is not None) + int(value.cache_write_tokens is not None),
+    )
 
 
 def _is_subscription_lease(lease: KeyLease) -> bool:
@@ -541,36 +586,22 @@ def _record_for(
     The dimensions come from the lease — the proxy does not carry persona or
     spec_ref back (R1), so attribution is factory-side by construction.
 
-    For subscription-routed attempts there is no proxy spend data to read,
-    so the row is marked as carrying no gateway spend data: NULL tokens,
-    NULL spend, and ``final_usage_confirmed=False`` (US4 FR-009).  A row that
-    says ``$0`` would be indistinguishable from a free call.
+    Subscription readings come from archived runner telemetry and never carry
+    a per-attempt monetary charge. Gateway cost and token detail are preserved
+    independently; completeness belongs to the reading's status.
     """
     lease = request.lease
     snapshot = request.last_snapshot
 
-    if _is_subscription_lease(lease):
-        # US4 FR-009: subscription attempts spend the operator's own quota,
-        # not gateway tokens.  Record that no gateway spend data exists.
-        usage: dict[str, int | float | None] = {
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "cache_read_tokens": None,
-            "cache_write_tokens": None,
-            "request_count": None,
-            "spend_usd": None,
-        }
-    elif confirmed is None:
-        # Flagged, not fabricated: the tokens are unknown and say so, and the
-        # dollar figure is the last one actually measured (FR-005).
+    if confirmed is None:
         usage = {
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "cache_read_tokens": None,
-            "cache_write_tokens": None,
-            "request_count": None,
-            "spend_usd": snapshot.spend_usd if snapshot is not None else None,
+            "prompt_tokens": None, "completion_tokens": None,
+            "cache_read_tokens": None, "cache_write_tokens": None, "request_count": None,
+            "spend_usd": snapshot.spend_usd if snapshot is not None and lease.key else None,
         }
+        status = "unknown"
+        source = "gateway" if lease.key else "unknown"
+        cost_basis = "proxy_estimate" if usage["spend_usd"] is not None else "unknown"
     else:
         aggregate = confirmed.aggregate
         usage = {
@@ -579,10 +610,11 @@ def _record_for(
             "cache_read_tokens": aggregate.cache_read_tokens,
             "cache_write_tokens": aggregate.cache_write_tokens,
             "request_count": aggregate.request_count,
-            # The key's own counter, not the row sum: `/key/info` is the
-            # contract's final spend, and the rows are the token detail (R2).
-            "spend_usd": confirmed.spend_usd,
+            "spend_usd": confirmed.spend_usd if confirmed.spend_usd is not None else (
+                snapshot.spend_usd if snapshot is not None and lease.key else None
+            ),
         }
+        status, source, cost_basis = confirmed.status, confirmed.source, confirmed.cost_basis
 
     return UsageRecord(
         epic_id=lease.epic_id,
@@ -591,7 +623,10 @@ def _record_for(
         persona=lease.persona,
         spec_ref=lease.spec_ref,
         key_alias=lease.key_alias,
-        final_usage_confirmed=confirmed is not None,
+        final_usage_confirmed=status == "complete",
+        usage_status=status,
+        usage_source=source,
+        cost_basis=cost_basis,
         termination=request.termination,
         issued_at=lease.issued_at,
         torn_down_at=_now_iso(),

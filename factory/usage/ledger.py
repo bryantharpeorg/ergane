@@ -45,7 +45,7 @@ from factory.usage.models import Termination, UsageRecord
 
 #: Bumping this means the DDL below changed shape and existing ledgers need a
 #: migration path. Recorded in the database so a reader can tell.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: R6: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent teardown, short enough that a genuinely wedged
@@ -78,7 +78,10 @@ CREATE TABLE IF NOT EXISTS usage_records (
                                ('completed', 'agent_error', 'timeout', 'killed',
                                 'question', 'auth_failure', 'pre_agent_failure')),
     issued_at              TEXT    NOT NULL,                 -- ISO 8601 UTC
-    torn_down_at           TEXT    NOT NULL                  -- ISO 8601 UTC
+    torn_down_at           TEXT    NOT NULL,                 -- ISO 8601 UTC
+    usage_source           TEXT    NOT NULL DEFAULT 'legacy',
+    usage_status           TEXT    NOT NULL DEFAULT 'legacy',
+    cost_basis             TEXT    NOT NULL DEFAULT 'unknown'
 );
 
 CREATE INDEX IF NOT EXISTS idx_usage_epic     ON usage_records (epic_id);
@@ -106,11 +109,13 @@ _WRITABLE_COLUMNS = (
     "termination",
     "issued_at",
     "torn_down_at",
+    "usage_source",
+    "usage_status",
+    "cost_basis",
 )
 
-#: A rerun overwrites every column except the alias it matched on: the second
-#: teardown's reading of the attempt is the current one, even when it is the
-#: poorer, unconfirmed one (R3).
+#: upsert_record first preserves better prior measurements. Identity remains
+#: stable while the latest teardown updates termination and timestamps.
 _UPSERT_SQL = (
     f"INSERT INTO usage_records ({', '.join(_WRITABLE_COLUMNS)}) "
     f"VALUES ({', '.join(f':{column}' for column in _WRITABLE_COLUMNS)}) "
@@ -151,6 +156,7 @@ def _bootstrap_schema(conn: sqlite3.Connection) -> None:
     recorded = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
     if recorded == 0:
         conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+    conn.execute("UPDATE schema_version SET version = MAX(version, ?)", (SCHEMA_VERSION,))
     conn.commit()
 
 
@@ -237,6 +243,12 @@ def _values(value_list: str) -> set[str]:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Bring a ledger written by an older ergane up to the DDL above (079-US3)."""
     _widen_terminations(conn)
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(usage_records)")}
+    for name, default in (("usage_source", "legacy"), ("usage_status", "legacy"), ("cost_basis", "unknown")):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE usage_records ADD COLUMN {name} TEXT NOT NULL DEFAULT '{default}'")
 
 
 def upsert_record(conn: sqlite3.Connection, record: UsageRecord) -> UsageRecord:
@@ -246,17 +258,40 @@ def upsert_record(conn: sqlite3.Connection, record: UsageRecord) -> UsageRecord:
     row the first one wrote instead of adding another (FR-002, SC-001), so the
     returned `id` is stable across reruns.
     """
+    # An at-least-once teardown may run after revocation or a proxy outage.
+    # Preserve better token evidence, and preserve independently measured cost.
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    columns = ("id", *_WRITABLE_COLUMNS)
+    previous = conn.execute(
+        f"SELECT {', '.join(columns)} FROM usage_records WHERE key_alias = ?", (record.key_alias,)
+    ).fetchone()
+    if previous is not None:
+        old = UsageRecord(**dict(zip(columns, previous)))
+        old_rank = _quality(old)
+        new_rank = _quality(record)
+        if old_rank > new_rank:
+            record = replace(record, **{field: getattr(old, field) for field in (
+                "prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens",
+                "request_count", "final_usage_confirmed", "usage_source", "usage_status",
+            )})
+        if old.spend_usd is not None and (record.spend_usd is None or old_rank > new_rank):
+            record = replace(record, spend_usd=old.spend_usd, cost_basis=old.cost_basis)
+
     values = {column: getattr(record, column) for column in _WRITABLE_COLUMNS}
     values["final_usage_confirmed"] = int(record.final_usage_confirmed)
     values["termination"] = Termination(record.termination).value
-
     conn.execute(_UPSERT_SQL, values)
-    row = conn.execute(
-        "SELECT id FROM usage_records WHERE key_alias = ?", (record.key_alias,)
-    ).fetchone()
+    row = conn.execute("SELECT id FROM usage_records WHERE key_alias = ?", (record.key_alias,)).fetchone()
     conn.commit()
-
     return replace(record, id=row[0])
+
+
+def _quality(record: UsageRecord) -> int:
+    if record.usage_status == "complete":
+        return 2
+    return int(record.prompt_tokens is not None or record.completion_tokens is not None)
+
 
 
 #: The dimensions FR-006 names, and the only values `--by` accepts: the CLI's
@@ -353,15 +388,17 @@ def rollup(
         f"GROUP BY {group_expression} ORDER BY {group_expression}",
         params,
     ).fetchall()
-    totals = conn.execute(
-        f"SELECT {_TOTALS_SELECT} FROM usage_records{where}", params
-    ).fetchone()
+    total_select = _TOTALS_SELECT
+    if "usage_status" in {row[1] for row in conn.execute("PRAGMA table_info(usage_records)")}:
+        total_select = total_select.replace(" THEN NULL ELSE", " OR SUM(usage_status IN ('partial', 'unknown')) > 0 THEN NULL ELSE")
+    totals = conn.execute(f"SELECT {total_select} FROM usage_records{where}", params).fetchone()
 
     return {
         "by": by,
         "filters": {"epic": epic, "since": since},
         "groups": [{"key": row[0], **_metrics(row[1:])} for row in groups],
         "totals": _metrics(totals),
+        "coverage": _coverage(conn, where, params, group_expression),
     }
 
 
@@ -385,3 +422,33 @@ def _filter_clause(
 def _metrics(values: tuple[Any, ...]) -> dict[str, Any]:
     """Name one aggregate row's columns, in `_METRICS` order."""
     return dict(zip(_METRIC_FIELDS, values))
+
+
+def _coverage(conn: sqlite3.Connection, where: str, params: dict[str, Any], group: str) -> dict[str, Any]:
+    """Additive reporting works against old ledgers without migrating on reads."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(usage_records)")}
+    status = "usage_status" if "usage_status" in columns else "'legacy'"
+    source = "usage_source" if "usage_source" in columns else "'legacy'"
+    cost = "cost_basis" if "cost_basis" in columns else "'unknown'"
+    rows = conn.execute(
+        f"SELECT {group}, prompt_tokens, completion_tokens, request_count, {status}, {source}, {cost} "
+        f"FROM usage_records{where}", params,
+    ).fetchall()
+    def metrics(selected: list[tuple[Any, ...]]) -> dict[str, Any]:
+        def measured(index: int) -> int | None:
+            values = [row[index] for row in selected if row[index] is not None]
+            return sum(values) if values else None
+        return {
+            "measured_prompt_tokens": measured(1),
+            "measured_completion_tokens": measured(2),
+            "measured_requests": measured(3),
+            "missing_usage_rows": sum(row[1] is None or row[2] is None for row in selected),
+            "partial_usage_rows": sum(row[4] == "partial" for row in selected),
+            "legacy_usage_rows": sum(row[4] == "legacy" for row in selected),
+            "usage_sources": sorted({row[5] for row in selected}),
+            "cost_bases": sorted({row[6] for row in selected}),
+        }
+    return {
+        "groups": [{"key": key, **metrics([row for row in rows if row[0] == key])} for key in sorted({row[0] for row in rows})],
+        "totals": metrics(rows),
+    }

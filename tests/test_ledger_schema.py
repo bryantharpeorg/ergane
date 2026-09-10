@@ -69,6 +69,9 @@ EXPECTED_COLUMNS: list[tuple[str, str, int, int]] = [
     ("termination", "TEXT", 1, 0),
     ("issued_at", "TEXT", 1, 0),
     ("torn_down_at", "TEXT", 1, 0),
+    ("usage_source", "TEXT", 1, 0),
+    ("usage_status", "TEXT", 1, 0),
+    ("cost_basis", "TEXT", 1, 0),
 ]
 
 EXPECTED_INDEXES = {
@@ -235,7 +238,7 @@ def test_key_alias_carries_a_unique_index(ledger: sqlite3.Connection) -> None:
 def test_the_schema_version_is_recorded_once(ledger: sqlite3.Connection) -> None:
     versions = [row[0] for row in ledger.execute("SELECT version FROM schema_version")]
 
-    assert SCHEMA_VERSION == 2
+    assert SCHEMA_VERSION == 3
     assert versions == [SCHEMA_VERSION]
 
 
@@ -413,7 +416,7 @@ def test_re_running_teardown_updates_the_same_row(ledger: sqlite3.Connection) ->
     first = upsert_record(ledger, make_record())
 
     # A second teardown after a worker crash: the confirmed read is gone, so the
-    # rerun writes the fallback shape over the same attempt (FR-002, R3).
+    # rerun preserves the measurement while updating the termination.
     second = upsert_record(
         ledger,
         make_record(
@@ -433,9 +436,9 @@ def test_re_running_teardown_updates_the_same_row(ledger: sqlite3.Connection) ->
     assert second.id == first.id
 
     stored = row_as_dict(ledger, "epic-7:node-3:2")
-    assert stored["prompt_tokens"] is None
-    assert stored["spend_usd"] == pytest.approx(0.5)
-    assert stored["final_usage_confirmed"] == 0
+    assert stored["prompt_tokens"] == first.prompt_tokens
+    assert stored["spend_usd"] == pytest.approx(first.spend_usd)
+    assert stored["final_usage_confirmed"] == 1
     assert stored["termination"] == "timeout"
     assert stored["torn_down_at"] == "2026-07-24T11:02:00Z"
 

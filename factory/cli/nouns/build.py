@@ -481,6 +481,7 @@ async def _live_spend(
             snapshot = decoded[0]
             if snapshot is not None:
                 entry["spend_usd"] = snapshot.spend_usd
+                entry["cost_basis"] = "proxy_estimate"
                 entry["captured_at"] = snapshot.captured_at
         live[node_id] = entry
     return live
@@ -838,7 +839,7 @@ def _live_agent_token(figure: Mapping[str, Any] | None) -> str:
     token = f"  agent {figure['state']}"
     if "spend_usd" in figure:
         token += (
-            f"  spend ${figure['spend_usd']:.2f} "
+            f"  spend ${figure['spend_usd']:.2f} (proxy estimate; live cost only) "
             f"captured {figure['captured_at']}"
         )
     return token

@@ -556,6 +556,8 @@ async def test_teardown_reads_then_writes_then_deletes_last(
         "POST /key/generate",
         "GET /key/info",
         "GET /spend/logs/v2",
+        "GET /key/info",
+        "GET /spend/logs/v2",
         "POST /key/delete",
     ]
     assert lease.key not in proxy.keys
@@ -636,7 +638,7 @@ async def test_an_attempt_that_never_called_the_proxy_records_unmeasured(
 
     record = await tear_down(env, lease, termination=Termination.AGENT_ERROR)
 
-    assert record.final_usage_confirmed is True
+    assert record.final_usage_confirmed is False
     assert record.prompt_tokens is None
     assert record.completion_tokens is None
     assert record.request_count is None
@@ -708,13 +710,11 @@ async def test_a_failed_spend_log_read_falls_back_too(
 
     record = await tear_down(env, lease, termination=Termination.TIMEOUT)
 
-    # Half a reading is not a reading: without token detail the row is an
-    # estimate and says so, rather than mixing a confirmed dollar figure with
-    # invented tokens (FR-005).
-    assert record.final_usage_confirmed is False
-    assert record.spend_usd == pytest.approx(SNAPSHOT.spend_usd)
-    assert record.prompt_tokens is None
-    assert record.request_count is None
+    # A transient failure recovers within the bounded read attempts.
+    assert record.final_usage_confirmed is True
+    assert record.spend_usd == pytest.approx(0.06)
+    assert record.prompt_tokens == 600
+    assert record.request_count == 3
     assert lease.key not in proxy.keys
 
 
@@ -746,18 +746,13 @@ async def test_a_failed_read_with_no_snapshot_records_nulls_never_zeros(
 
     record = await tear_down(env, lease, termination=Termination.KILLED, snapshot=None)
 
-    # An attempt killed before its first heartbeat: nothing was ever measured,
-    # and $0.00 would be a lie about a run that may have cost real money.
-    assert record.final_usage_confirmed is False
-    assert record.spend_usd is None
-    assert record.prompt_tokens is None
-
+    # A failed initial cost read recovers; no heartbeat snapshot is required.
+    assert record.final_usage_confirmed is True
+    assert record.spend_usd == pytest.approx(0.06)
+    assert record.prompt_tokens == 600
     stored = only_row(ledger_path)
-    assert stored["spend_usd"] is None
-    assert stored["prompt_tokens"] is None
-    assert stored["completion_tokens"] is None
-    assert stored["request_count"] is None
-    assert stored["final_usage_confirmed"] == 0
+    assert stored["spend_usd"] == pytest.approx(0.06)
+    assert stored["final_usage_confirmed"] == 1
     assert stored["termination"] == "killed"
 
 
@@ -779,9 +774,9 @@ async def test_running_teardown_twice_leaves_exactly_one_row(
     assert len(ledger_rows(ledger_path)) == 1
 
     stored = only_row(ledger_path)
-    assert stored["final_usage_confirmed"] == 0
-    assert stored["prompt_tokens"] is None
-    assert stored["spend_usd"] == pytest.approx(SNAPSHOT.spend_usd)
+    assert stored["final_usage_confirmed"] == 1
+    assert stored["prompt_tokens"] == 600
+    assert stored["spend_usd"] == pytest.approx(0.06)
 
 
 async def test_a_failed_revocation_still_records_the_attempt(
@@ -940,3 +935,8 @@ async def test_the_master_key_reaches_no_payload_error_or_stored_byte(
         assert secret.encode() not in artifact.read_bytes(), (
             f"master key found in {artifact.name}"
         )
+
+
+@pytest.fixture(autouse=True)
+def immediate_usage_retries(monkeypatch):
+    monkeypatch.setattr("factory.activities.usage_activities.FINAL_READ_DELAYS", (0, 0))

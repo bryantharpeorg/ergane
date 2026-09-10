@@ -179,10 +179,20 @@ def render_table(document: dict[str, Any]) -> str:
     ]
     rule = ["-" * width for width in widths]
 
-    return "\n".join(
+    table = "\n".join(
         _line(cells, widths)
         for cells in [_caption(document), headings, rule, *body, rule, totals]
     )
+    coverage = document.get("coverage", {}).get("totals")
+    if coverage is not None:
+        table += "\nMeasured token subtotal: input {prompt}; output {completion}. Missing: {missing}; partial: {partial}; legacy: {legacy}.".format(
+            prompt=_cell("prompt_tokens", coverage["measured_prompt_tokens"]),
+            completion=_cell("completion_tokens", coverage["measured_completion_tokens"]),
+            missing=coverage["missing_usage_rows"], partial=coverage["partial_usage_rows"],
+            legacy=coverage["legacy_usage_rows"],
+        )
+        table += "\nProxy USD is estimated usage cost; subscription charges are not measured."
+    return table
 
 
 
