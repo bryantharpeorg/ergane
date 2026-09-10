@@ -22,6 +22,7 @@ exactly the second policy channel this story exists to prevent.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import stat
 from pathlib import Path
@@ -276,7 +277,7 @@ def test_every_observation_names_the_canonical_instructions_exactly_once(
     record = _record(client, shape)
     observation = record["observation"]
     assert observation["canonical_named"] == "AGENTS.md"
-    expected = 0 if client == "codex" and shape == "worktree" else 1
+    expected = 1
     assert observation["canonical_occurrences"] == expected
     loaded = observation["instruction_files_loaded"]
     if expected:
@@ -314,6 +315,14 @@ def test_the_fixture_readme_names_all_six_records() -> None:
 def test_the_parser_actually_reads_the_records() -> None:
     with pytest.raises(AssertionError):
         _record("codex", "shape-that-was-never-recorded")
+
+
+def test_every_record_pins_the_canonical_bytes_it_claims() -> None:
+    canonical = hashlib.sha256(AGENTS_MD.read_bytes()).hexdigest()
+    for client in CLIENTS:
+        for shape in SHAPES:
+            record = _record(client, shape)
+            assert record["canonical_sha256_prefix"] == canonical[:16]
 
 
 _RECIPE_OPENINGS = re.compile(

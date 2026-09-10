@@ -1,0 +1,21 @@
+{
+  "client": "claude",
+  "client_version": "2.1.261",
+  "session_shape": "worktree",
+  "recorded": "2026-09-09",
+  "redaction": "absolute checkout paths and scratch home paths redacted; no credential or account value present",
+  "invocation": "git worktree add --detach <WORKTREE> HEAD && cd <WORKTREE> && claude -p '<probe>'",
+  "scope": "fresh non-interactive Claude Code session response",
+  "observation": {
+    "instruction_files_loaded": ["CLAUDE.md -> AGENTS.md (symlink)"],
+    "canonical_named": "AGENTS.md",
+    "canonical_occurrences": 1,
+    "resolved_bytes_equal_canonical": true,
+    "recorded_as": "the tracked symlink survived worktree checkout and resolved to the canonical bytes"
+  },
+  "dispatched_node_facts": {
+    "assembled_prompt_standards_line": "Read .specify/memory/constitution.md in this worktree before you write code, and obey it.",
+    "precedence": "declared standards outrank auto-discovered orientation; orientation is context only"
+  },
+  "canonical_sha256_prefix": "0986f4602ccc91f3"
+}
