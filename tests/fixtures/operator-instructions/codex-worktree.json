@@ -3,19 +3,38 @@
   "client_version": "0.154.0",
   "session_shape": "worktree",
   "recorded": "2026-09-10",
-  "redaction": "absolute checkout paths redacted; fresh temporary CODEX_HOME used; no credential read",
-  "invocation": "git worktree add --detach <WORKTREE> HEAD && codex debug prompt-input '<probe>'",
-  "scope": "rendered model input, not a model response",
+  "redaction": "absolute checkout paths redacted; fresh temporary CODEX_HOME used; no operator credentials supplied",
+  "invocation": "codex debug prompt-input",
+  "scope": "installed CLI rendered input in isolated network namespace; not a model response",
   "observation": {
-    "instruction_files_loaded": ["AGENTS.md"],
+    "instruction_files_loaded": [
+      "AGENTS.md"
+    ],
     "canonical_named": "AGENTS.md",
     "canonical_occurrences": 1,
     "resolved_bytes_equal_canonical": true,
-    "recorded_as": "the fresh worktree contains its own tracked canonical AGENTS.md"
+    "recorded_as": "independent installed-CLI rendering contains the full canonical text once, ignoring only leading/trailing whitespace"
   },
   "dispatched_node_facts": {
     "assembled_prompt_standards_line": "Read .specify/memory/constitution.md in this worktree before you write code, and obey it.",
     "precedence": "declared standards outrank auto-discovered orientation; orientation is context only"
   },
-  "canonical_sha256_prefix": "0986f4602ccc91f3"
+  "canonical_sha256_prefix": "0986f4602ccc91f3",
+  "evidence": {
+    "kind": "installed-cli-rendered-input",
+    "source_revision": "c3d21e7ee27fde207614509efeb94a60717134e5",
+    "canonical_sha256": "0986f4602ccc91f3bb3eba6b2ff4282cc114eb6f814e0df974cc91a8afbd154f",
+    "request_input_sha256": "703af961285308cee59dfa92ebad2dedbe6799bc14565dd5d6e17e9a6404ddd7",
+    "child_exit": 0,
+    "canonical_text_occurrences": 1,
+    "operator_guard_occurrences": 1,
+    "precedence_guard_present": true,
+    "network_namespace_isolated": true,
+    "repository_read_only": true,
+    "credential_home": "disposable-empty",
+    "real_inference_requests": 0,
+    "response_origin": "none; offline renderer",
+    "equivalent_tree_revision": "5cd4391429269037c3cb46f336e5ed8ffe1b3704",
+    "equivalent_landed_instructions_revision": "0d909c5fd96a5ee966243ecf4c896cce90d26174"
+  }
 }
