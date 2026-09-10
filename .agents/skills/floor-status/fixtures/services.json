@@ -1,0 +1,5 @@
+{
+  "temporal": {"state": "unavailable", "reason": "socket unavailable"},
+  "landing_head": {"state": "unavailable", "reason": "target repo absent"},
+  "process": {"state": "unavailable", "reason": "not running"}
+}

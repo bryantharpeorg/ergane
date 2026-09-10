@@ -1,0 +1,18 @@
+{
+  "epic_id": "158-operator-skills-report-and-act-by-declared-intent",
+  "epic_state": "RUNNING",
+  "execution_status": "RUNNING",
+  "worker_revision": "60943a0",
+  "nodes": {
+    "us1": {
+      "state": "RUNNING",
+      "attempt": 1,
+      "branch": "factory/158-operator-skills-report-and-act-by-declared-intent/us1"
+    },
+    "us2": {
+      "state": "VERIFYING",
+      "attempt": 2,
+      "branch": "factory/158-operator-skills-report-and-act-by-declared-intent/us2"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "escalation_id": "esc158",
+  "epic_id": "158-operator-skills-report-and-act-by-declared-intent",
+  "node_id": "us1",
+  "question": "retry available?",
+  "expires_at": "2026-09-09T18:00:00Z",
+  "choices": ["RETRY", "KILL_EPIC"],
+  "recovery_evidence": {
+    "classification": "deterministic",
+    "tested_sha": "60943a0",
+    "branch_moved": false
+  }
+}
