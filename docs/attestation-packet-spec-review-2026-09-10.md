@@ -1,10 +1,16 @@
 # 0.6 attestation packet specification review
 
-The user explicitly approved story/spec audit packets in 0.6.0 on 2026-09-10.
-The feature is now specified, not implemented. Work is local on
-`codex/167-attestation-packets`, based on buildout a654fca and the earlier
-release brief b284dc0; no ready-state, workflow, service, credential or public
-artifact was changed by this pass.
+The user explicitly approved story/spec audit packets in 0.6.0 and subsequently
+approved the packet for implementation on 2026-09-10. The feature is specified,
+not implemented. On `codex/167-attestation-packets`, 134 and 167 are now ready
+for the deliberate build sequence; 135 remains draft under its separate
+spend-contract decision hold.167 still requires landed134 and160.
+
+The two unpublished specification/brief commits were rebased onto buildout
+`0d909c5fd96a5ee966243ecf4c896cce90d26174`; the inspected factory, constitution
+and decision-log seams are unchanged from a654fca. Recording readiness does not
+dispatch a workflow, resume the roadmap, change a service or credential, or
+authorize public upload of private audit evidence.
 
 ## Implementation allocation
 
@@ -33,6 +39,8 @@ framework and a new hosted service remain outside scope.
 All three complete trios were read, updated and validated against the isolated
 source tree. The existing source's read-only findings resolver was pointed at
 the operator's actual findings store to avoid a silently skipped fixes check.
+Validation and graph derivation were repeated after the implementation approval
+and ready-state changes on the rebased tree, with the same clean results below.
 
 | Spec | Layers checked | Skipped | Findings | Scenarios | Derived nodes |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -51,7 +59,7 @@ directory (one invocation per trio):
 
 ```bash
 ERGANE_ROOT=/home/admin/code/ergane/.factory /home/admin/code/ergane/.venv/bin/ergane spec validate specs/N --target-repo /home/admin/code/ergane/.factory-tmp/167-attestation-packets --specs-root specs --json
-/home/admin/code/ergane/.venv/bin/ergane spec derive specs/N --target-repo /home/admin/code/ergane/.factory-tmp/167-attestation-packets --specs-root specs -o /tmp/ergane-packet-trios-zTLtjT/N.json --json
+/home/admin/code/ergane/.venv/bin/ergane spec derive specs/N --target-repo /home/admin/code/ergane/.factory-tmp/167-attestation-packets --specs-root specs -o /tmp/ergane-packet-approved-trios-cByIVv/N.json --json
 git diff --check
 ```
 
@@ -69,9 +77,10 @@ Historical spec frontmatter and old measured counts remain historical.
 
 ## Remaining normal gates
 
-All three trios remain draft. Before dispatch, re-read landed134/160 interfaces
-where relevant, refresh against the selected target base, and re-evaluate the
-largest slices against the64KiB code+tests+evidence limit.135 retains its
+134 and167 are ready; readiness does not waive the landed-dependency checks.
+Before dispatch, re-read landed134/160 interfaces where relevant, refresh against
+the selected target base, and re-evaluate the largest slices against the64KiB
+code+tests+evidence limit.135 remains draft and retains its
 pre-existing spend-contract decision hold: D-055 is the latest inspected entry,
 and no decision authorizes that reversal. Do not invent a decision or interpret
 release inclusion as clearing the hold; record a real decision or explicitly

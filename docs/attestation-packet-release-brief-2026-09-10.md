@@ -1,7 +1,9 @@
 # Story and spec audit packets — release brief
 
-Release scope approved 2026-09-10; implementation not yet delivered. Inspected against buildout
-`a654fca272c34d017888f6dc9281b4654be8f469`.
+Release scope and packet implementation approved 2026-09-10; implementation not
+yet delivered. Source seams were inspected against buildout
+`a654fca272c34d017888f6dc9281b4654be8f469` and are unchanged at the rebased
+`0d909c5fd96a5ee966243ecf4c896cce90d26174` baseline.
 
 The user explicitly approved downloadable story/spec attestation packets for
 0.6.0 on 2026-09-10 and requested the spec updates. Include the complete packet
@@ -9,10 +11,13 @@ feature, not the entire general-purpose lifecycle-listener framework.
 The provisional estimate is 10–14 additional story-sized changes and roughly
 3–5 additional days including qualification, beyond the remaining migration and
 release work. This is not a measured throughput forecast or publication date;
-refinement may change it. The implementation contract is now the draft
+refinement may change it. The implementation contract is now the ready
 `specs/167-each-story-and-spec-keeps-an-audit-packet/` trio: six merge-ordered
-stories with required artifact/evidence dependencies 134 and 160. This brief is
-neither a ready-state change nor a dispatch.
+stories with required artifact/evidence dependencies 134 and 160. The user's
+subsequent explicit packet approval readies 134 and 167 for that sequence, not
+for immediate dispatch without their normal prerequisites.135 remains draft
+under its separate spend-contract decision hold. No workflow is started by
+recording this approval.
 
 ## Problem Statement
 
@@ -95,7 +100,7 @@ the live worker, policy or storage destination.
 ### Evidence identity and acquisition
 
 Reuse the persisted verification and usage surfaces, current-attempt evidence
-work in spec160, and declared artifact carriage in draft134. Do not build a
+work in spec160, and declared artifact carriage in ready134. Do not build a
 parallel gate runner, ledger, judge or artifact collector.
 
 Persist an identity envelope while the facts are available: target identity,
@@ -168,7 +173,7 @@ killed, pending, baseline-attested and observed-landed coverage stay distinct.
 
 ### Team artifact and CI attachment interface
 
-Reuse draft134's declared artifact types, adding descriptive purpose/producer
+Reuse 134's declared artifact types, adding descriptive purpose/producer
 metadata as needed rather than requiring one scanner. Let a team specify desired
 evidence, size/retention limits and optional completeness expectations. Carry
 bytes and provenance without interpreting an SBOM or asserting a scan's accuracy.
@@ -235,7 +240,7 @@ Release qualification must include:
 
 ## Further Notes
 
-Tentative additional work: draft134's five artifact-carriage stories, up to three
+Tentative additional work: 134's five artifact-carriage stories, up to three
 usage-correctness stories from draft135, and roughly six new packet slices:
 identity/acquisition, attempt report/resolution, archive/export, lifecycle
 generation, spec rollup, and team CI attachment/qualification. Spec160 is already
@@ -260,7 +265,7 @@ without rewriting legacy values. Neither a true legacy confirmation flag nor
 135's future count predicate establishes complete token coverage.
 
 The global roadmap remains paused; the active157 migration run is not
-interrupted by these drafts. Publication still requires implementation, normal
+interrupted by this approval. Publication still requires implementation, normal
 gates/judge/native queue, actual deployed packet qualification, documentation
 refresh and final release validation. No packet code, service or upload exists
 merely because these specs do.

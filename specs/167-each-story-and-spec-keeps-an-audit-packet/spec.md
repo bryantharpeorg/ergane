@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 depends_on_landed:
   - 134-a-gate-declares-the-artifact-it-writes-and-the-platform-carries-it
   - 160-each-codex-attempt-owns-its-evidence
@@ -9,10 +9,13 @@ depends_on_landed:
 
 ## Provenance and release boundary
 
-The user explicitly approved this feature for **0.6.0** on 2026-09-10 and
-requested updated specs. This trio turns the release brief into six bounded
-factory slices. Approval of release scope is not a claim of implementation,
-readiness, dispatch, qualification, signing, or permission to publish private data.
+The user explicitly approved this feature for **0.6.0**, requested updated specs,
+and then approved the packet for implementation on 2026-09-10. This trio turns
+the release brief into six bounded factory slices. The packet and its 134
+artifact-carriage prerequisite are ready for the normal deliberate build sequence;
+167 remains blocked on its declared landed dependencies. Approval is not a claim
+of implementation, dispatch, qualification, signing, or permission to publish
+private data. It does not clear 135's separate spend-contract decision hold.
 The global roadmap remains paused; use the normal deliberate factory sequence.
 
 An audit packet is not the glossary's **attested landing**. It records evidence;

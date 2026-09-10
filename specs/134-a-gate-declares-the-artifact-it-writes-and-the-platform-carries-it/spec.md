@@ -1,6 +1,8 @@
 ---
-state: draft
+state: ready
 # RELEASE REFINEMENT 2026-09-10: included in approved 0.6 audit-packet scope.
+# IMPLEMENTATION APPROVED 2026-09-10: the user's packet approval readies this
+# prerequisite; normal pre-dispatch refinement and factory gates still apply.
 # The release section below supersedes historical storage identity/safety
 # assumptions; historical provenance remains unedited. No live collector changed.
 fixes:
