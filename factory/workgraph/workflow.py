@@ -545,6 +545,35 @@ def _failure_detail(exc: BaseException) -> str:
     return detail
 
 
+# The two workflow-internal faults that reach `_LaunchFailed`, named so one
+# reason producer can tell an adapter that could not fork the agent from a
+# scheduled task that no worker accepted.
+_AGENT_LAUNCH_FAULT = AGENT_LAUNCH_FAILED
+_NO_AGENT_STARTED = "NO_AGENT_STARTED"
+
+
+def _launch_failed_reason(exc: _LaunchFailed, failures: int) -> str:
+    """One operator-facing reason for the two pre-first-token endings."""
+    if exc.fault == _NO_AGENT_STARTED:
+        return (
+            f"launch failed {failures} time(s) "
+            f"({_NO_AGENT_STARTED}: schedule-to-start timeout): {exc}"
+        )
+    return (
+        f"launch failed {failures} time(s) "
+        f"({_AGENT_LAUNCH_FAULT}): {exc}"
+    )
+
+
+def _launch_failed_summary(exc: _LaunchFailed, failures: int) -> str:
+    """The same reason, expanded with the evidence the operator needs."""
+    return (
+        f"{_launch_failed_reason(exc, failures).capitalize()}\n\n"
+        f"The agent could not be started after {failures} attempt(s). No node "
+        f"attempt was recorded and no ordinary attempt was consumed."
+    )
+
+
 @dataclass(frozen=True)
 class EpicInput:
     """One epic's whole dispatch — the workflow's only argument.
@@ -764,6 +793,12 @@ class _LaunchFailed(Exception):
     is a workflow-internal signal, not an activity error to propagate: it tells
     `_run_node` to treat the node as launch-failed, outside the ordinary ladder.
     """
+
+    fault: str = _AGENT_LAUNCH_FAULT
+
+    def __init__(self, message: str, *, fault: str) -> None:
+        super().__init__(message)
+        self.fault = fault
 
 
 # 082-US1: an epic finishes on the code it started with. PINNED means every
@@ -2281,19 +2316,15 @@ class EpicWorkflow:
                 # Exceeding the bound ends the node rather than looping forever.
                 if record.launch_failures >= request.config.max_launch_retries:
                     action = NextAction.KILLED
-                    record.terminal_reason = (
-                        f"launch failed {record.launch_failures} time(s) "
-                        f"(AGENT_LAUNCH_FAILED): {exc}"
+                    record.terminal_reason = _launch_failed_reason(
+                        exc, record.launch_failures
                     )
                     # FR-006: surface the launch failure as an operator-facing
                     # condition at the time it happens, not after the ladder exhausts.
                     # The escalation history names the launch fault and carries no
                     # verification results, because no attempt ever ran.
-                    launch_summary = (
-                        f"Agent launch failure (AGENT_LAUNCH_FAILED): {exc}\n\n"
-                        f"The agent could not be started after "
-                        f"{record.launch_failures} attempt(s). No node attempt "
-                        f"was recorded and no ordinary attempt was consumed."
+                    launch_summary = _launch_failed_summary(
+                        exc, record.launch_failures
                     )
                     escalation = await self._escalate(
                         graph,
@@ -2517,7 +2548,9 @@ class EpicWorkflow:
                 isinstance(cause, ApplicationError)
                 and cause.type == AGENT_LAUNCH_FAILED
             ):
-                raise _LaunchFailed(cause.message) from exc
+                raise _LaunchFailed(
+                    cause.message, fault=_AGENT_LAUNCH_FAULT
+                ) from exc
             return self._attempt_timeout(record, exc)
         record.last_snapshot = result.last_snapshot
         return result
@@ -2561,7 +2594,10 @@ class EpicWorkflow:
                     )
                     break
             if snapshot is None and timeout.type == TimeoutType.SCHEDULE_TO_START:
-                raise _LaunchFailed("no worker accepted the scheduled attempt") from exc
+                raise _LaunchFailed(
+                    "no worker accepted the scheduled attempt",
+                    fault=_NO_AGENT_STARTED,
+                ) from exc
         record.last_snapshot = snapshot
         # No transcript: the worker died before the adapter could archive one,
         # so `transcript_path` stays its empty default rather than this module
