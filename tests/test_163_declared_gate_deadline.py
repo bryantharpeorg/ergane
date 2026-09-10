@@ -500,6 +500,24 @@ def test_the_derivation_scan_is_declared_gates_not_the_whole_timeout_map(
     assert config.gate_timeout_s == 900
 
 
+def test_no_declared_gates_retain_the_existing_default() -> None:
+    """US1-S3, the no-gates clause at the pure seam.
+
+    The parser refuses a manifest with no `gates` — missing, or an empty
+    mapping — so no manifest-driven row of the matrix above can reach the
+    empty branch of the derivation. It is reachable at the derivation
+    itself, and the clause binds there: an empty declared set returns the
+    default it was handed, the same value the field carried before this
+    story. Passed as two literals, the second deliberately not the
+    deployed default, so a hardcoded `return 600` fails this test instead
+    of passing it.
+    """
+    from factory.verify.models import gate_watchdog_basis
+
+    assert gate_watchdog_basis((), {}, 600) == 600
+    assert gate_watchdog_basis((), {}, 900) == 900
+
+
 # --- US1-S1 / T001: the scheduled activity carries basis + grace ---------------
 
 

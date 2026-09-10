@@ -165,3 +165,47 @@ evidence note itself is committed inside that budget.
 - The grace constant is asserted as the literal 60
   (`test_the_grace_constant_is_the_existing_sixty_seconds`), and the
   scheduling pair is read off run history, not off a source string.
+
+## Repair pass (attempt 2): the no-gates clause, previously unasserted
+
+The first attempt's judge named one gap: US1-S3's "no gates retains the
+existing default" was implemented (`gate_watchdog_basis`'s empty branch)
+but never asserted — every matrix row declared at least the test gate, and
+the parser refuses a gates-less manifest outright (`factory_yaml.py`
+`_read_gates`: missing, empty mapping, and schema-v1 absent each raise),
+so no manifest-driven row can reach the empty branch. The clause binds at
+the pure seam instead, in the form the judge's evidence named:
+
+    def test_no_declared_gates_retain_the_existing_default() -> None:
+        ...
+        assert gate_watchdog_basis((), {}, 600) == 600
+        assert gate_watchdog_basis((), {}, 900) == 900
+
+Two literals rather than the dataclass default, the second deliberately
+not the deployed 600, so a hardcoded `return 600` fails the second
+assertion instead of passing it. Red proven by mutation, not by reverting
+the implementation (the branch exists on this tree): with the empty
+branch hardcoded to `3600`, the test fails; restored, it passes —
+
+    $ <empty branch → `return max(effective) if effective else 3600`>
+    $ uv run pytest tests/test_163_declared_gate_deadline.py::test_no_declared_gates_retain_the_existing_default -q --no-header
+    FAILED tests/test_163_declared_gate_deadline.py::test_no_declared_gates_retain_the_existing_default
+    ============================== 1 failed in 0.18s ===============================
+    # branch restored
+    $ uv run pytest tests/test_163_declared_gate_deadline.py -q --no-header
+    ======================== 20 passed, 1 warning in 1.92s =========================
+
+(19 in the first attempt's green run + this one.) Focused neighbours
+re-run green after the addition, and the diff stays far under budget:
+
+    $ uv run pytest tests/test_factory_yaml.py tests/test_gates.py \
+        tests/test_023_us2_dispatch_pin.py tests/test_092_manifest_threshold.py \
+        tests/test_promotion_persona_is_operator_settable.py \
+        tests/test_landing_dials_reach_the_epic.py tests/test_roadmap_scheduler.py \
+        tests/test_scheduled_epics_carry_the_dials.py -q --no-header
+    ============================= 313 passed in 21.79s =============================
+
+    $ git diff HEAD | wc -c
+    1284
+
+This repair's own additions are the test above (≈1.2 KiB) and this note.
