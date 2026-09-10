@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import hashlib
+import json
 import os
 import re
 import shutil
+import stat as stat_module
 import subprocess
 import sys
 import tarfile
@@ -14,7 +17,7 @@ import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 
 CANONICAL_SKILLS_ROOT = Path(".agents") / "skills"
@@ -30,9 +33,57 @@ DECLARED_SKILLS: tuple[str, ...] = (
     "spec-html",
 )
 
+CANONICAL_DESTINATION = CANONICAL_SKILLS_ROOT.as_posix()
+COMPATIBILITY_DESTINATION = COMPATIBILITY_SKILLS_ROOT.as_posix()
+MANIFEST_REL = Path("ergane") / "skills" / "manifest.json"
+MANIFEST_VERSION = 1
+MANIFEST_NAME = MANIFEST_REL.name
+
+SUPPORTED_CLIENTS: tuple[tuple[str, Path], ...] = (
+    ("codex", CANONICAL_SKILLS_ROOT),
+    ("claude", COMPATIBILITY_SKILLS_ROOT),
+)
+
 
 class SkillPackagingError(Exception):
     """One or more named refusals from packaging validation."""
+
+
+class ManifestError(SkillPackagingError):
+    """A skill ownership manifest cannot be trusted."""
+
+
+@dataclass(frozen=True)
+class Collision:
+    path: str
+    state: str
+
+
+@dataclass(frozen=True)
+class InstallResult:
+    """The known result of one explicit skill installation."""
+
+    manifest_path: Path
+    created: tuple[Path, ...]
+    upgraded: tuple[Path, ...]
+    current: tuple[Path, ...]
+    collisions: tuple[Collision, ...]
+    source_version: str | None
+    package_version: str | None
+    client_destinations: Mapping[str, Path]
+    client_availability: Mapping[str, bool]
+
+    def destination_for(self, client: str) -> Path:
+        return self.client_destinations[client]
+
+    def client_available(self, client: str) -> bool:
+        return self.client_availability[client]
+
+    @property
+    def unavailable_clients(self) -> tuple[str, ...]:
+        return tuple(
+            client for client, available in self.client_availability.items() if not available
+        )
 
 
 @dataclass(frozen=True)
@@ -214,6 +265,534 @@ def wheel_inventory(
             failures.append(f"CONTENT-DIVERGENT: {path}")
     _refuse(failures)
     return tuple(records)
+
+
+def packaged_inventory() -> tuple[ResourceRecord, ...]:
+    """Inventory the canonical payload carried by the installed package."""
+
+    package_root = Path(importlib.import_module("factory").__file__).resolve().parent
+    packaged_root = package_root / "skills"
+    if all((packaged_root / skill).is_dir() for skill in DECLARED_SKILLS):
+        records: list[ResourceRecord] = []
+        _inventory_directory(packaged_root, packaged_root, records)
+        return tuple(sorted(records, key=lambda record: record.path))
+
+    canonical_root = package_root.parent / CANONICAL_SKILLS_ROOT
+    if all((canonical_root / skill).is_dir() for skill in DECLARED_SKILLS):
+        return source_inventory(package_root.parent)
+    raise SkillPackagingError(
+        f"CANONICAL-PACKAGE-MISSING: {packaged_root} and {canonical_root}"
+    )
+
+
+def _packaged_payload() -> tuple[tuple[ResourceRecord, ...], dict[str, bytes]]:
+    records = packaged_inventory()
+    package_root = Path(importlib.import_module("factory").__file__).resolve().parent
+    packaged_root = package_root / "skills"
+    source_root = package_root.parent / CANONICAL_SKILLS_ROOT
+    canonical_root = packaged_root if packaged_root.is_dir() else source_root
+    payload: dict[str, bytes] = {}
+    for record in records:
+        path = canonical_root / record.path
+        payload[record.path] = path.read_bytes()
+    return records, payload
+
+
+def _source_version() -> str | None:
+    from factory.supervision.engine_identity import cli_version
+
+    version = cli_version()
+    return None if version == "unknown" else version
+
+
+def _skill_digest(records: Sequence[ResourceRecord], skill: str) -> str:
+    selected = sorted(
+        (record for record in records if record.path.split("/", 1)[0] == skill),
+        key=lambda record: record.path,
+    )
+    payload = "\0".join(f"{record.path}:{record.digest}" for record in selected)
+    return _digest(payload.encode("utf-8"))
+
+
+def _current_skill_digest(root: Path, records: Sequence[ResourceRecord], skill: str) -> str | None:
+    lines: list[str] = []
+    for record in sorted(
+        (item for item in records if item.path.split("/", 1)[0] == skill),
+        key=lambda item: item.path,
+    ):
+        path = root / record.path
+        try:
+            content = path.read_bytes()
+        except OSError:
+            return None
+        lines.append(f"{record.path}:{_digest(content)}")
+    return _digest("\0".join(lines).encode("utf-8"))
+
+
+def manifest_path() -> Path:
+    """Return the declared operator-state ownership manifest path."""
+
+    from factory.registry import resolve_state_home
+
+    return resolve_state_home() / MANIFEST_REL
+
+
+def _manifest_path_for_state(state_home: Path) -> Path:
+    return Path(state_home) / MANIFEST_REL
+
+
+def _safe_relative(value: object) -> PurePosixPath | None:
+    if not isinstance(value, str) or not value or "\\" in value:
+        return None
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or any(part in ("", ".", "..") for part in relative.parts):
+        return None
+    return relative
+
+
+def _manifest_path_error(raw_path: object, relative: PurePosixPath | None) -> str:
+    if relative is None:
+        if isinstance(raw_path, str) and ".." in raw_path.split("/"):
+            return f"MANIFEST-PATH-OUT-OF-ROOT: {raw_path}"
+        return f"MANIFEST-PATH-INVALID: {raw_path!r}"
+    path = relative.as_posix()
+    if path.startswith(f"{CANONICAL_DESTINATION}/") or path.startswith(
+        f"{COMPATIBILITY_DESTINATION}/"
+    ):
+        return f"MANIFEST-PATH-INVALID: {path}"
+    return f"MANIFEST-PATH-OUT-OF-ROOT: {path}"
+
+
+def _validate_manifest(document: object) -> dict[str, dict[str, Any]]:
+    if not isinstance(document, dict):
+        raise ManifestError("MANIFEST-MALFORMED: document is not an object")
+    if document.get("schema") != MANIFEST_VERSION:
+        raise ManifestError(
+            f"MANIFEST-SCHEMA-UNSUPPORTED: {document.get('schema')!r}; wanted {MANIFEST_VERSION}"
+        )
+    if document.get("canonical_destination") != CANONICAL_DESTINATION:
+        raise ManifestError(
+            f"MANIFEST-DESTINATION-INVALID: canonical {document.get('canonical_destination')!r}"
+        )
+    if document.get("compatibility_destination") != COMPATIBILITY_DESTINATION:
+        raise ManifestError(
+            f"MANIFEST-DESTINATION-INVALID: compatibility {document.get('compatibility_destination')!r}"
+        )
+    for field in ("source_version", "package_version"):
+        value = document.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ManifestError(f"MANIFEST-MALFORMED: {field}")
+
+    raw_entries = document.get("entries")
+    if not isinstance(raw_entries, dict):
+        raise ManifestError("MANIFEST-MALFORMED: entries")
+    entries: dict[str, dict[str, Any]] = {}
+    for raw_path, raw_entry in raw_entries.items():
+        relative = _safe_relative(raw_path)
+        if relative is None:
+            raise ManifestError(_manifest_path_error(raw_path, relative))
+        path = relative.as_posix()
+        in_canonical = path.startswith(f"{CANONICAL_DESTINATION}/")
+        in_compatibility = path.startswith(f"{COMPATIBILITY_DESTINATION}/")
+        if not in_canonical and not in_compatibility:
+            raise ManifestError(_manifest_path_error(raw_path, relative))
+        if not isinstance(raw_entry, dict):
+            raise ManifestError(f"MANIFEST-ENTRY-MALFORMED: {path}")
+        digest = raw_entry.get("digest")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ManifestError(f"MANIFEST-DIGEST-INVALID: {path}")
+        kind = raw_entry.get("kind")
+        if in_canonical:
+            if kind != "file" or len(relative.parts) < 4:
+                raise ManifestError(f"MANIFEST-ENTRY-INVALID: {path}")
+            entries[path] = {"kind": "file", "digest": digest}
+            continue
+        if len(relative.parts) != 3 or kind != "alias":
+            raise ManifestError(f"MANIFEST-ENTRY-INVALID: {path}")
+        target = raw_entry.get("target")
+        expected_target = f"../../{CANONICAL_DESTINATION}/{relative.name}"
+        if target != expected_target:
+            raise ManifestError(f"MANIFEST-ALIAS-INVALID: {path}")
+        entries[path] = {"kind": "alias", "digest": digest, "target": target}
+    return entries
+
+
+def _read_manifest(path: Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    if not path.exists():
+        document: dict[str, Any] = {}
+        return document, {}
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as failure:
+        raise ManifestError(f"MANIFEST-UNREADABLE: {path}: {failure}") from failure
+    return document, _validate_manifest(document)
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.ergane-install-{os.getpid()}.tmp")
+    try:
+        temporary.write_bytes(content)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_replace_symlink(path: Path, target: str) -> None:
+    temporary = path.with_name(f".{path.name}.ergane-install-{os.getpid()}.tmp")
+    os.symlink(target, temporary)
+    try:
+        os.replace(temporary, path)
+    finally:
+        if temporary.is_symlink():
+            temporary.unlink()
+
+
+def _ensure_parents(path: Path) -> None:
+    missing: list[Path] = []
+    for parent in path.parents:
+        if parent.exists():
+            if parent.is_symlink() or not parent.is_dir():
+                raise SkillPackagingError(f"DESTINATION-PARENT-SYMLINK: {parent}")
+            continue
+        missing.append(parent)
+    for parent in reversed(missing):
+        parent.mkdir()
+
+
+def _lstat_kind(path: Path) -> tuple[str, int, str | None] | None:
+    try:
+        stat_result = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat_module.S_ISLNK(stat_result.st_mode):
+        return ("symlink", None, os.readlink(path))
+    if stat_module.S_ISREG(stat_result.st_mode):
+        try:
+            return ("file", _digest(path.read_bytes()), None)
+        except OSError:
+            return ("file", None, None)
+    if stat_module.S_ISDIR(stat_result.st_mode):
+        return ("directory", _digest(path.name.encode("utf-8")), None)
+    return ("other", _digest(str(stat_result.st_ino).encode("utf-8")), None)
+
+
+def _parent_collision(home: Path, relative: PurePosixPath) -> Path | None:
+    current = home
+    for part in relative.parts[:-1]:
+        current = current / part
+        try:
+            stat_result = current.lstat()
+        except FileNotFoundError:
+            return None
+
+        if stat_module.S_ISLNK(stat_result.st_mode) or not stat_module.S_ISDIR(stat_result.st_mode):
+            return current.relative_to(home)
+    return None
+
+
+def _classify_file(
+    path: str,
+    absolute: Path,
+    digest: str,
+    manifest_entries: Mapping[str, dict[str, Any]],
+) -> str:
+    current = _lstat_kind(absolute)
+    if current is None:
+        return "absent"
+    kind, current_digest, _ = current
+    owned = manifest_entries.get(path)
+    if kind != "file":
+        return "unowned-conflicting"
+    if owned and owned.get("kind") == "file":
+        if current_digest == digest:
+            return "unchanged-owned"
+        if current_digest == owned["digest"]:
+            return "safely-upgradeable-owned"
+        return "modified-owned"
+    if current_digest == digest:
+        return "identical-unowned"
+    return "unowned-conflicting"
+
+
+def _classify_alias(
+    path: str,
+    absolute: Path,
+    target: str,
+    digest: str,
+    manifest_entries: Mapping[str, dict[str, Any]],
+    records: Sequence[ResourceRecord],
+    canonical_root: Path,
+    canonical_safe_upgrade: bool,
+) -> str:
+    current = _lstat_kind(absolute)
+    if current is None:
+        return "absent"
+    kind, current_digest, current_target = current
+    if kind != "symlink" or current_target != target:
+        return "broken-alias"
+    current_digest = _current_skill_digest(canonical_root, records, Path(path).name)
+    if current_digest is None:
+        return "broken-alias"
+    owned = manifest_entries.get(path)
+    if owned and owned.get("kind") == "alias":
+        if current_digest == digest:
+            return "unchanged-owned"
+        if canonical_safe_upgrade:
+            return "safely-upgradeable-owned"
+        return "modified-owned"
+    if current_digest == digest:
+        return "identical-unowned"
+    return "unowned-conflicting"
+
+
+def install() -> InstallResult:
+    """Plan and atomically apply one explicit skill installation."""
+
+    home_value = os.environ.get("HOME")
+    if not home_value:
+        raise SkillPackagingError("HOME-DECLARATION-MISSING: HOME")
+    home = Path(home_value)
+    path = manifest_path()
+    prior_document, manifest_entries = _read_manifest(path)
+    records, payload = _packaged_payload()
+    source_version = _source_version()
+
+    actions: list[dict[str, Any]] = []
+    collision_states: dict[str, str] = {}
+    created: list[Path] = []
+    upgraded: list[Path] = []
+    current: list[Path] = []
+
+    canonical_absent = {skill for skill in DECLARED_SKILLS if not any(
+        record.path.split("/", 1)[0] == skill for record in records
+    )}
+
+    for record in records:
+        relative = PurePosixPath(CANONICAL_DESTINATION) / record.path
+        absolute = home / relative
+        parent = _parent_collision(home, relative)
+        if parent is not None:
+            collision_states[parent.as_posix()] = "parent-collision"
+            actions.append({"path": relative, "absolute": absolute, "state": "parent-collision"})
+            continue
+        state = _classify_file(
+            relative.as_posix(), absolute, record.digest, manifest_entries
+        )
+        action: dict[str, Any] = {
+            "path": relative,
+            "absolute": absolute,
+            "state": state,
+            "record": record,
+            "content": payload[record.path],
+        }
+        actions.append(action)
+        if state == "absent":
+            action["apply"] = "write"
+        elif state == "safely-upgradeable-owned":
+            action["apply"] = "write"
+        elif state == "unchanged-owned":
+            action["apply"] = "none"
+        else:
+            action["apply"] = "none"
+
+    for skill in DECLARED_SKILLS:
+        canonical_skill = f"{CANONICAL_DESTINATION}/{skill}"
+        canonical_ready = not any(
+            action["path"].as_posix().startswith(f"{canonical_skill}/")
+            and action["state"]
+            not in {"absent", "unchanged-owned", "safely-upgradeable-owned"}
+            for action in actions
+        )
+        relative = PurePosixPath(COMPATIBILITY_DESTINATION) / skill
+        absolute = home / relative
+        target = f"../../{CANONICAL_DESTINATION}/{skill}"
+        if skill in canonical_absent:
+            actions.append(
+                {
+                    "path": relative,
+                    "absolute": absolute,
+                    "state": "canonical-missing",
+                }
+            )
+            continue
+        if not canonical_ready:
+            actions.append(
+                {
+                    "path": relative,
+                    "absolute": absolute,
+                    "state": "canonical-collision",
+                }
+            )
+            continue
+        parent = _parent_collision(home, relative)
+        if parent is not None:
+            collision_states[parent.as_posix()] = "parent-collision"
+            actions.append({"path": relative, "absolute": absolute, "state": "parent-collision"})
+            continue
+        digest = _skill_digest(records, skill)
+        canonical_safe_upgrade = any(
+            action["path"].as_posix().startswith(f"{canonical_skill}/")
+            and action["state"] == "safely-upgradeable-owned"
+            for action in actions
+        )
+        state = _classify_alias(
+            relative.as_posix(),
+            absolute,
+            target,
+            digest,
+            manifest_entries,
+            records,
+            home / CANONICAL_SKILLS_ROOT,
+            canonical_safe_upgrade,
+        )
+        actions.append(
+            {
+                "path": relative,
+                "absolute": absolute,
+                "state": state,
+                "kind": "alias",
+                "target": target,
+                "digest": digest,
+            }
+        )
+        if state == "absent":
+            actions[-1]["apply"] = "link"
+        elif state == "safely-upgradeable-owned":
+            actions[-1]["apply"] = "none"
+        else:
+            actions[-1]["apply"] = "none"
+
+    for action in actions:
+        state = action["state"]
+        absolute: Path = action["absolute"]
+        if state in {"unchanged-owned"}:
+            current.append(absolute)
+        elif state in {"unowned-conflicting", "identical-unowned", "modified-owned", "broken-alias", "parent-collision", "canonical-missing"}:
+            collision_states[action["path"].as_posix()] = state
+        elif state == "canonical-collision":
+            collision_states[action["path"].as_posix()] = "canonical-collision"
+        elif action.get("apply") == "write":
+            try:
+                _ensure_parents(absolute)
+                _atomic_write_bytes(absolute, action["content"])
+                if state == "safely-upgradeable-owned":
+                    upgraded.append(absolute)
+                    action["state"] = "upgraded"
+                else:
+                    created.append(absolute)
+                    action["state"] = "created"
+            except (OSError, SkillPackagingError) as failure:
+                action["state"] = "write-failed"
+                collision_states[action["path"].as_posix()] = "write-failed"
+                action["failure"] = str(failure)
+        elif action.get("apply") == "link":
+            try:
+                _ensure_parents(absolute)
+                _atomic_replace_symlink(absolute, action["target"])
+                created.append(absolute)
+                action["state"] = "created"
+            except (OSError, SkillPackagingError) as failure:
+                action["state"] = "link-failed"
+                collision_states[action["path"].as_posix()] = "link-failed"
+                action["failure"] = str(failure)
+        elif state == "safely-upgradeable-owned":
+            upgraded.append(absolute)
+            action["state"] = "upgraded"
+
+    fresh_entries: dict[str, dict[str, Any]] = dict(manifest_entries)
+    for action in actions:
+        if action["state"] not in {"created", "unchanged-owned", "upgraded"}:
+            continue
+        if action["state"] == "upgraded" and action.get("kind") == "file" and action.get("apply") != "write":
+            continue
+        if "record" in action:
+            fresh_entries[action["path"].as_posix()] = {
+                "kind": "file",
+                "digest": action["record"].digest,
+            }
+        elif action.get("kind") == "alias":
+            fresh_entries[action["path"].as_posix()] = {
+                "kind": "alias",
+                "digest": action["digest"],
+                "target": action["target"],
+            }
+
+    document = {
+        "schema": MANIFEST_VERSION,
+        "source_version": source_version,
+        "package_version": source_version,
+        "canonical_destination": CANONICAL_DESTINATION,
+        "compatibility_destination": COMPATIBILITY_DESTINATION,
+        "entries": fresh_entries,
+    }
+    collisions = tuple(
+        Collision(path, state)
+        for path, state in sorted(collision_states.items())
+    )
+
+
+    if (
+        not created
+        and not upgraded
+        and fresh_entries == manifest_entries
+        and prior_document.get("source_version") == source_version
+        and prior_document.get("package_version") == source_version
+        and path.exists()
+    ):
+        pass
+    else:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            content = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+            temporary = path.with_name(f".{MANIFEST_NAME}.ergane-install-{os.getpid()}.tmp")
+            try:
+                temporary.write_bytes(content)
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        except OSError as failure:
+            collision_states[str(MANIFEST_REL)] = "manifest-replace-failed"
+            collisions = tuple(
+                Collision(path, state)
+                for path, state in sorted(collision_states.items())
+            )
+
+    client_destinations: dict[str, Path] = {}
+    client_availability: dict[str, bool] = {}
+    for client, destination in SUPPORTED_CLIENTS:
+        client_destinations[client] = home / destination
+        client_availability[client] = shutil.which(client) is not None
+    return InstallResult(
+        manifest_path=path,
+        created=tuple(created),
+        upgraded=tuple(upgraded),
+        current=tuple(current),
+        collisions=collisions,
+        source_version=source_version,
+        package_version=source_version,
+        client_destinations=client_destinations,
+        client_availability=client_availability,
+    )
+
+
+def render_install(result: InstallResult) -> str:
+    """Render one installation report without hiding partial failures."""
+
+    lines = [f"skills install: {result.manifest_path}"]
+    if result.created:
+        lines.append("created:")
+        lines.extend(f"  {path}" for path in result.created)
+    if result.upgraded:
+        lines.append("upgraded:")
+        lines.extend(f"  {path}" for path in result.upgraded)
+    if result.collisions:
+        lines.append("preserved collisions:")
+        lines.extend(
+            f"  {collision.path} ({collision.state})" for collision in result.collisions
+        )
+    if result.unavailable_clients:
+        lines.append("clients unavailable: " + ", ".join(result.unavailable_clients))
+    return "\n".join(lines)
 
 
 def _single(noun: str, paths: list[Path]) -> Path:
