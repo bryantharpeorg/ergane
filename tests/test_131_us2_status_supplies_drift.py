@@ -52,3 +52,17 @@ def test_a_drifted_landed_ready_spec_still_dispatches(tmp_path: Path) -> None:
     spec = readiness.spec("131-amended")
     assert spec.dispatchable is True
     assert spec.rendered_state == "ready"
+
+
+def test_an_absent_drift_answer_is_not_a_negative_answer(tmp_path: Path) -> None:
+    """US4-S3: only a supplied `False` can close a built `ready` spec."""
+    specs_root = build_corpus(
+        tmp_path / "corpus-only", {"131-built": {"state": SpecState.READY}}
+    )
+    roadmap = _read_corpus(specs_root)
+
+    readiness = compute_readiness(roadmap, landed_for=_observed_landed)
+
+    spec = readiness.spec("131-built")
+    assert spec.dispatchable is True
+    assert spec.rendered_state == "ready"
