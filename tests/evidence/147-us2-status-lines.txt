@@ -1,0 +1,11 @@
+no pending:
+us2  RUNNING  attempt 6  landing/us2
+
+scheduled with retained figure:
+us2  RUNNING  attempt 6  landing/us2  agent SCHEDULED  spend $6.25 captured 2026-08-05T09:31:00Z
+
+started with retained figure:
+us2  RUNNING  attempt 6  landing/us2  agent STARTED  spend $6.25 captured 2026-08-05T09:31:00Z
+
+live_spend for the scheduled document:
+{"us2": {"state": "SCHEDULED", "activity_attempt": 2, "last_heartbeat_at": "2026-08-05T09:30:00+00:00", "spend_usd": 6.25, "captured_at": "2026-08-05T09:31:00Z"}}
