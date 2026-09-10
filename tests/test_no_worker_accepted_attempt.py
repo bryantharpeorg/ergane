@@ -18,6 +18,7 @@ from temporalio.testing import WorkflowEnvironment
 
 from factory.verify.ladder import _attempts_spent
 from factory.verify.models import AttemptRecord, VerificationConfig
+from factory.activities.agent_activities import AGENT_LAUNCH_FAILED
 from factory.workgraph.models import WorkGraph
 from factory.workgraph.models import (
     AdapterResult,
@@ -36,6 +37,8 @@ from tests.test_interpreter import (
     passing,
     run_epic,
 )
+
+from tests.test_launch_is_not_an_attempt import launch_world
 
 
 def _agent_scheduled_events(history: Any) -> list[Any]:
@@ -234,3 +237,32 @@ async def test_a_scheduled_timeout_with_a_measurement_is_still_a_timeout() -> No
         assert result.last_snapshot is not None
         assert result.last_snapshot.spend_usd == 6.25
         assert result.last_snapshot.captured_at == "2026-08-05T09:31:00Z"
+
+
+async def test_terminal_reasons_name_their_distinct_launch_faults(
+    env: WorkflowEnvironment,
+) -> None:
+    """The adapter fault and no-worker fault share one reason producer (FR-006)."""
+    graph: WorkGraph = make_graph([make_node("us1", "US1")])
+    script = launch_world(client=env.client)
+
+    status = await run_epic(env, script, graph=graph)
+
+    adapter_signal = workflow_module._LaunchFailed(
+        "no agent binary found for persona",
+        fault=AGENT_LAUNCH_FAILED,
+    )
+    no_worker_signal = workflow_module._LaunchFailed(
+        "no worker accepted the scheduled attempt",
+        fault=workflow_module._NO_AGENT_STARTED,
+    )
+    terminal_reason = status.nodes["us1"].terminal_reason
+
+    assert terminal_reason is not None
+    assert terminal_reason == workflow_module._launch_failed_reason(
+        adapter_signal, 2
+    )
+    assert "AGENT_LAUNCH_FAILED" in terminal_reason
+    no_worker_reason = workflow_module._launch_failed_reason(no_worker_signal, 1)
+    assert "schedule-to-start" in no_worker_reason.lower()
+    assert "AGENT_LAUNCH_FAILED" not in no_worker_reason
