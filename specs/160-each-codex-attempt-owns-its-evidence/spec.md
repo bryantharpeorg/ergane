@@ -1,5 +1,5 @@
 ---
-state: draft
+state: ready
 ---
 
 # Feature Specification: each Codex attempt owns its evidence
