@@ -430,7 +430,7 @@ def _readiness_basis(
             ),
         ),
         _observed_landed_resolver(roadmap, specs_root, repo, branch),
-        _drifted_landed_resolver(specs_root, repo, branch),
+        _drifted_landed_resolver(roadmap, specs_root, repo, branch),
     )
 
 
@@ -479,19 +479,25 @@ def _observed_landed_resolver(
 
 
 def _drifted_landed_resolver(
-    specs_root: Path, repo: Path, branch: str
+    roadmap: Roadmap, specs_root: Path, repo: Path, branch: str
 ) -> Callable[[str], bool]:
     """`compute_readiness`'s `drifted_for`, backed by the same landing facts.
 
-    A story drifts when its pinned fingerprint and the fingerprint in the
-    working-tree spec differ. A story without a baseline cannot say either way,
-    so it is skipped; an unreadable repository is reported as not drifted, the
-    same conservative direction `_observed_landing` takes. Reporting callers
-    never fetch: staleness remains visible in the readiness basis.
+    US2 asks drift only for `ready` specs: it supplies the second half of their
+    built determination. A `landed` entry keeps today's status-command behavior
+    (no supplied drift read), and a story drifts when its pinned fingerprint and
+    the working-tree fingerprint differ. A story without a baseline cannot say
+    either way, so it is skipped; an unreadable repository is reported as not
+    drifted, the same conservative direction `_observed_landing` takes.
+    Reporting callers never fetch: staleness remains visible in the readiness
+    basis.
     """
+    states = {entry.spec_dir: entry.state for entry in roadmap.entries}
     facts_by_spec: dict[str, dict[str, LandedFact]] = {}
 
     def resolve(spec_dir: str) -> bool:
+        if states.get(spec_dir) is not SpecState.READY:
+            return False
         if spec_dir not in facts_by_spec:
             try:
                 facts_by_spec[spec_dir] = landed_facts(

@@ -167,7 +167,7 @@ def test_status_supplies_drift_that_reopens_a_landed_ready_spec(
 
 
 def test_observed_landing_does_not_restate_a_draft_as_built(tmp_path: Path) -> None:
-    """Only `ready` can enter the attestation window; other states keep their word."""
+    """Only `ready` asks for its own landing; other states keep their word."""
     specs_root = build_corpus(tmp_path, {"131-draft": {"state": SpecState.DRAFT}})
     roadmap = _read_corpus(specs_root)
 
@@ -176,5 +176,15 @@ def test_observed_landing_does_not_restate_a_draft_as_built(tmp_path: Path) -> N
     )
 
     spec = readiness.spec("131-draft")
-    assert spec.observed_landed is True
+    assert spec.observed_landed is False
     assert spec.rendered_state == "draft"
+
+
+def test_status_drift_read_stays_bounded_to_ready_specs(tmp_path: Path) -> None:
+    """The reporting seam does not widen the landed drift cost in US2."""
+    repo, specs_root = _committed_fixture(tmp_path)
+    roadmap = _read_corpus(specs_root)
+    _, _, drifted_for = _readiness_basis(roadmap, specs_root)
+
+    assert drifted_for is not None
+    assert drifted_for("not-a-spec") is False

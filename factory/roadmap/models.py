@@ -620,7 +620,11 @@ def compute_readiness(
             else:
                 blockers.append(dependency)
 
-        own_status = observed(entry.spec_dir) if landed_for is not None else None
+        own_status = (
+            observed(entry.spec_dir)
+            if landed_for is not None and entry.state is SpecState.READY
+            else None
+        )
         observed_landed = own_status is not None and own_status.landed
         dispatchable = (
             entry.state is SpecState.READY
