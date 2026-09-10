@@ -128,20 +128,25 @@ deterministic:
     ],
     ids=["example", "demo", "shipped"],
 )
-def test_a_route_less_manifest_derives_the_table_route_and_behaves_as_today(
+def test_a_shipped_manifest_honors_explicit_routes_and_derives_legacy_routes(
     manifest: Path,
 ) -> None:
-    """US1-S4: a manifest with no `route:` anywhere — the shape every installed
-    copy in the wild has — loads with every persona deriving the route the
-    table names, and every predicate answering exactly as it does today."""
+    """US1-S4: legacy example/demo entries retain the table-derived behavior.
+
+    The operator registry may select another supported CLI and declare its
+    route explicitly (FR-001/FR-003); that declaration, not a legacy-only CLI
+    table, determines its predicates. Keep all three real manifests exercised.
+    """
     raw = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     personas = load_personas(manifest)
 
     for name, entry in raw.items():
         persona = personas[name]
-        expected_route = DERIVED_ROUTES[entry["agent"]]
+        expected_route = (
+            entry["route"] if "route" in entry else DERIVED_ROUTES[entry["agent"]]
+        )
 
-        # The derivation, entry for entry.
+        # The explicit declaration or legacy derivation, entry for entry.
         assert persona.route == expected_route, name
         # The agent half normalizes only where the table says so: a legacy
         # `subscription` names Claude Code either way.

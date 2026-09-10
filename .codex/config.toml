@@ -1,0 +1,4 @@
+# This repository's Codex builders use Ollama through the Responses gateway.
+# The provider rejects hosted web_search tools before any agent tool can run.
+# Local shell/tool access remains governed by the factory's outer sandbox.
+web_search = "disabled"
