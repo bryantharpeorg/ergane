@@ -109,3 +109,21 @@ def test_capability_rows_separate_intent_from_bindings(job: str) -> None:
     assert "narrow fallback" in cells[4].lower(), (
         f"{job} must name its narrow supported fallback: {cells[4]!r}"
     )
+
+
+def test_workflow_names_the_governing_local_authorities() -> None:
+    for authority in ("Spec Kit trios", "findings ledger", "immutable decisions"):
+        assert authority in WORKFLOW, f"workflow must name the {authority!r} authority"
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "Beads is not an Ergane default",
+        "GitHub issues are not an Ergane default",
+        "A mandatory push is not an Ergane default",
+        "Checkout cleanup is not an Ergane default",
+    ],
+)
+def test_workflow_refuses_competing_or_destructive_defaults(forbidden: str) -> None:
+    assert forbidden in WORKFLOW
