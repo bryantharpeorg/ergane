@@ -245,21 +245,23 @@ async def test_the_child_receives_the_absolute_seeded_home_across_the_cwd_change
     assert BANNER in stdout_log(worker_cwd)
 
 
-def test_the_original_launch_hands_the_child_the_relative_home_verbatim(
+def test_the_production_seam_canonicalises_the_relative_home(
     attempt: Callable[..., AttemptContext],
     worker_cwd: Path,
 ) -> None:
-    """The S1 scenario's red half, pinned so the repair cannot regress to it:
-    on the original implementation `_provider_env` spells CODEX_HOME as the
-    relative `home_path` result. The production helper itself produces the
-    relative string — the assertion is over the production seam, not a
-    fixture."""
+    """The S1 seam, pinned after the repair (T005): `_provider_env` spells
+    CODEX_HOME as the *absolute* location the relative declaration already
+    named — resolved against the worker's own cwd, never re-rooted anywhere
+    else. The production helper itself still produces the relative string;
+    the canonicalisation is the seam's, and this is what keeps it there."""
     from factory.workgraph.adapter import CodexAdapter
 
     codex = CodexAdapter(executable="codex")
     env: dict[str, str] = {}
     prepared = codex._provider_env(env, attempt())
-    assert prepared[CODEX_HOME_ENV] == _relative_home(worker_cwd, EPIC, NODE_A) + "/.codex"
+    assert prepared[CODEX_HOME_ENV] == str(
+        (worker_cwd / _relative_home(worker_cwd, EPIC, NODE_A) / ".codex").resolve()
+    )
 
 
 # --- US1-S3: two nodes, two homes, each rollout found at home (FR-003) -----------
@@ -289,10 +291,11 @@ async def test_two_nodes_each_find_their_own_rollout_and_their_homes_stay_distin
     # built by the same helper from an absolute root, as a worker host that
     # resolved its root early receives it.
     relative = attempt(node=NODE_A)
-    absolute_fields = attempt(node=NODE_B)(  # type: ignore[misc]
+    absolute = attempt(
+        node=NODE_B,
         home_path=str(node_home_b.resolve()),
+        worktree_path=str(worktree_b),
     )
-    absolute = Context(**{**absolute_fields.__dict__, "worktree_path": str(worktree_b)})
 
     first = await adapter.run_attempt(relative, factory_root=worker_cwd / str(DEFAULT_RUNTIME_ROOT))
     assert first.termination == Termination.COMPLETED
@@ -321,7 +324,13 @@ async def test_two_nodes_each_find_their_own_rollout_and_their_homes_stay_distin
     env_b = {"HOME": str(node_home_b), CODEX_HOME_ENV: str(codex_home_path(node_home_b))}
     assert codex._turn_happened(relative, worktree, env_a)
     assert codex._turn_happened(absolute, worktree_b, env_b)
-    assert not codex._turn_happened(relative, worktree, dict(env_a, CODEX_HOME_ENV=str(codex_home_path(node_home_b))))
+    # The control: a node whose own home holds no rollout tree answers no —
+    # the probe reads the env's own tree, never a sibling's (the env the
+    # launch built names this node's home; that is what record_a/b asserted).
+    fresh_home = home_path(node_home.parent.parent, EPIC, "us9")
+    fresh_home.mkdir(parents=True, exist_ok=True)
+    env_fresh = {"HOME": str(fresh_home), CODEX_HOME_ENV: str(codex_home_path(fresh_home))}
+    assert not codex._turn_happened(relative, worktree, env_fresh)
 
     # The archive carries each node's own rollout, and only that node's.
     for node, worktree_dir, record in (

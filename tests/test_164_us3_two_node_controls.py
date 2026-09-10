@@ -137,7 +137,9 @@ async def test_two_nodes_keep_distinct_homes_and_each_archive_holds_its_own_roll
     factory_root = worker_cwd / str(DEFAULT_RUNTIME_ROOT)
     relative_context = build_attempt(NODE_A, relative=True)
     absolute_context = build_attempt(NODE_B, relative=False)
-    relative_home = Path(relative_context.home_path)
+    # The seeded homes as the *worker* resolves them — the relative
+    # declaration against the worker directory, the absolute one as itself.
+    relative_home = (worker_cwd / relative_context.home_path).resolve()
     absolute_home = Path(absolute_context.home_path)
 
     first = await adapter.run_attempt(relative_context, factory_root=factory_root)
@@ -185,7 +187,7 @@ async def test_two_nodes_keep_distinct_homes_and_each_archive_holds_its_own_roll
         )
 
     # The two homes remain distinct directories, each holding its own rollout.
-    assert relative_home.resolve() != absolute_home.resolve()
+    assert relative_home != absolute_home
     assert Path(str(record_a["rollout"])).parent != Path(str(record_b["rollout"])).parent
 
 

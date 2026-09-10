@@ -1962,7 +1962,10 @@ class CodexAdapter:
         re-read from the context: the credential's one assembly site stays
         `attempt_env`, and this seam only re-spells it the way the generated
         `config.toml` names it. `CODEX_HOME` points at the seeded per-node
-        home; Claude's variables are dropped — a Codex child has no use for a
+        home — canonicalised to the absolute location the declaration already
+        names, because the child is about to change directory into the node
+        worktree and a relative value would re-resolve there (164 FR-001);
+        Claude's variables are dropped — a Codex child has no use for a
         credential pair its config never consults.
         """
         key = env.pop("ANTHROPIC_AUTH_TOKEN", None)
@@ -1970,7 +1973,7 @@ class CodexAdapter:
             env[CODEX_GATEWAY_KEY] = key
         env.pop("ANTHROPIC_BASE_URL", None)
         env.pop("CLAUDE_CODE_MAX_CONTEXT_TOKENS", None)
-        env[CODEX_HOME_ENV] = str(codex_home_path(context.home_path))
+        env[CODEX_HOME_ENV] = str(resolve_codex_home(context.home_path))
         return env
 
     async def _deliver_prompt(self, process: asyncio.subprocess.Process, prompt: str) -> None:
@@ -2034,12 +2037,18 @@ class CodexAdapter:
         # credential — `_seed_node_home`'s copy is Claude's placement, and an
         # auth.json under `.claude/` is a file no Codex CLI reads.
         _seed_node_home(home, None)
+        # 164 FR-003: seeding, child execution, turn detection and archiving
+        # agree on one identity — the absolute child-facing home, at this
+        # seeding boundary before any cwd change. Seeding at the canonical
+        # location is what makes the directory the child's canonicalised
+        # CODEX_HOME names already exist.
+        seed_target = resolve_codex_home(home)
         if context is not None and (
             effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION
         ):
-            _seed_codex_config(codex_home_path(home), context)
+            _seed_codex_config(seed_target, context)
         elif credential_path is not None:
-            target = codex_home_path(home) / "auth.json"
+            target = seed_target / "auth.json"
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(credential_path, target)
             target.chmod(0o600)
@@ -2076,6 +2085,38 @@ class CodexAdapter:
 def codex_home_path(home_path: Path | str) -> Path:
     """The per-node CODEX_HOME: `<node home>/.codex` (FR-003)."""
     return Path(home_path) / ".codex"
+
+
+def resolve_codex_home(home_path: Path | str) -> Path:
+    """The child-facing CODEX_HOME: the declared per-node home, absolute.
+
+    The workflow declares the per-node home with the *relative* runtime root
+    it resolves against the worker's working directory (`home_path(
+    DEFAULT_RUNTIME_ROOT, …)` is `.ergane/homes/<epic>/<node>`), and the
+    activity seeds that directory there. The child then changes directory
+    into the node worktree — a relative CODEX_HOME would re-resolve against
+    the worktree and name a directory that does not exist (the 164 incident:
+    four 131/147 launches refused with `CODEX_HOME points to
+    ".ergane/homes/…", but that path does not exist`).
+
+    This is the one canonicalisation point, on the adapter's activity-side
+    preparation path (FR-001): the seeded directory is *identified*, not
+    relocated — the absolute location is the one the relative declaration
+    already named. It derives nothing from the child worktree, the operator's
+    HOME, the checkout branch, an environment override or any other fallback
+    (constitution IX): an already-absolute home resolves to itself, and an
+    absent base is refused by name rather than guessed at.
+
+    Kept beside `codex_home_path` and used by every consumer of the
+    identity — `_provider_env`, `_seed_home`, and through the constructed
+    env `_codex_rollouts` (FR-003) — so seeding, child execution, turn
+    detection and archiving agree on one identity.
+    """
+    declared = Path(home_path)
+    if declared.is_absolute():
+        return codex_home_path(declared)
+    root = Path.cwd() / declared
+    return codex_home_path(root.resolve())
 
 
 def _seed_codex_config(codex_home: Path, context: AttemptContext) -> None:
