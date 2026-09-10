@@ -10,12 +10,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Iterable
+import json
 
 import pytest
 from google.protobuf.timestamp_pb2 import Timestamp
 from temporalio.api.enums.v1.workflow_pb2 import PendingActivityState
 
 from factory.cli.nouns import build
+import factory.cli.nouns as nouns
 from factory.cli.nouns.build import render_status
 from factory.usage.models import UsageSnapshot
 
@@ -62,6 +64,12 @@ class _FakeClient:
     data_converter = _FakeConverter()
 
 
+class _FakeStatusClient:
+    def get_workflow_handle(self, workflow_id: str) -> Any:
+        assert workflow_id == "epic-us2"
+        return _FakeStatusHandle()
+
+
 class _FakeHandle:
     def __init__(self, activities: list[Any]) -> None:
         self._activities = activities
@@ -69,6 +77,36 @@ class _FakeHandle:
     async def describe(self) -> Any:
         return SimpleNamespace(
             raw_description=SimpleNamespace(pending_activities=self._activities)
+        )
+
+
+class _FakeStatusHandle:
+    async def query(self, name: str) -> Any:
+        assert name == "epic_status"
+        return _document()
+
+    async def describe(self) -> Any:
+        started = _FakeActivity(
+            state=PendingActivityState.Name(
+                PendingActivityState.PENDING_ACTIVITY_STATE_STARTED
+            ),
+            attempt=1,
+            heartbeat_payloads=[SNAPSHOT],
+            heartbeat_time=Timestamp.FromJsonString(CAPTURED_AT),
+        )
+        scheduled = _FakeActivity(
+            state=PendingActivityState.Name(
+                PendingActivityState.PENDING_ACTIVITY_STATE_SCHEDULED
+            ),
+            attempt=2,
+            heartbeat_payloads=None,
+            heartbeat_time=_heartbeat_time(),
+        )
+        return SimpleNamespace(
+            status=SimpleNamespace(name="RUNNING"),
+            raw_description=SimpleNamespace(
+                pending_activities=[started, scheduled]
+            ),
         )
 
 
@@ -150,3 +188,28 @@ def test_a_live_figure_is_printed_with_the_time_it_was_measured() -> None:
 
     assert f"${SNAPSHOT.spend_usd:.2f}" in line
     assert CAPTURED_AT in line
+
+
+async def test_json_live_spend_stays_additive_and_loadable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """US2-S4/FR-011: existing keys survive and every field is JSON scalar."""
+    async def open_client() -> Any:
+        return _FakeStatusClient()
+
+    monkeypatch.setattr(nouns, "_open_client", open_client)
+
+    await build._query_status("epic-us2", as_json=True)
+    document = json.loads(capsys.readouterr().out)
+
+    live = document["live_spend"]
+    assert set(live) == {NODE, "us1"}
+    for figure in live.values():
+        if "spend_usd" in figure:
+            assert set(figure) >= {"spend_usd", "captured_at"}
+            assert isinstance(figure["spend_usd"], float)
+            assert isinstance(figure["captured_at"], str)
+        assert isinstance(figure["state"], str)
+        assert isinstance(figure["activity_attempt"], int)
+        assert isinstance(figure["last_heartbeat_at"], str)
