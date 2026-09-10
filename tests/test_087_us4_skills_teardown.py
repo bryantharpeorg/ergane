@@ -15,6 +15,7 @@ from factory.cli.skills import (
     CANONICAL_SKILLS_ROOT,
     COMPATIBILITY_SKILLS_ROOT,
     MANIFEST_REL,
+    SkillTeardownResult,
     install,
     skills_teardown,
 )
@@ -127,3 +128,35 @@ def test_modified_canonical_and_retargeted_alias_entries_are_preserved(
     }
     assert manifest["entries"][".agents/skills/floor-status/SKILL.md"]["digest"] == expected_manifest_digest
     assert os.readlink(alias) == "../../operator/away-mode"
+
+
+def test_repeated_partial_teardown_is_idempotent_and_states_are_distinct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = make_home(tmp_path, monkeypatch)
+    install()
+    modified = home.root / CANONICAL_SKILLS_ROOT / "build-metrics" / "SKILL.md"
+    missing = home.root / CANONICAL_SKILLS_ROOT / "floor-status" / "SKILL.md"
+    modified.write_text("operator data\n", encoding="utf-8")
+    missing.unlink()
+    unrelated = home.root / "unrelated"
+    unrelated.mkdir()
+    first = skills_teardown()
+
+    assert first.preserved == (".agents/skills/build-metrics/SKILL.md",)
+    assert first.already_absent == (".agents/skills/floor-status/SKILL.md",)
+    assert set(read_manifest(home)["entries"]) == {".agents/skills/build-metrics/SKILL.md"}
+    assert first.removed
+
+    before = snapshot(home.root)
+    second = skills_teardown()
+    after = snapshot(home.root)
+
+    assert second == SkillTeardownResult(
+        manifest_path=manifest_path(home),
+        removed=(),
+        preserved=(".agents/skills/build-metrics/SKILL.md",),
+        already_absent=(),
+    )
+    assert before == after
+    assert unrelated.exists()
