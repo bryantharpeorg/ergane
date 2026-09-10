@@ -476,7 +476,7 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
   workflow-internal signal `factory/workgraph/workflow.py:748` — `_LaunchFailed`
   carries — so on the node path at `factory/workgraph/workflow.py:1884` —
   `EpicWorkflow._run_node` it appends no `AttemptRecord`, spends nothing from the
-  ladder, and is bounded by `factory/verify/models.py:1213` —
+  ladder, and is bounded by `factory/verify/models.py:1224` —
   `VerificationConfig` rather than looping.
 - **FR-005**: Every other `ActivityError` MUST keep today's classification: a
   `HEARTBEAT` or `START_TO_CLOSE` timeout still returns
@@ -527,7 +527,7 @@ pending `run_agent_attempt` in each state, and produce the node lines from it.
   (`factory/supervision/units.py:604` — `_service_text`), but the operator
   sequence that produced both measured sightings is stop-worker, land, restart,
   which is minutes; and a node gets only the two launch strikes
-  `factory/verify/models.py:1213` — `VerificationConfig` allows, so a bound short
+  `factory/verify/models.py:1224` — `VerificationConfig` allows, so a bound short
   enough to fire during an ordinary restart kills nodes that were never in
   trouble. The ending only has to beat the unbounded wait it replaces.
 - **FR-015**: A `SCHEDULE_TO_START` timeout that **does** carry a heartbeat

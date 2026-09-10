@@ -100,7 +100,7 @@ pre-first-token launch fault: the agent never started". Its handler is
 `AttemptRecord` at `factory/workgraph/workflow.py:2228` —
 `EpicWorkflow._run_node`, and ends the node once the count reaches
 `factory/workgraph/workflow.py:2233` — `EpicWorkflow._run_node`, reading
-`max_launch_retries` from `factory/verify/models.py:1213` —
+`max_launch_retries` from `factory/verify/models.py:1224` —
 `VerificationConfig`, whose default is 2. The two strings that need to stop being
 hardcoded are the terminal reason at `factory/workgraph/workflow.py:2235` —
 `EpicWorkflow._run_node` and the escalation summary at
@@ -407,7 +407,7 @@ seconds (`factory/supervision/units.py:604` — `_service_text`), but the operat
 sequence in both measured sightings is stop, land, restart. The recovery this
 story does get on the node path is the launch-retry path at
 `factory/workgraph/workflow.py:2233` — `EpicWorkflow._run_node`, bounded by
-`factory/verify/models.py:1213` — `VerificationConfig` at 2 by default, which is
+`factory/verify/models.py:1224` — `VerificationConfig` at 2 by default, which is
 why FR-004 routes the ending there rather than inventing a new one; the recovery
 path has no such ladder, which is what trap 16 is about.
 

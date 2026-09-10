@@ -193,7 +193,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `factory/workgraph/workflow.py:748` — `_LaunchFailed` carries, so
       `factory/workgraph/workflow.py:2222` — `EpicWorkflow._run_node` records
       launch evidence instead of an `AttemptRecord` and the node is bounded by
-      `factory/verify/models.py:1213` — `VerificationConfig`. A
+      `factory/verify/models.py:1224` — `VerificationConfig`. A
       `SCHEDULE_TO_START` that **did** carry a measurement falls through to
       today's `AdapterResult(termination=Termination.TIMEOUT)` with that figure
       (FR-015), and so does every other cause. A condition on
