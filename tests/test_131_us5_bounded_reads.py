@@ -4,12 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
+from temporalio.testing import WorkflowEnvironment
 
 from factory.activities import roadmap_activities as ra
+from factory.roadmap.models import LandedKind, LandedStatus, SpecState
+from factory.roadmap.workflow import _FAST, RoadmapStatus, RoadmapWorkflow
 from factory.worker import ACTIVITIES
+from tests.roadmap_script import _SCRIPT
+from tests.test_roadmap_scheduler import (
+    RoadmapWorld,
+    _ActivityRecordingInterceptor,
+    build_corpus,
+    run_roadmap,
+)
 
 
 BLOCK_S = 0.30
@@ -20,6 +31,36 @@ MIN_TICKS = 5
 def _activity_is_registered(activities: list[object], target: object) -> bool:
     """Return whether the worker's registration set names this activity."""
     return any(activity is target for activity in activities)
+
+
+@pytest.fixture
+async def temporal_env() -> Any:
+    """Give scheduler tests a server, and restore the shared script state."""
+    environment = await WorkflowEnvironment.start_time_skipping()
+    _SCRIPT.statuses = {}
+    _SCRIPT.on_dispatch = None
+    _SCRIPT.on_complete = None
+    _SCRIPT.hold = set()
+    try:
+        yield environment
+    finally:
+        await environment.shutdown()
+        _SCRIPT.statuses = {}
+        _SCRIPT.on_dispatch = None
+        _SCRIPT.on_complete = None
+        _SCRIPT.hold = set()
+
+
+def _activity_names_and_specs(calls: list[tuple[str, str | None]]) -> list[str]:
+    return [f"{name}:{spec_dir}" for name, spec_dir in calls]
+
+
+def _first_pass_calls(calls: list[tuple[str, str | None]]) -> list[tuple[str, str | None]]:
+    """Isolate the activities between the first and second corpus reads."""
+    read_indexes = [index for index, (name, _) in enumerate(calls) if name == "read_corpus_activity"]
+    if len(read_indexes) < 2:
+        return calls
+    return calls[read_indexes[0] : read_indexes[1]]
 
 
 @pytest.mark.asyncio
@@ -100,3 +141,127 @@ def test_registration_test_detects_a_missing_activity() -> None:
     """The registration control notices the exact one-line omission it guards."""
     faulted = [activity for activity in ACTIVITIES if activity is not ra.landed_for_spec]
     assert not _activity_is_registered(faulted, ra.landed_for_spec)
+
+
+async def _activity_calls(
+    temporal_env: WorkflowEnvironment,
+    specs_root: Path,
+    world: RoadmapWorld,
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, str | None]]:
+    calls: list[tuple[str, str | None]] = []
+    async with run_roadmap(
+        temporal_env,
+        world,
+        str(specs_root),
+        idle_rescan_s=1,
+        interceptors=[_ActivityRecordingInterceptor(calls)],
+    ) as handle:
+        await asyncio.sleep(0.05)
+        for _ in range(200):
+            read_count = sum(1 for name, _ in calls if name == "read_corpus_activity")
+            if read_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+        await handle.cancel()
+    monkeypatch.undo()
+    return calls
+
+
+def _make_unbounded_landed() -> Any:
+    """Fault injection: widen the landed read to every declared state."""
+    from temporalio import workflow
+
+    async def compute_landed(self: Any, request: Any) -> dict[str, LandedStatus | None]:
+        landed: dict[str, LandedStatus | None] = {}
+        for entry in self._roadmap.entries:
+            spec_text = await self._spec_text(request.specs_root, entry.spec_dir)
+            landed[entry.spec_dir] = await workflow.execute_activity(
+                ra.landed_for_spec,
+                ra.LandedInput(
+                    target_repo=request.target_repo,
+                    spec_dir=entry.spec_dir,
+                spec_text=spec_text,
+                ),
+                **_FAST,
+            )
+        return landed
+
+    return compute_landed
+
+
+@pytest.mark.asyncio
+async def test_roadmap_landed_read_is_bounded_to_ready_and_drift_to_landed(
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One pass reads each ready spec and drifts only a supplied landed answer."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-built": dict(state=SpecState.READY),
+            "002-unfinished": dict(state=SpecState.READY),
+            "003-draft": dict(state=SpecState.DRAFT),
+            "004-deferred": dict(state=SpecState.DEFERRED),
+            "005-landed": dict(state=SpecState.LANDED),
+        },
+    )
+
+    def landed(request: Any) -> LandedStatus | None:
+        if request.spec_dir == "001-built":
+            return LandedStatus(landed=True, kind=LandedKind.OBSERVED)
+        return None
+
+    calls = await _activity_calls(
+        temporal_env,
+        specs_root,
+        RoadmapWorld(landed_runner=landed),
+        monkeypatch,
+    )
+    first_pass = _first_pass_calls(calls)
+    landed_calls = [name for name in _activity_names_and_specs(first_pass) if name.startswith("landed_for_spec:")]
+    drift_calls = [name for name in _activity_names_and_specs(first_pass) if name.startswith("drift_for_spec:")]
+
+    assert landed_calls == [
+        "landed_for_spec:001-built",
+        "landed_for_spec:002-unfinished",
+    ]
+    assert drift_calls == [
+        "drift_for_spec:001-built",
+        "drift_for_spec:005-landed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cost_control_detects_an_unbounded_landed_read(
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same corpus fails the bound when the ready-only gate is removed."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-built": dict(state=SpecState.READY),
+            "002-unfinished": dict(state=SpecState.READY),
+            "003-draft": dict(state=SpecState.DRAFT),
+            "004-deferred": dict(state=SpecState.DEFERRED),
+            "005-landed": dict(state=SpecState.LANDED),
+        },
+    )
+    monkeypatch.setattr(RoadmapWorkflow, "_compute_landed", _make_unbounded_landed())
+    calls = await _activity_calls(
+        temporal_env,
+        specs_root,
+        RoadmapWorld(),
+        monkeypatch,
+    )
+    landed_calls = [
+        name
+        for name in _activity_names_and_specs(_first_pass_calls(calls))
+        if name.startswith("landed_for_spec:")
+    ]
+
+    assert len(landed_calls) == 5
