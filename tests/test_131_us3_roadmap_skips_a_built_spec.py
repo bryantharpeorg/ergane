@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from typing import AsyncIterator
 from typing import Any, AsyncIterator
 
 import pytest
 from temporalio.testing import WorkflowEnvironment
 
-from factory.activities import roadmap_activities
 from factory.roadmap.models import LandedKind, LandedStatus, SpecState
 from factory.roadmap.workflow import RoadmapStatus
 from tests.roadmap_script import _SCRIPT
@@ -45,6 +44,44 @@ def _built_landed(spec_dir: str):
         return None
 
     return resolve
+
+
+async def test_query_agrees_with_the_pass_about_a_built_spec(
+    env: WorkflowEnvironment,
+    tmp_path: Path,
+) -> None:
+    """US3-S2: the read-only query uses the pass's cached landed answer."""
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-built": dict(state=SpecState.READY)},
+    )
+    world = RoadmapWorld(
+        landed_runner=_built_landed("001-built"),
+        drift_runner=lambda request: False,
+    )
+
+    async with run_roadmap(
+        env,
+        world,
+        str(specs_root),
+        hold_specs={"epic-001-built"},
+    ) as handle:
+        queried: RoadmapStatus | None = None
+        for _ in range(100):
+            candidate = await handle.query(
+                "roadmap_status", result_type=RoadmapStatus
+            )
+            if candidate.specs:
+                queried = candidate
+                break
+            await asyncio.sleep(0.01)
+        assert queried is not None
+        built = next(spec for spec in queried.specs if spec.spec_dir == "001-built")
+
+    assert built.dispatchable is False
+    assert built.rendered_state == "built"
+    assert built.landed is True
+    assert built.landed_kind is LandedKind.OBSERVED
 
 
 async def test_built_ready_spec_never_reaches_clone_or_onboard(
