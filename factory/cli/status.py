@@ -103,8 +103,11 @@ from factory.verify.criteria import parse_spec
 from factory.verify.models import RequirementKind
 from factory.verify.store import attempt_timings, connect_readonly
 from factory.workgraph.cli import DEFAULT_SPECS_ROOT
+from factory.workgraph.delta import fingerprint_for
 from factory.workgraph.landed import (
     _resolve_default_head as _landing_head,
+    LandedFact,
+    fingerprint,
     landed_facts,
 )
 from factory.workgraph.workflow import _TERMINAL_STATES
@@ -291,8 +294,10 @@ async def collect_floor(specs_root: Path) -> FloorStatus:
     it before the client is opened means a Temporal failure cannot cost it.
     """
     roadmap = _read_corpus(specs_root)
-    basis, landed_for = _readiness_basis(roadmap, specs_root)
-    readiness = compute_readiness(roadmap, landed_for=landed_for)
+    basis, landed_for, drifted_for = _readiness_basis(roadmap, specs_root)
+    readiness = compute_readiness(
+        roadmap, landed_for=landed_for, drifted_for=drifted_for
+    )
     queue = _entries(readiness, SpecState.READY)
     drafts = _entries(readiness, SpecState.DRAFT)
 
@@ -380,13 +385,17 @@ def _entries(readiness: Any, state: SpecState) -> list[QueueEntry]:
 
 def _readiness_basis(
     roadmap: Roadmap, specs_root: Path
-) -> tuple[ReadinessBasis, Callable[[str], LandedStatus | None] | None]:
+) -> tuple[
+    ReadinessBasis,
+    Callable[[str], LandedStatus | None] | None,
+    Callable[[str], bool] | None,
+]:
     """Decide what "landed" is allowed to mean here, and say so.
 
-    Returns the sentence the queue header carries and the resolver
-    `compute_readiness` reads observed landings through — `None` when there is
-    no repository to read, which is the case that degrades to attestation and
-    therefore the case that must be labelled.
+    Returns the sentence the queue header carries and the resolvers
+    `compute_readiness` reads observed landings and drift through — both `None`
+    when there is no repository to read, which is the case that degrades to
+    attestation and therefore the case that must be labelled.
     """
     repo = _repo_holding(specs_root)
     if repo is None:
@@ -398,6 +407,7 @@ def _readiness_basis(
                     "so a landing nothing attests is invisible here"
                 ),
             ),
+            None,
             None,
         )
 
@@ -411,6 +421,7 @@ def _readiness_basis(
                 detail=f"attestation only — cannot read branch {branch}: {error}",
             ),
             None,
+            None,
         )
 
     return (
@@ -422,6 +433,7 @@ def _readiness_basis(
             ),
         ),
         _observed_landed_resolver(roadmap, specs_root, repo, branch),
+        _drifted_landed_resolver(roadmap, specs_root, repo, branch),
     )
 
 
@@ -465,6 +477,63 @@ def _observed_landed_resolver(
                 else _observed_landing(repo, branch, specs_root, spec_dir)
             )
         return cache[spec_dir]
+
+    return resolve
+
+
+def _drifted_landed_resolver(
+    roadmap: Roadmap, specs_root: Path, repo: Path, branch: str
+) -> Callable[[str], bool]:
+    """`compute_readiness`'s `drifted_for`, backed by the same landing facts.
+
+    US2 asks drift only for `ready` specs: it supplies the second half of their
+    built determination. A `landed` entry keeps today's status-command behavior
+    (no supplied drift read), and a story drifts when its pinned fingerprint and
+    the working-tree fingerprint differ. A story without a baseline cannot say
+    either way, so it is skipped; an unreadable repository is reported as not
+    drifted, the same conservative direction `_observed_landing` takes.
+    Reporting callers never fetch: staleness remains visible in the readiness
+    basis.
+    """
+    states = {entry.spec_dir: entry.state for entry in roadmap.entries}
+    facts_by_spec: dict[str, dict[str, LandedFact]] = {}
+
+    def resolve(spec_dir: str) -> bool:
+        if states.get(spec_dir) is not SpecState.READY:
+            return False
+        if spec_dir not in facts_by_spec:
+            try:
+                facts_by_spec[spec_dir] = landed_facts(
+                    repo,
+                    spec_dir,
+                    default_branch=branch,
+                    fetch=False,
+                )
+            except Exception:
+                facts_by_spec[spec_dir] = {}
+
+        declared = _declared_story_keys(specs_root / spec_dir / SPEC_NAME)
+        if not declared:
+            return False
+
+        for story_key in declared:
+            fact = facts_by_spec[spec_dir].get(story_key)
+            if fact is None:
+                continue
+            try:
+                pinned = fingerprint(repo, fact.commit, spec_dir, story_key)
+            except Exception:
+                continue
+            try:
+                spec_text = (specs_root / spec_dir / SPEC_NAME).read_text(
+                    encoding="utf-8"
+                )
+            except OSError:
+                continue
+            current = fingerprint_for(spec_text, story_key)
+            if pinned.digest is not None and current.digest != pinned.digest:
+                return True
+        return False
 
     return resolve
 
@@ -833,6 +902,8 @@ def _queue_lines(floor: FloorStatus) -> list[str]:
         base = f"{entry.spec_dir.ljust(width)}  {entry.state.ljust(state_width)}"
         if entry.blockers:
             lines.append(f"{base}  blocked by: {', '.join(entry.blockers)}{label}")
+        elif not entry.dispatchable:
+            lines.append(f"{base}  awaiting attestation")
         else:
             lines.append(f"{base}  dispatchable")
     return lines
