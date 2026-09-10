@@ -11,6 +11,7 @@ from temporalio.testing import WorkflowEnvironment
 
 from factory.roadmap.models import LandedKind, LandedStatus, SpecState
 from factory.roadmap.workflow import RoadmapStatus
+from factory.workgraph.models import WorkGraph
 from tests.roadmap_script import _SCRIPT
 from tests.test_roadmap_scheduler import (
     RoadmapWorld,
@@ -112,6 +113,39 @@ async def test_a_spec_with_outstanding_work_still_clones_onboards_and_dispatches
     real = next(spec for spec in status.specs if spec.spec_dir == "001-real")
     assert real.dispatchable is False
     assert real.landed is True
+
+
+async def test_empty_delta_for_another_reason_still_parks(
+    env: WorkflowEnvironment,
+    tmp_path: Path,
+) -> None:
+    """US3-S4: the zero-node refusal remains the other empty-delta backstop."""
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-empty": dict(state=SpecState.READY)},
+    )
+    graph = WorkGraph(
+        epic_id="001-empty",
+        feature="001-empty",
+        specs_root=str(specs_root),
+        target_repo="fixture-target",
+        nodes=[],
+    )
+    world = RoadmapWorld(derive_runner=lambda request: graph)
+    child_starts: list[str] = []
+
+    async with run_roadmap(
+        env,
+        world,
+        str(specs_root),
+        on_dispatch=child_starts.append,
+    ) as handle:
+        status = await handle.result()
+
+    parked = {finding.spec_dir: finding for finding in status.parked}
+    assert parked["001-empty"].check == "derive"
+    assert parked["001-empty"].detail == "delta is empty: all stories are satisfied"
+    assert child_starts == []
 
 
 async def test_built_ready_spec_never_reaches_clone_or_onboard(
