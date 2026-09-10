@@ -1,5 +1,7 @@
 ---
 state: ready
+fixes:
+  - workgraph/codex-relative-home-is-resolved-from-the-node-worktree
 ---
 
 # Feature Specification: Codex keeps its seeded home across the worktree boundary
