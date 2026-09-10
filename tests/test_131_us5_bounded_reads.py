@@ -413,3 +413,43 @@ async def test_amendment_control_detects_a_narrowed_drift_read(
             for name, account in activity_calls
         )
         await handle.cancel()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_control_detects_a_suppressed_drift_read(
+    temporal_env: WorkflowEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The positive dispatch control fails if drift is supplied without a read."""
+    specs_root = build_corpus(tmp_path, {"001-amended": dict(state=SpecState.READY)})
+    world = RoadmapWorld(
+        landed_runner=lambda _request: LandedStatus(
+            landed=True, kind=LandedKind.OBSERVED
+        ),
+        drift_runner=lambda _request: True,
+    )
+    activity_calls: list[tuple[str, str | None]] = []
+    child_starts: list[str] = []
+
+    def suppress_drift(self: Any, _request: Any) -> Any:
+        async def resolve(_spec_dir: str) -> bool:
+            return True
+
+        return resolve
+
+    monkeypatch.setattr(RoadmapWorkflow, "_drift_resolver", suppress_drift)
+    async with run_roadmap(
+        temporal_env,
+        world,
+        str(specs_root),
+        on_dispatch=child_starts.append,
+        interceptors=[_ActivityRecordingInterceptor(activity_calls)],
+    ) as handle:
+        await handle.result()
+
+    assert child_starts == ["001-amended"]
+    assert not any(
+        name == "drift_for_spec" and account == "001-amended"
+        for name, account in activity_calls
+    )
