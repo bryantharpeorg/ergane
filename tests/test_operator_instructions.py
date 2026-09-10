@@ -22,6 +22,7 @@ exactly the second policy channel this story exists to prevent.
 from __future__ import annotations
 
 import json
+import re
 import stat
 from pathlib import Path
 
@@ -313,3 +314,82 @@ def test_the_fixture_readme_names_all_six_records() -> None:
 def test_the_parser_actually_reads_the_records() -> None:
     with pytest.raises(AssertionError):
         _record("codex", "shape-that-was-never-recorded")
+
+
+_RECIPE_OPENINGS = re.compile(
+    r"^\s*(?:[-*]\s+)?(?:To\s+)?"
+    r"(run|execute|fetch|pull|merge|push|commit|dispatch|start|apply|answer|"
+    r"press|approve|install|restart|publish|land|revoke|mint|kill|mark|write|"
+    r"set|edit|update|move|create|add|remove|delete|answer it|re-read)\b",
+    re.IGNORECASE,
+)
+_ACTIONS = (
+    "fetch", "merge", "dispatch", "attest", "escalation", "findings",
+    "commit", "push", "service", "restart",
+)
+
+
+def _observation_sentences(section: str) -> list[str]:
+    body = "\n".join(line for line in section.splitlines() if not line.startswith("#"))
+    flat = re.sub(r"\s+", " ", body)
+    return [item.strip() for item in re.split(r"(?<=[.!?:])\s+", flat) if item.strip()]
+
+
+def _granted_actions(section: str) -> list[str]:
+    return [
+        sentence for sentence in _observation_sentences(section)
+        if _RECIPE_OPENINGS.match(sentence)
+    ]
+
+
+def test_the_observation_section_grants_no_action() -> None:
+    section = _observation_section()
+    assert section, "the observation section is empty — it moved or was renamed"
+    granted = _granted_actions(section)
+    assert not granted, (
+        "the observation section contains imperative recipes:\n"
+        + "\n".join(f"  {sentence}" for sentence in granted)
+    )
+
+
+def test_the_observation_section_names_the_forbidden_actions() -> None:
+    section = _observation_section().lower()
+    named = [action for action in _ACTIONS if action in section]
+    assert len(named) >= len(_ACTIONS) - 2
+
+
+def test_the_observation_section_requires_declared_intent_for_actions() -> None:
+    assert "declared intent" in _observation_section().lower()
+
+
+def test_the_observation_section_keeps_the_read_only_half() -> None:
+    section = _observation_section().lower()
+    assert "read-only" in section or "no mutation" in section or "does not" in section
+
+
+_GRANT_MUTATIONS = (
+    ("merge", "To land a story, merge the PR once the queue is green."),
+    ("fetch", "- Fetch origin first so the landed list is current."),
+    ("dispatch", "Run `ergane build start` to dispatch the epic."),
+    ("attest", "Mark the spec's frontmatter landed to attest it."),
+    ("escalation", "Answer the escalation by pressing the approve button."),
+    ("findings", "Apply the finding with `ergane findings apply`."),
+    ("commit", "Commit the result before reporting."),
+    ("push", "Push the branch so CI runs."),
+    ("service", "Restart the worker to pick up the change."),
+)
+
+
+@pytest.mark.parametrize(
+    "action,recipe", _GRANT_MUTATIONS, ids=[action for action, _ in _GRANT_MUTATIONS]
+)
+def test_a_granted_action_is_rejected(action: str, recipe: str) -> None:
+    assert _granted_actions(_observation_section() + "\n\n" + recipe), (
+        f"the {action} mutation was not detected — the imperative sweep is too narrow"
+    )
+
+
+def test_naming_an_action_without_recipe_passes() -> None:
+    shipped = _observation_section()
+    assert not _granted_actions(shipped)
+    assert "merge" in shipped.lower() or "merge" in TEXT.lower()
