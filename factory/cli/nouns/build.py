@@ -516,9 +516,7 @@ def render_status(
     lines.extend(_halt_after_pass_lines(document))
     for node_id, node in nodes.items():
         figure = live.get(node_id)
-        spend_token = (
-            f"  spend ${figure['spend_usd']:.2f}" if figure is not None else ""
-        )
+        live_token = _live_agent_token(figure)
         provenance = node.get("provenance")
         external_token = (
             f"  external completion: {provenance}" if provenance else ""
@@ -527,7 +525,7 @@ def render_status(
             f"{node_id.ljust(id_width)}  {str(node['state']).ljust(state_width)}  "
             f"attempt {node['attempt']}  {node['branch']}"
             f"{_routing_token(node)}{_base_token(node, landing_head)}"
-            f"{spend_token}{external_token}{_reason_token(node)}"
+            f"{live_token}{external_token}{_reason_token(node)}"
             f"{_housekeeping_token(node)}"
         )
         lines.extend(_attempt_note_lines(node))
@@ -825,6 +823,25 @@ def _routing_token(node: Mapping[str, Any]) -> str:
     if not persona:
         return ""
     return f"  persona {persona}  model {node.get('model_alias', '')}"
+
+
+def _live_agent_token(figure: Mapping[str, Any] | None) -> str:
+    """What the pending agent attempt is doing, and when spend was measured.
+
+    The state is the pending activity's, not the node's own state: the workflow
+    cannot see an activity's acceptance, so `describe()` is the only reading
+    that answers it. Spend stays optional; when it is present, the capture time
+    travels beside it so a value retained across a retry cannot read as fresh.
+    """
+    if figure is None:
+        return ""
+    token = f"  agent {figure['state']}"
+    if "spend_usd" in figure:
+        token += (
+            f"  spend ${figure['spend_usd']:.2f} "
+            f"captured {figure['captured_at']}"
+        )
+    return token
 
 
 # --- commands -----------------------------------------------------------------
