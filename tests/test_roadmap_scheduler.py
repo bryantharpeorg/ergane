@@ -128,6 +128,29 @@ class _RecordingInterceptor(Interceptor):
         return _Inbound
 
 
+class _ActivityRecordingInterceptor(Interceptor):
+    """Record the activity names a roadmap pass actually executed."""
+
+    def __init__(self, activity_names: list[str]) -> None:
+        self._activity_names = activity_names
+
+    def intercept_activity(self, next):
+        activity_names = self._activity_names
+
+        class _Inbound:
+            def __init__(self, next):
+                self.next = next
+
+            def init(self, outbound):
+                self.next.init(outbound)
+
+            async def execute_activity(self, input):
+                activity_names.append(getattr(input.fn, "__name__", str(input.fn)))
+                return await self.next.execute_activity(input)
+
+        return _Inbound(next)
+
+
 class _Outbound(WorkflowOutboundInterceptor):
     def __init__(self, next_outbound, records: list[ChildStartRecord]) -> None:
         super().__init__(next_outbound)
@@ -409,6 +432,7 @@ class RoadmapWorld:
         open_epics: Callable[[], set[str]] | None = None,
         derive_runner: Callable[..., Any] | None = None,
         drift_runner: Callable[..., bool] | None = None,
+        landed_runner: Callable[..., Any] | None = None,
         tree_revision: str | None = HARNESS_REVISION,
     ) -> None:
         self.clone_ok = clone_ok
@@ -428,6 +452,9 @@ class RoadmapWorld:
         # tests have no real clone, so default to no-drift unless a test scripts
         # a runner (US4-S5 exercises the real git-backed path directly).
         self.drift_runner = drift_runner or (lambda request: False)
+        # US3: the landed read is the roadmap's own read. Existing tests have no
+        # real clone, so the default supplies no answer and changes nothing.
+        self.landed_runner = landed_runner or (lambda request: None)
         # 156-US2: what the tree-revision activity answers — the revision the
         # tree the worker imports was loaded from. Defaulted to the harness
         # revision so an unconfigured world is the aligned case.
@@ -460,6 +487,7 @@ class RoadmapWorld:
             roadmap_activities._clone_runner,
             roadmap_activities._derive_runner,
             roadmap_activities._drift_runner,
+            getattr(roadmap_activities, "_landed_runner", None),
             roadmap_activities._preflight_registry,
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
@@ -473,6 +501,7 @@ class RoadmapWorld:
         if self.derive_runner is not None:
             roadmap_activities._derive_runner = self.derive_runner
         roadmap_activities._drift_runner = self.drift_runner
+        roadmap_activities._landed_runner = self.landed_runner
         roadmap_activities._tree_revision_runner = self._tree_revision
         roadmap_activities._preflight_registry = lambda: {}
         roadmap_activities._preflight_client = lambda proxy_url: None
@@ -500,6 +529,7 @@ class RoadmapWorld:
             roadmap_activities._clone_runner,
             roadmap_activities._derive_runner,
             roadmap_activities._drift_runner,
+            saved_landed_runner,
             roadmap_activities._preflight_registry,
             roadmap_activities._preflight_client,
             roadmap_activities._onboard,
@@ -509,6 +539,13 @@ class RoadmapWorld:
             saved_preflight_check,
             saved_tree_revision,
         ) = self._saved
+        if saved_landed_runner is not None:
+            roadmap_activities._landed_runner = saved_landed_runner
+        else:
+            try:
+                delattr(roadmap_activities, "_landed_runner")
+            except AttributeError:
+                pass
         if saved_tree_revision is not None:
             roadmap_activities._tree_revision_runner = saved_tree_revision
         else:
@@ -533,6 +570,7 @@ class RoadmapWorld:
         preflight_mod.check_aliases = saved_preflight_check
         roadmap_activities._derive_runner = None
         roadmap_activities._drift_runner = None
+        roadmap_activities._landed_runner = None
         # Re-arm the apply/restore pair: a cleared snapshot is what lets the
         # idempotence guard in `apply` distinguish "fresh world" from
         # "already applied".
@@ -618,6 +656,7 @@ async def run_roadmap(
     idle_rescan_s: int | None = None,
     on_dispatch: Callable[[str], None] | None = None,
     on_complete: Callable[[str], None] | None = None,
+    hold_specs: set[str] | None = None,
     child_starts: list[ChildStartRecord] | None = None,
     extra_workflows: list = (),
     interceptors: list[Interceptor] | None = None,
@@ -642,6 +681,7 @@ async def run_roadmap(
     _SCRIPT.statuses = dict(statuses or {})
     _SCRIPT.on_dispatch = on_dispatch
     _SCRIPT.on_complete = on_complete
+    _SCRIPT.hold = set(hold_specs or {})
     world.apply()
 
     from factory.activities.notify_activities import (
