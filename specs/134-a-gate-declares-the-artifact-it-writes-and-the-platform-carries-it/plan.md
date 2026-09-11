@@ -340,7 +340,7 @@ connection from `connect_readonly` (`factory/verify/store.py:401` —
 `connect_readonly`). US4's reader belongs beside them.
 
 **The judge's prompt already renders gate results, and there is one function that
-does it.** `_gate_blocks` (`factory/verify/judge.py:409` — `_gate_blocks`), landed
+does it.** `_gate_blocks` (`factory/verify/judge.py:430` — `_gate_blocks`), landed
 by 116, names each gate's fields explicitly — name, status, exit code, command,
 and a bounded tail for a gate that did not pass. It is the function an implementer
 "finishing the job" would add an artifact line to, and it is the one FR-011's
@@ -518,7 +518,7 @@ the bound, record present, record the true size, store nothing.
 
 **Trap 13 — DO NOT TOUCH THE JUDGE, AND THE FUNCTION YOU MUST NOT TOUCH HAS A
 NAME.** FR-011. The judge's prompt already renders gate results: `_gate_blocks`
-(`factory/verify/judge.py:409` — `_gate_blocks`), landed by 116, walks each
+(`factory/verify/judge.py:430` — `_gate_blocks`), landed by 116, walks each
 `GateResult` and writes out the fields it names. It is three lines of temptation
 away from listing an artifact, and admitting one is a change to what the judge may
 see, which constitution VIII and D-037 govern and which deserves its own decision

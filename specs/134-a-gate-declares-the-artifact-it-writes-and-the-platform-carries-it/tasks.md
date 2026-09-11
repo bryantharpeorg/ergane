@@ -287,7 +287,7 @@ without it touch a region an earlier task in the same phase is already editing.
       inside the worktree demotes an innocent gate.
 - [ ] T030 [P] [US3] (spec US3-S9, FR-011, plan trap 13) **The control.** Given an
       attempt with collected artifacts, assert the prompt `_gate_blocks`
-      (`factory/verify/judge.py:409` — `_gate_blocks`) assembles is byte-identical
+      (`factory/verify/judge.py:430` — `_gate_blocks`) assembles is byte-identical
       to the one it assembles for the same attempt with no artifacts declared.
       Assert against that function by name: it is where 116 put gate results into
       the prompt and where an implementer "finishing the job" would add a line, and
