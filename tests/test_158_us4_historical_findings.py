@@ -616,6 +616,71 @@ def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
     )
 
 
+def test_successful_rehearsal_hides_credential_shaped_fields(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    markers = (
+        "sk-test-observation",
+        "sk-test-source",
+        "sk-test-summary",
+        "sk-test-reference",
+        "sk-test-note",
+    )
+    batch = tmp_path / "batch.json"
+    batch.write_text(
+        f"""
+        {{
+          "source": "{markers[1]}",
+          "findings": [
+            {{
+              "key": "ops/historical",
+              "category": "ops",
+              "severity": "warning",
+              "summary": "{markers[2]}",
+              "refs": ["{markers[3]}"],
+              "notes": "{markers[4]}",
+              "observation_id": "{markers[0]}",
+              "observed_at": "{OBSERVED_AT}"
+            }}
+          ]
+        }}
+        """
+    )
+    rehearsal = tmp_path / "rehearsal.db"
+    parser = argparse.ArgumentParser()
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    add_findings_parser(verbs)
+    args = parser.parse_args(
+        [
+            "findings",
+            "ingest",
+            "--batch",
+            str(batch),
+            "--rehearsal-db",
+            str(rehearsal),
+        ]
+    )
+
+    assert args.run(args) == 0
+
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert output.out == f"{rehearsal}\n"
+    assert not any(marker in output.out for marker in markers)
+    assert not any(marker.encode() in rehearsal.read_bytes() for marker in markers)
+    with connect(rehearsal) as rehearsal_conn:
+        stored = get_finding(rehearsal_conn, "ops/historical")
+        events = list_events(rehearsal_conn, "ops/historical")
+    assert stored is not None
+    assert markers[2] not in stored.summary
+    assert all(markers[3] not in ref for ref in stored.refs)
+    assert markers[4] not in (stored.notes or "")
+    assert markers[1] not in stored.source
+    assert len(events) == 1
+    assert all(marker not in (events[0].observation_id or "") for marker in markers)
+
+
 def test_sanitized_historical_ids_stay_idempotent_and_distinct(
     store: sqlite3.Connection,
 ) -> None:
