@@ -26,7 +26,7 @@ bypass, or modify a real target repository during implementation.
 - [ ] [US3-S3] Add a failing no-guess empty-result test.
 - [ ] [US3-S4] Add a failing repeat-run transcript/status test for `ergane repo gate-paths`.
 - [ ] [US3] Add validated optional source roots at `factory/stack_packs.py:50` — `StackPack` and `factory/stack_packs.py:141` — `_pack_from_data`.
-- [ ] [US3] Implement client-neutral derivation from `factory/verify/models.py:291` — `FactoryConfig`, ordered gate tokens, existing roots, and origin metadata.
+- [ ] [US3] Implement client-neutral derivation from `factory/verify/models.py:314` — `FactoryConfig`, ordered gate tokens, existing roots, and origin metadata.
 - [ ] [US3] Add the deterministic read-only listing through `factory/cli/repo.py:105` — `add_repo_parser`.
 
 ## Phase 4: User Story 5 — One installed checker normalizes paths and decodes Claude events
@@ -53,10 +53,10 @@ bypass, or modify a real target repository during implementation.
 - [ ] [US4-S1] Add failing report-model tests for `installed`, `preserved collision`, `trust required`, and `verified active enforcement` per client.
 - [ ] [US4-S2] Add failing Claude wrapper-composition tests proving only the dedicated refusal blocks and an ordinary parser failure reports not enforced.
 - [ ] [US4-S3] Add a failing Codex binding test against the official hook event/response fixture, including redacted `permissionDecisionReason`, and exact definition digest.
-- [ ] [US4-S4] Add a failing invocation-boundary test proving init cannot grant trust, start clients, or invoke `--dangerously-bypass-hook-trust` or an equivalent.
+- [ ] [US4-S4] Add independent project-untrusted/definition-trusted and project-trusted/definition-untrusted controls proving init reports trust required and cannot grant either trust, start clients, or invoke `--dangerously-bypass-hook-trust` or an equivalent.
 - [ ] [US4-S5] Add failing evidence parser tests for client versions, trusted definition hash, one allow, one refusal, target classification, and redaction for both clients.
 - [ ] [US4-S6] Add failing negative capability rows for shell, MCP, unsupported tools, disabled hooks, and untrusted definitions.
-- [ ] [US4-S7] Add failing transitions that invalidate verified enforcement after client-version, hook-byte/hash, trust, or enabled-state drift.
+- [ ] [US4-S7] Add failing transitions that independently invalidate verified enforcement after client-version, hook-byte/hash, project-layer trust, hook-definition trust, or enabled-state drift.
 - [ ] [US4] Install the two bindings collision-safely, translate the typed result into each official response, and report trust without changing it.
 - [ ] [US4] After separate operator authorization, qualify fresh supported clients only in disposable repositories and commit the minimal redacted evidence.
 

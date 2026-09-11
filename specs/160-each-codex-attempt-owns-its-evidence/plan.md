@@ -6,9 +6,9 @@
 - `factory/workgraph/adapter.py:2066` — `CodexAdapter._turn_happened` accepts any rollout found by `factory/workgraph/adapter.py:2143` — `_codex_rollouts`.
 - `factory/workgraph/adapter.py:1165` — `SharedAttemptPolicy` owns launch, monitoring, archival, and neutral result construction; keep per-CLI decoding behind this seam.
 - `factory/workgraph/adapter.py:300` — `AgentInvocation`, `factory/workgraph/adapter.py:357` — `HostAgentBackend`, and `factory/workgraph/adapter.py:388` — `BwrapBackend` currently expose one combined `log` and route stderr into stdout; Codex JSONL cannot use that contract unchanged.
-- `factory/activities/agent_activities.py:586` — `_classify_auth_failure` scans combined output substrings and reconstructs the result at line 617.
+- `factory/activities/agent_activities.py:598` — `_classify_auth_failure` scans combined output substrings and reconstructs the result at line 629.
 - `factory/workgraph/models.py` defines `AdapterResult`, the compatibility boundary for workflow consumers.
-- `factory/activities/usage_activities.py:536` — `_record_for` currently writes subscription unknowns honestly.
+- `factory/activities/usage_activities.py:581` — `_record_for` currently writes subscription unknowns honestly.
 - Official source: https://learn.chatgpt.com/docs/non-interactive-mode . With `--json`, stdout is JSONL; documented events include thread/turn/item/error types, item subtypes, and turn usage. Plain mode reserves stdout for the final message.
 
 ### Measured CLI contract, not an invented error schema
