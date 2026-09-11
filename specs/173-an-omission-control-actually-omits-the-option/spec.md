@@ -1,5 +1,13 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 94406402cb33 (#514) on attempt 1 — observed
+# on ergane-buildout by content. The node itself is recorded KILLED: PR 514's
+# first merge-group run was cancelled at 11:32:58Z and not requeued until
+# 12:34:28Z, and that 62-minute gap exhausted the 7200s stall window at
+# 12:36:15Z with failing_checks=[]. The requeued run then passed and the forge
+# merged the PR at 13:03:28Z, 27 minutes after the kill. The store's verdict
+# and the branch disagree, and the branch is the fact. Occurrence 3 of the
+# landing finding a-cancelled-required-check-is-not-a-failing-check-...-and-dies.
 depends_on_landed:
   - 170-the-historical-ingest-default-is-a-real-path
 fixes:

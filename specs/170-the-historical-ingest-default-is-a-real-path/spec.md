@@ -1,5 +1,7 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 0dcb761ca6d3 (#508) on attempt 2 — observed
+# on ergane-buildout by content.
 fixes:
   - findings-ingest/default-analysis-rehearsal-path-crashes
   - findings-ingest/historical-observation-identity-bypasses-sanitization
