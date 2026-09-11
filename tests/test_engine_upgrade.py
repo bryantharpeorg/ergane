@@ -12,14 +12,18 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 import pytest
+import yaml
 
+import factory.supervision.container_manifest as manifest_module
 import factory.supervision.engine_upgrade as upgrade_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
+from factory.controlplane.config import ControlPlaneConfig
 from factory.controlplane.verify import render_findings
 from factory.mergequeue.models import Finding
 from factory.supervision.engine_upgrade import COMPOSE_NAME
@@ -32,7 +36,13 @@ from factory.supervision.engine_identity import (
     read_identity,
     write_identity,
 )
-from factory.supervision.units import CommandResult, supervision_home
+from factory.registry import Registry, RegistryEntry
+from factory.supervision.units import (
+    MANIFEST_NAME,
+    CommandResult,
+    _digest,
+    supervision_home,
+)
 from factory.versioning import OpenEpic
 
 
@@ -108,9 +118,29 @@ def _project_dir(state_home: Path) -> Path:
 
 
 def _make_project(state_home: Path) -> Path:
-    directory = _project_dir(state_home)
+    """A minimal generated project, with the ownership manifest the writer
+    keeps — enough for every upgrade flow to run against real files."""
+    return _make_owned_project(_project_dir(state_home))
+
+
+def _make_owned_project(directory: Path, *, version: str = "0.3.0") -> Path:
     directory.mkdir(parents=True, exist_ok=True)
-    (directory / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    files = {
+        "compose.yaml": (
+            "services:\n"
+            "  ergane:\n"
+            f"    image: {image_reference(version)}\n"
+            "    init: true\n"
+        ),
+        ".env": f"ERGANE_VERSION={version}\n",
+        "seccomp-ergane.json": "{}\n",
+        "ergane-engine.profile": "profile\n",
+    }
+    for name, text in files.items():
+        (directory / name).write_text(text, encoding="utf-8")
+    manifest_module._write_manifest(
+        directory, {name: _digest(text) for name, text in files.items()}
+    )
     return directory
 
 
@@ -292,6 +322,7 @@ def test_upgrade_reads_old_identity_before_stop(
     assert lifecycle_calls[0][1][0] == str(identity_path(state))
     assert seam.removed == [older]
     assert report.notes == (
+        f"retargeted .env, compose.yaml to {image_reference(target_version)}",
         f"keeping target image {image_reference(target_version)}",
         f"keeping previous image {image_reference(old_version)}",
         f"removing 1 older image(s): {older}",
@@ -406,9 +437,7 @@ def test_default_runner_routes_inventory_through_retention_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T004 / US1-S3 / FR-003: captured subprocess calls stay explicit and narrow."""
-    project = tmp_path / "container"
-    project.mkdir()
-    (project / COMPOSE_NAME).write_text("services: {}\n", encoding="utf-8")
+    project = _make_owned_project(tmp_path / "container")
     state = tmp_path / "state"
     _write_identity(state, "0.3.0")
     monkeypatch.setenv("ERGANE_COMPOSE_PROJECT", str(project))
@@ -721,9 +750,7 @@ def test_upgrade_compose_project_override_wins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """T038 / US4-S3 / FR-023: ERGANE_COMPOSE_PROJECT overrides the derived directory."""
-    override = Path(isolated_state_home) / "override-project"
-    override.mkdir(parents=True, exist_ok=True)
-    (override / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    override = _make_owned_project(Path(isolated_state_home) / "override-project")
     monkeypatch.setenv("ERGANE_COMPOSE_PROJECT", str(override))
 
     monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
@@ -753,3 +780,467 @@ def test_upgrade_refusal_does_not_tell_operator_to_set_variable(
 
     message = str(raised.value)
     assert "ERGANE_COMPOSE_PROJECT" not in message
+
+
+# ---------------------------------------------------------------------------
+# US2: the owned project persists and launches the requested image
+#
+# The project under test is generated and persisted through the real
+# `resolve_project`/`write_project` boundaries below temporary roots, and the
+# upgrade runs through the real default runner with every docker child
+# captured (FR-009).  No test contacts a daemon.
+# ---------------------------------------------------------------------------
+
+
+def _controlplane_config(address: str = "127.0.0.1:7233") -> ControlPlaneConfig:
+    """A confirmed control-plane config, as the parser would leave it."""
+    return ControlPlaneConfig(
+        version=1,
+        llm=ControlPlaneConfig.LLM(
+            mode="gateway",
+            gateway=ControlPlaneConfig.LLMGateway(
+                base_url="http://127.0.0.1:4000",
+                master_key_env="ERGANE_LLM_MASTER_KEY",
+            ),
+        ),
+        memory=ControlPlaneConfig.Memory(backend="none"),
+        temporal=ControlPlaneConfig.Temporal(
+            mode="external", address=address, namespace="ergane"
+        ),
+        telemetry=ControlPlaneConfig.Telemetry(mode="none"),
+        escalation=ControlPlaneConfig.Escalation(adapter="telegram"),
+    )
+
+
+def _generate_project(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    version: str = "0.3.0",
+    address: str = "127.0.0.1:7233",
+    repos: tuple[Path, ...] = (),
+    confinement: str = "profile",
+    user: tuple[int, int] | None = None,
+) -> Path:
+    """Generate and persist a real owned project at `version` (US2-S1)."""
+    import factory.supervision.container_project as project_module
+    from factory.supervision.container_manifest import write_project
+
+    monkeypatch.setattr(project_module, "_engine_image_version", lambda: version)
+    if user is not None:
+        monkeypatch.setattr(project_module.os, "getuid", lambda: user[0])
+        monkeypatch.setattr(project_module.os, "getgid", lambda: user[1])
+    monkeypatch.delenv("ERGANE_COMPOSE_PROJECT", raising=False)
+
+    home = tmp_path / "home"
+    config_dir = home / ".config" / "ergane"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    for repo in repos:
+        repo.mkdir(parents=True, exist_ok=True)
+    registry = Registry(
+        path=tmp_path / "repos.json",
+        entries=tuple(
+            RegistryEntry(slug=f"repo-{index}", path=path, manifest=path / "ergane.yaml")
+            for index, path in enumerate(repos)
+        ),
+    )
+    project = project_module.resolve_project(
+        _controlplane_config(address),
+        registry=registry,
+        config_path=config_dir / "config.toml",
+        personas_path=config_dir / "personas.yaml",
+        home=home,
+        install_root=tmp_path / "install",
+        image_source=project_module.IMAGE_SOURCE_REGISTRY,
+        confinement=confinement,
+    )
+    assert write_project(project).kept == ()
+    return project.directory
+
+
+def _capture_docker_children(
+    monkeypatch: pytest.MonkeyPatch, *, inventory: list[str] | None = None
+) -> list[tuple[tuple[str, ...], dict[str, Any]]]:
+    """Capture every docker child the default runner would spawn."""
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((tuple(argv), kwargs))
+        if argv[:2] == ["docker", "images"]:
+            return subprocess.CompletedProcess(
+                argv, 0, "\n".join(inventory or []), ""
+            )
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(upgrade_module.subprocess, "run", run)
+    return calls
+
+
+def _green_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    finding = Finding(check="engine", passed=True, detail="engine verified")
+    monkeypatch.setattr(
+        upgrade_module, "verify_controlplane", lambda: ([finding], EXIT_OK)
+    )
+
+
+def _compose_child(
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]], verb: str
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """The one captured `docker compose … <verb>` child."""
+    return next(
+        (argv, kwargs)
+        for argv, kwargs in calls
+        if argv[1] == "compose" and verb in argv
+    )
+
+
+def test_upgrade_persists_cli_matched_image_and_version(
+    isolated_state_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T006 / US2-S1 / FR-005: the persisted service image and version
+    assignment match the CLI-matched published image request."""
+    state = isolated_state_home
+    directory = _generate_project(tmp_path, monkeypatch, version="0.3.0")
+    _write_identity(state, "0.3.0")
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+    _green_engine(monkeypatch)
+    _capture_docker_children(monkeypatch)
+
+    report = upgrade_module.upgrade(open_epics=lambda: (), _state_home=state)
+
+    assert report.degraded is False
+    assert any("retargeted" in note for note in report.notes)
+    saved = yaml.safe_load(
+        (directory / COMPOSE_NAME).read_text(encoding="utf-8")
+    )
+    assert saved["services"]["ergane"]["image"] == image_reference("0.4.0")
+    env_text = (directory / ".env").read_text(encoding="utf-8")
+    assert "ERGANE_VERSION=0.4.0" in env_text.splitlines()
+    recorded = json.loads(
+        (directory / MANIFEST_NAME).read_text(encoding="utf-8")
+    )["files"]
+    assert recorded[COMPOSE_NAME] == _digest(
+        (directory / COMPOSE_NAME).read_text(encoding="utf-8")
+    )
+    assert recorded[".env"] == _digest(env_text)
+    assert sorted(path.name for path in directory.iterdir()) == sorted(
+        [COMPOSE_NAME, ".env", "seccomp-ergane.json", "ergane-engine.profile", MANIFEST_NAME]
+    )
+
+
+def test_compose_child_receives_requested_version_environment(
+    isolated_state_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T006 / US2-S1 / FR-005: the real Compose child is started with the
+    requested version in its actual subprocess environment."""
+    state = isolated_state_home
+    directory = _generate_project(tmp_path, monkeypatch, version="0.3.0")
+    _write_identity(state, "0.3.0")
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+    _green_engine(monkeypatch)
+    calls = _capture_docker_children(
+        monkeypatch,
+        inventory=[
+            image_reference("0.4.0"),
+            image_reference("0.3.0"),
+            image_reference("0.2.0"),
+        ],
+    )
+
+    upgrade_module.upgrade(open_epics=lambda: (), _state_home=state)
+
+    up_argv, up_kwargs = _compose_child(calls, "up")
+    assert up_argv[:2] == ("docker", "compose")
+    assert up_argv[up_argv.index("-f") + 1] == str(directory / COMPOSE_NAME)
+    assert up_argv[-3:] == ("up", "-d", "--no-build")
+    assert up_kwargs["cwd"] == str(directory)
+    assert up_kwargs["env"]["ERGANE_VERSION"] == "0.4.0"
+
+
+def test_upgrade_preserves_unrelated_fields_and_updates_ownership_digests(
+    isolated_state_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T007 / US2-S2 / FR-006: retargeting rewrites only the owned image and
+    version declarations; user, ports, mounts, confinement and unrelated
+    environment survive byte-for-byte, and no secret is written."""
+    repo = tmp_path / "repos" / "alpha"
+    directory = _generate_project(
+        tmp_path,
+        monkeypatch,
+        version="0.3.0",
+        address="127.0.0.1:9055",
+        repos=(repo,),
+        confinement="unconfined",
+        user=(1111, 2222),
+    )
+    compose_path = directory / COMPOSE_NAME
+    env_path = directory / ".env"
+    before_compose = compose_path.read_text(encoding="utf-8")
+    before_env = env_path.read_text(encoding="utf-8")
+    before_digests = dict(
+        manifest_module.installed_project_at(directory).digests
+    )
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+    _green_engine(monkeypatch)
+    _capture_docker_children(monkeypatch)
+
+    upgrade_module.upgrade(open_epics=lambda: (), _state_home=isolated_state_home)
+
+    after_compose = compose_path.read_text(encoding="utf-8")
+    after_env = env_path.read_text(encoding="utf-8")
+    _assert_only_line_changed(
+        before_compose,
+        after_compose,
+        prefix="    image:",
+        replacement=f"    image: {image_reference('0.4.0')}",
+    )
+    _assert_only_line_changed(
+        before_env,
+        after_env,
+        prefix="ERGANE_VERSION=",
+        replacement="ERGANE_VERSION=0.4.0",
+    )
+    # Operator-owned settings survive byte-for-byte.
+    assert 'user: "1111:2222"' in after_compose
+    assert '      - "127.0.0.1:9055:7233"' in after_compose
+    assert "apparmor=unconfined" in after_compose
+    assert f"      - {repo}:{repo}" in after_compose
+    assert "TEMPORAL_NAMESPACE=ergane" in after_env
+    # Retargeting writes no secret.
+    assert not any(
+        re.search(r"(KEY|TOKEN|SECRET|PASSWORD)=", line)
+        for line in after_env.splitlines()
+    )
+    # Ownership digests: the retargeted files are re-recognized, the untouched
+    # generated files are carried.
+    installed = manifest_module.installed_project_at(directory)
+    assert installed.claims(COMPOSE_NAME) and installed.claims(".env")
+    assert installed.digests[COMPOSE_NAME] == _digest(after_compose)
+    assert installed.digests[".env"] == _digest(after_env)
+    assert (
+        installed.digests["seccomp-ergane.json"]
+        == before_digests["seccomp-ergane.json"]
+    )
+    assert (
+        installed.digests["ergane-engine.profile"]
+        == before_digests["ergane-engine.profile"]
+    )
+
+
+def _assert_only_line_changed(
+    before: str, after: str, *, prefix: str, replacement: str
+) -> None:
+    before_lines = before.splitlines()
+    after_lines = after.splitlines()
+    assert len(before_lines) == len(after_lines)
+    differing = [
+        index
+        for index, (one, other) in enumerate(zip(before_lines, after_lines))
+        if one != other
+    ]
+    assert len(differing) == 1
+    assert before_lines[differing[0]].startswith(prefix)
+    assert after_lines[differing[0]] == replacement
+
+
+_EXPECTED_OWNERSHIP_REFUSAL = {
+    "changed": "changed since ergane wrote it",
+    "unclaimed": "was not written by ergane",
+    "missing": "is recorded as generated but is missing",
+    "unsupported-compose": "unsupported",
+    "unsupported-env": "unsupported",
+    "manifest-absent": "not a readable ownership manifest",
+}
+
+
+def _mutate_project_artifact(directory: Path, mutation: str) -> Path:
+    """Make one project artifact changed/unclaimed/missing/unsupported."""
+    compose_path = directory / COMPOSE_NAME
+    env_path = directory / ".env"
+    manifest_path = directory / MANIFEST_NAME
+    recorded = dict(
+        manifest_module.installed_project_at(directory).digests
+    )
+    if mutation == "changed":
+        compose_path.write_text(
+            compose_path.read_text(encoding="utf-8") + "# operator edit\n",
+            encoding="utf-8",
+        )
+        return compose_path
+    if mutation == "unclaimed":
+        del recorded[COMPOSE_NAME]
+        manifest_module._write_manifest(directory, recorded)
+        return compose_path
+    if mutation == "missing":
+        (directory / "seccomp-ergane.json").unlink()
+        return directory / "seccomp-ergane.json"
+    if mutation == "unsupported-compose":
+        compose_path.write_text("services: {}\n", encoding="utf-8")
+        recorded[COMPOSE_NAME] = _digest("services: {}\n")
+        manifest_module._write_manifest(directory, recorded)
+        return compose_path
+    if mutation == "unsupported-env":
+        text = "".join(
+            line + "\n"
+            for line in env_path.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("ERGANE_VERSION=")
+        )
+        env_path.write_text(text, encoding="utf-8")
+        recorded[".env"] = _digest(text)
+        manifest_module._write_manifest(directory, recorded)
+        return env_path
+    if mutation == "manifest-absent":
+        manifest_path.unlink()
+        return manifest_path
+    raise AssertionError(f"unknown mutation {mutation!r}")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "changed",
+        "unclaimed",
+        "missing",
+        "unsupported-compose",
+        "unsupported-env",
+        "manifest-absent",
+    ],
+)
+def test_upgrade_refuses_artifact_problems_before_stop_or_write(
+    isolated_state_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    """T008 / US2-S3 / FR-007: changed, unclaimed, missing and unsupported
+    artifacts refuse by path before stop or write, every byte is preserved,
+    and `--force` does not adopt operator edits."""
+    state = isolated_state_home
+    directory = _generate_project(tmp_path, monkeypatch, version="0.3.0")
+    affected = _mutate_project_artifact(directory, mutation)
+    before = {path.name: path.read_bytes() for path in sorted(directory.iterdir())}
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+    open_epic = OpenEpic(epic_id="174-test/us2", behavior=0, build_id=None)
+
+    for forced, epics in ((False, ()), (True, (open_epic,))):
+        seam = _FakeDockerSeam()
+        with pytest.raises(OperatorError) as raised:
+            upgrade_module.upgrade(
+                open_epics=lambda: epics,
+                docker=seam,
+                force=forced,
+                _state_home=state,
+            )
+        message = str(raised.value)
+        assert str(affected) in message
+        assert _EXPECTED_OWNERSHIP_REFUSAL[mutation] in message
+        # Every byte preserved, and no lifecycle call authorized the stop.
+        assert {
+            path.name: path.read_bytes() for path in sorted(directory.iterdir())
+        } == before
+        assert seam.calls == []
+
+
+def test_upgrade_persistence_failure_restores_previous_project(
+    isolated_state_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T009 / US2-S4 / FR-008: a persistence failure after validation commits
+    nothing, restores the prior bytes, and authorizes no lifecycle call; a
+    later invocation proceeds on the restored prior project."""
+    state = isolated_state_home
+    directory = _generate_project(tmp_path, monkeypatch, version="0.3.0")
+    before = {path.name: path.read_bytes() for path in sorted(directory.iterdir())}
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+
+    real_replace = Path.replace
+    renames = {"count": 0}
+
+    def replace(self: Path, target: Path) -> Path:
+        renames["count"] += 1
+        if renames["count"] == 2:
+            raise OSError("synthetic mid-transaction failure")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", replace)
+
+    seam = _FakeDockerSeam()
+    with pytest.raises(OperatorError) as raised:
+        upgrade_module.upgrade(
+            open_epics=lambda: (), docker=seam, _state_home=state
+        )
+
+    message = str(raised.value)
+    assert "could not commit" in message
+    assert str(directory / ".env") in message
+    assert {path.name: path.read_bytes() for path in sorted(directory.iterdir())} == before
+    assert seam.calls == []
+
+    # No half-retargeted project is observable: the manifest still owns the
+    # restored bytes exactly.
+    installed = manifest_module.installed_project_at(directory)
+    for name in (COMPOSE_NAME, ".env"):
+        assert installed.digests[name] == _digest(
+            (directory / name).read_text(encoding="utf-8")
+        )
+
+    # The restored prior project is usable: a subsequent invocation proceeds.
+    monkeypatch.setattr(Path, "replace", real_replace)
+    _green_engine(monkeypatch)
+    _capture_docker_children(monkeypatch)
+    report = upgrade_module.upgrade(open_epics=lambda: (), _state_home=state)
+
+    assert report.degraded is False
+    assert yaml.safe_load(
+        (directory / COMPOSE_NAME).read_text(encoding="utf-8")
+    )["services"]["ergane"]["image"] == image_reference("0.4.0")
+
+
+def test_upgrade_rereads_saved_selection_on_next_invocation(
+    isolated_state_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T011 / US2-S1 / FR-005 / FR-006: a later invocation selects the saved
+    image and version, rewriting nothing, and re-proves both actual-boundary
+    regressions."""
+    state = isolated_state_home
+    directory = _generate_project(tmp_path, monkeypatch, version="0.3.0")
+    _write_identity(state, "0.3.0")
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+    _green_engine(monkeypatch)
+    _capture_docker_children(monkeypatch)
+
+    upgrade_module.upgrade(open_epics=lambda: (), _state_home=state)
+
+    saved_compose = (directory / COMPOSE_NAME).read_text(encoding="utf-8")
+    saved_env = (directory / ".env").read_text(encoding="utf-8")
+    saved_manifest = (directory / MANIFEST_NAME).read_bytes()
+
+    calls = _capture_docker_children(
+        monkeypatch,
+        inventory=[image_reference("0.4.0"), image_reference("0.3.0")],
+    )
+    report = upgrade_module.upgrade(open_epics=lambda: (), _state_home=state)
+
+    # The saved selection already matches the request: nothing is rewritten.
+    assert (directory / COMPOSE_NAME).read_text(encoding="utf-8") == saved_compose
+    assert (directory / ".env").read_text(encoding="utf-8") == saved_env
+    assert (directory / MANIFEST_NAME).read_bytes() == saved_manifest
+    assert yaml.safe_load(saved_compose)["services"]["ergane"][
+        "image"
+    ] == image_reference("0.4.0")
+    assert any("already selects" in note for note in report.notes)
+
+    # Both actual-boundary regressions re-run green.
+    up_argv, up_kwargs = _compose_child(calls, "up")
+    assert up_argv[up_argv.index("-f") + 1] == str(directory / COMPOSE_NAME)
+    assert up_kwargs["env"]["ERGANE_VERSION"] == "0.4.0"
+
