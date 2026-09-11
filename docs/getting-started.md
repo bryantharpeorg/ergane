@@ -280,6 +280,12 @@ them to anything written down, including this page.
 | What did the work cost | `ergane usage --by epic` |
 | Is anything waiting on me | `ergane escalations list` |
 | Is the installation healthy | `ergane doctor` |
+| What operator skill files are present | `ergane skills status` |
+
+`ergane skills status` reads the packaged resources, destination files and
+ownership manifest. Its filesystem report does not establish that a fresh
+Codex or Claude session loaded those skills. Skill installation and teardown
+are separate changes to the operator's home.
 
 `ergane spec landed <spec-dir>` scans the default branch unless told otherwise,
 and a factory does not necessarily land there — pass `--default-branch` whenever
@@ -287,8 +293,18 @@ the answer matters.
 
 ## Leaving
 
-Ergane has an inverse for the two things it registers, and you should know which
-two before you start.
+Choose the scope of removal before changing the host. Preview the full-host
+teardown with:
+
+```bash
+ergane uninstall --check
+```
+
+This read-only command reports the proposed steps without stopping services,
+forgetting repositories or removing files. Review the
+[uninstall reference](cli/uninstall.md), including evidence export and retained
+configuration, before requesting the actual teardown. A preview is not a
+verification that the removal preserves every filesystem layout.
 
 To remove a repository from the engine without touching its files:
 
@@ -302,9 +318,10 @@ To remove the worker units, exactly as `ergane worker install` wrote them:
 ergane worker uninstall
 ```
 
-Two things have no inverse verb today, and come off by hand: the control-plane
-config the interview wrote under your XDG config directory, and the manifest,
-gitignore entry and runtime directory `ergane init` wrote into your repository.
+Full-host uninstall also keeps the control-plane config and its secrets under
+your XDG config directory, even with `--purge`. The manifest, gitignore entry
+and runtime directory `ergane init` wrote into your repository remain repository
+files. Removing either set is a separate, deliberate action.
 Removing the package itself is your package manager's job — `uv tool uninstall
 ergane-cli`.
 
