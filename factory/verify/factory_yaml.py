@@ -52,13 +52,15 @@ import json
 import re
 import sys
 import warnings
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 import yaml
 
 from factory.verify.diffbounds import DIFF_INPUT_LIMIT, DIFF_REFUSAL_THRESHOLD
 from factory.verify.models import (
+    ArtifactDeclaration,
+    ArtifactType,
     CacheDeclaration,
     FactoryConfig,
     GateResult,
@@ -121,6 +123,8 @@ _TOP_LEVEL_KEYS = (
     "diff_refusal_bytes",
 )
 
+_ARTIFACT_KEYS = ("gate", "path", "type")
+
 #: The keys one `caches:` entry may declare (101 FR-004).
 _CACHE_KEYS = ("path", "env")
 
@@ -141,7 +145,12 @@ _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 #: had no reader for. The tuple is also what `ergane init` carries forward
 #: (`factory/cli/init.py`'s `_KNOWN_KEYS` is this same object), so a key here is
 #: carried-not-interviewed by construction and needs no prompt of its own.
-_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify", "boundary_only_gates")
+_V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + (
+    "ladder",
+    "verify",
+    "boundary_only_gates",
+    "artifacts",
+)
 
 #: The keys a `roadmap:` block may declare, and the dial each one sets.
 _ROADMAP_KEYS = ("cadence_s", "max_concurrent_epics", "max_concurrent_nodes")
@@ -234,6 +243,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
     verify_order = _read_verify(document, source)
     diff_refusal_bytes = _read_diff_refusal_bytes(document, source)
     caches = _read_caches(document, source)
+    artifacts = _read_artifacts(document, gates, source)
 
     return FactoryConfig(
         version=version,
@@ -250,6 +260,7 @@ def parse_factory_config(text: str, *, source: str = MANIFEST_NAME) -> FactoryCo
         verify_order=verify_order,
         diff_refusal_bytes=diff_refusal_bytes,
         caches=caches,
+        artifacts=artifacts,
     )
 
 
@@ -876,6 +887,140 @@ def _read_caches(
         entries.append(
             CacheDeclaration(
                 path=str(resolved), env=env if isinstance(env, str) else None
+            )
+        )
+
+    return tuple(entries)
+
+
+def _read_artifacts(
+    document: Mapping[Any, Any],
+    gates: Mapping[str, str],
+    source: str,
+) -> tuple[ArtifactDeclaration, ...]:
+    """Read the artifacts gates declare themselves as writing (134 FR-001).
+
+    The reader is pure: artifact containment is a lexical property of the
+    repository-root-relative spelling, not a fact about symlinks on the host
+    that happens to read the manifest. Normalising here also matches `git
+    diff-tree --name-only`, the only consumer that compares the carried path
+    by string equality.
+    """
+    if "artifacts" not in document:
+        return ()
+
+    declared = document["artifacts"]
+    if not isinstance(declared, list) or not declared:
+        raise FactoryConfigError(
+            "artifacts",
+            f"declares `artifacts: {declared!r}`; when declared it must be a "
+            "non-empty list of entries, each naming a `gate`, `path` and `type`, "
+            "e.g. `artifacts: [{gate: test, path: coverage.xml, type: coverage}]`",
+            source=source,
+        )
+
+    entries: list[ArtifactDeclaration] = []
+    for entry in declared:
+        if not isinstance(entry, Mapping):
+            raise FactoryConfigError(
+                "artifacts",
+                f"declares the artifact entry {entry!r}; each entry must be a "
+                f"mapping drawn from {_names(_ARTIFACT_KEYS)}",
+                source=source,
+            )
+        unknown = [key for key in entry if key not in _ARTIFACT_KEYS]
+        if unknown:
+            raise FactoryConfigError(
+                "artifacts",
+                f"declares {_names(unknown)} on the artifact entry {entry!r}; "
+                f"the keys are {_names(_ARTIFACT_KEYS)}",
+                source=source,
+            )
+
+        for field_name in _ARTIFACT_KEYS:
+            if field_name not in entry:
+                raise FactoryConfigError(
+                    "artifacts",
+                    f"declares the artifact entry {entry!r} without "
+                    f"`{field_name}`; every artifact names a `gate`, a `path` "
+                    "and a `type`",
+                    source=source,
+                )
+
+        gate = entry["gate"]
+        path = entry["path"]
+        artifact_type = entry["type"]
+        if not isinstance(gate, str) or not gate.strip():
+            raise FactoryConfigError(
+                "artifacts",
+                f"gives the artifact entry {entry!r} the gate {gate!r}; it must "
+                f"name a gate drawn from {_names(gates)}",
+                source=source,
+            )
+        if gate not in gates:
+            raise FactoryConfigError(
+                "artifacts",
+                f"declares an artifact for {gate!r}, which this manifest does "
+                f"not declare as a gate; declared gates are {_names(gates)}",
+                source=source,
+            )
+        if not isinstance(path, str) or not path.strip():
+            raise FactoryConfigError(
+                "artifacts",
+                f"gives the artifact entry {entry!r} the path {path!r}; it must "
+                "be a non-empty repository-relative path",
+                source=source,
+            )
+        if not isinstance(artifact_type, str) or (
+            artifact_type not in ArtifactType.__members__.values()
+        ):
+            raise FactoryConfigError(
+                "artifacts",
+                f"gives the artifact entry {entry!r} the type {artifact_type!r}; "
+                "the permitted types are "
+                f"{_names(ArtifactType.__members__.values())}",
+                source=source,
+            )
+
+        spelled = path.strip()
+        lexical_path = PurePosixPath(spelled)
+        if lexical_path.is_absolute():
+            raise FactoryConfigError(
+                "artifacts",
+                f"declares the artifact path {spelled!r}, which is absolute; it "
+                "must be repository-relative",
+                source=source,
+            )
+
+        segments: list[str] = []
+        for segment in lexical_path.parts:
+            if segment in (".", ""):
+                continue
+            if segment == "..":
+                if not segments:
+                    raise FactoryConfigError(
+                        "artifacts",
+                        f"declares the artifact path {spelled!r}, which escapes "
+                        "the repository root; it must remain repository-relative",
+                        source=source,
+                    )
+                segments.pop()
+                continue
+            segments.append(segment)
+        normalised = "/".join(segments)
+        if not normalised:
+            raise FactoryConfigError(
+                "artifacts",
+                f"declares the artifact path {spelled!r}, which is empty after "
+                "normalisation; it must name one repository-relative path",
+                source=source,
+            )
+
+        entries.append(
+            ArtifactDeclaration(
+                gate=gate,
+                path=normalised,
+                type=ArtifactType(artifact_type),
             )
         )
 
