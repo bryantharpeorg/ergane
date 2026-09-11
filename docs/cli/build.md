@@ -96,12 +96,20 @@ an on-disk `workgraph.json` is not rewritten by the roadmap and can disagree.
 
 ### `ergane build attempts <epic-id>`
 
-Read-only, and needs no Temporal server. One line per recorded verification: the
-node, the attempt, the verdict, and **how much of the diff the judge was actually
-shown** — abridged with its numbers, whole, or not recorded for rows written
-before the factory measured it.
+Read-only, and needs no Temporal server. It reports stored verifications by node,
+attempt and dispatch, including the verdict and the diff check's recorded size
+decision: abridged, whole, or not recorded.
 
-This is the command for "the judge passed it, but did the judge see it?"
+The human `judge input` token describes that diff check. Gate evidence also
+uses space in the final judge prompt, so a `whole` token alone does not prove
+that the judge received the entire diff. Where recorded, the `--json` output's
+`judge.truncated_input` and `judge.gates_shown` fields describe the actual prompt.
+A missing judge or missing historical measurement is unknown evidence.
+
+If the verification store does not exist, the current command prints a human
+absence message even with `--json`. An existing empty store produces an empty
+JSON attempt list. Consumers must distinguish those cases; neither establishes
+a completed or fully observed attempt.
 
 ### `ergane build salvage <graph>`
 
@@ -115,8 +123,10 @@ this before concluding anything was lost.
 
 ### `ergane build credential-status`
 
-Which credential a subscription-routed persona would authenticate with, its
-source, and how much validity is left. Never prints a credential value.
+Reports the current Claude subscription credential source and its locally
+recorded expiry when available. It does not print a credential value or contact
+the provider to prove authentication. It does not inspect Codex's subscription
+credential; selecting a Codex builder does not change this command's scope.
 
 ---
 
