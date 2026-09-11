@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import re
+import difflib
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -261,7 +262,7 @@ COMPLETION_CRITERIA = CriteriaSet(
     snapshotted_at="2026-09-11T00:00:00Z",
 )
 
-COUNTEREXAMPLE_DIFF = (
+PARKED_COMPLETION_DIFF = (
     "diff --git a/src/completion.py b/src/completion.py\n"
     "index 1111111..2222222 100644\n"
     "--- a/src/completion.py\n"
@@ -280,6 +281,40 @@ COUNTEREXAMPLE_DIFF = (
     "+def test_explicit_option_completes():\n"
     "+    assert complete(\"target\", option=\"explicit\") == \"target\"\n"
 )
+
+COMPLETION_BEFORE = (
+    "def complete(target, *, option=None):\n"
+    "    return crash_when_omitted(target, option or \"explicit\")\n"
+)
+
+COMPLETION_AFTER = (
+    "_OMITTED = object()\n"
+    "\n"
+    "\n"
+    "class OmittedOptionError(ValueError):\n"
+    "    pass\n"
+    "\n"
+    "\n"
+    "def complete(target, *, option=_OMITTED):\n"
+    "    if option is _OMITTED:\n"
+    "        raise OmittedOptionError(\"option is required when omitted\")\n"
+    "    return f\"{target}:{option}\"\n"
+)
+
+
+def source_diff(path: str, before: str, after: str) -> str:
+    """Build a standard-library unified diff from executable source text."""
+    return "".join(
+        difflib.unified_diff(
+            before.splitlines(keepends=True),
+            after.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+    )
+
+
+COUNTEREXAMPLE_DIFF = source_diff("src/completion.py", COMPLETION_BEFORE, COMPLETION_AFTER)
 
 GREEN_TEST_GATE = GateResult(
     name="test",
@@ -452,12 +487,26 @@ def test_the_parked_completion_fixture_omission_is_safe_as_written() -> None:
     fixture_globals: dict[str, Any] = {
         "crash_when_omitted": lambda target, option: f"{target}:explicit"
     }
-    exec("\n".join(added_lines(COUNTEREXAMPLE_DIFF, path="src/completion.py")), fixture_globals)
+    exec("\n".join(added_lines(PARKED_COMPLETION_DIFF, path="src/completion.py")), fixture_globals)
     complete = fixture_globals["complete"]
 
     result = complete("target", option=None)
 
     assert result == "target:explicit"
+
+
+def test_the_repaired_completion_after_source_separates_omission_from_explicit() -> None:
+    """The same source that produces the diff carries both runtime outcomes."""
+    namespace: dict[str, Any] = {}
+    exec(COMPLETION_AFTER, namespace)
+    complete = namespace["complete"]
+    error_class = namespace["OmittedOptionError"]
+
+    assert complete("target", option="explicit") == "target:explicit"
+    with pytest.raises(error_class, match="option is required when omitted"):
+        complete("target")
+
+    assert '+        raise OmittedOptionError("option is required when omitted")\n' in COUNTEREXAMPLE_DIFF
 
 
 def test_the_parked_safety_fixture_persists_sanitized_siblings_as_written() -> None:
