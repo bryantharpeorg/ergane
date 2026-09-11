@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
-from enum import StrEnum
 from collections import deque
 from dataclasses import asdict
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import BinaryIO, Deque
 
 
@@ -57,6 +57,8 @@ class CodexItem:
     item_id: str
     status: str = ""
     text: str = ""
+    command: str = ""
+    path: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,11 +107,9 @@ class CodexEventDecoder:
         self._agent_messages: Deque[CodexAgentMessage] = deque(
             maxlen=MAX_AGENT_MESSAGES
         )
-        self._fatal_events: Deque[CodexFatalEvent] = deque(maxlen=MAX_FATAL_EVENTS)
-        self._fatal_types: dict[str, list[str]] = {}
+        self._fatal_events: Deque[list[object]] = deque(maxlen=MAX_FATAL_EVENTS)
         self._usage: CodexUsage | None = None
         self._terminal_seen = False
-        self._incomplete_reasons: list[str] = []
         self._reasons: Deque[str] = deque(maxlen=MAX_REASONS)
         self._incomplete_reasons: Deque[str] = deque(maxlen=MAX_REASONS)
 
@@ -153,8 +153,8 @@ class CodexEventDecoder:
             agent_messages=tuple(self._agent_messages),
             fatal_events=tuple(
                 CodexFatalEvent(
-                    event.message,
-                    tuple(self._fatal_types.get(event.message, event.event_types)),
+                    event[0],
+                    tuple(event[1]),
                 )
                 for event in self._fatal_events
             ),
@@ -255,13 +255,13 @@ class CodexEventDecoder:
         message = error.get("message") if isinstance(error, dict) else None
         if isinstance(message, str):
             message = _safe_text(message)
-            for fatal in self._fatal_events:
-                if fatal.message == message:
-                    if event_type not in fatal.event_types:
-                        self._fatal_types[message].append(event_type)
+            for record in self._fatal_events:
+                if record[0] == message:
+                    event_types = record[1]
+                    if isinstance(event_types, list) and event_type not in event_types:
+                        event_types.append(event_type)
                     return
-            self._fatal_events.append(CodexFatalEvent(message, (event_type,)))
-            self._fatal_types[message] = [event_type]
+            self._fatal_events.append([message, [event_type]])
 
     def _read_item(self, item: dict[str, object]) -> None:
         item_type = item.get("type")
@@ -270,6 +270,12 @@ class CodexEventDecoder:
         item_id = item.get("id")
         if not isinstance(item_id, str):
             item_id = ""
+        command = item.get("command")
+        if not isinstance(command, str):
+            command = ""
+        path = item.get("path")
+        if not isinstance(path, str):
+            path = ""
         text = item.get("text")
         if not isinstance(text, str):
             message = item.get("message")
@@ -288,6 +294,8 @@ class CodexEventDecoder:
                 _safe_text(item_id),
                 _safe_text(status, REASON_TEXT_LIMIT),
                 _safe_text(text),
+                _safe_text(command),
+                _safe_text(path),
             )
         )
 

@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import io
-import json
-import re
 
 import pytest
 
 from factory.workgraph.codex_events import (
-    CodexEventDecoder,
     EVIDENCE_JSON_LIMIT,
     ORCHESTRATION_TEXT_LIMIT,
+    CodexEventDecoder,
     EvidenceStatus,
     TurnOutcome,
 )
@@ -31,13 +29,13 @@ VALID_STREAM = "\n".join(
 TOKEN_STREAM = "\n".join(
     [
         '{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}',
-        '{"type":"item.started","item":{"id":"item_1","type":"reasoning","text":"sk-proj-0123456789abcdef012345"}}',
-        '{"type":"item.completed","item":{"id":"item_2","type":"command_execution","text":"ghp_0123456789abcdefghij0123456789"}}',
-        '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dG9rZW4tYW5kLXNpZ25hdHVyZQ"}}',
-        '{"type":"item.completed","item":{"id":"item_4","type":"error","message":"AKIAIOSFODNN7EXAMPLE"}}',
+        '{"type":"item.started","item":{"id":"item_1","type":"reasoning","text":"sk-proj-000000000000000000000000"}}',
+        '{"type":"item.completed","item":{"id":"item_2","type":"command_execution","text":"ghp_0000000000000000000000000000"}}',
+        '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.0000000000000000000000000000000000"}}',
+        '{"type":"item.completed","item":{"id":"item_4","type":"error","message":"AKIAAAAAAAAAAAAAAAAA"}}',
         '{"type":"turn.started"}',
-        '{"type":"error","message":"Bearer AKIAIOSFODNN7EXAMPLE-0123456789"}',
-        '{"type":"turn.failed","error":{"message":"Bearer AKIAIOSFODNN7EXAMPLE-0123456789"}}',
+        '{"type":"error","message":"Bearer AKIAAAAAAAAAAAAAAAAA"}',
+        '{"type":"turn.failed","error":{"message":"Bearer AKIAAAAAAAAAAAAAAAAA"}}',
     ]
 )
 
@@ -91,6 +89,13 @@ def test_valid_stream_separates_identity_turn_items_messages_and_usage() -> None
         "item_2",
         "item_3",
     ]
+    assert [item.command for item in evidence.items] == [
+        "",
+        "",
+        "bash -lc ls",
+        "",
+    ]
+    assert [item.path for item in evidence.items] == ["", "", "", "README.md"]
     assert [message.text for message in evidence.agent_messages] == [
         "The repository is ready."
     ]
@@ -220,10 +225,10 @@ def test_orchestration_evidence_redacts_token_shapes_but_keeps_raw_archive() -> 
     payload = evidence.redacted_json()
 
     assert raw.getvalue().decode() == TOKEN_STREAM + "\n"
-    assert "sk-proj-0123456789abcdef012345" not in payload
-    assert "ghp_0123456789abcdefghij0123456789" not in payload
+    assert "sk-proj-000000000000000000000000" not in payload
+    assert "ghp_0000000000000000000000000000" not in payload
     assert "eyJhbGciOiJIUzI1NiJ9" not in payload
-    assert "AKIAIOSFODNN7EXAMPLE" not in payload
+    assert "AKIAAAAAAAAAAAAAAAAA" not in payload
     assert "[REDACTED]" in payload
     assert evidence.agent_messages[0].text == "Bearer [REDACTED]"
     assert evidence.fatal_events[0].message == "Bearer [REDACTED]"
