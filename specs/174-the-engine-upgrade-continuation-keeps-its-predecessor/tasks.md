@@ -11,7 +11,7 @@ No Docker daemon, worker, provider, credential store or live Temporal service.
       real identity writer/reader/remover.  Synthetic stop removes the old file
       and start writes the target; assert the old read precedes stop and capture
       the complete ordered lifecycle and retention result.  Record the old red.
-- [ ] T002 [US1] (US1-S2, FR-003) Cover absent, malformed and image-less initial
+- [x] T002 [US1] (US1-S2, FR-003) Cover absent, malformed and image-less initial
       identities separately.  A later readable target identity authorizes no
       removal.  Do not patch the reader to return a constant object.
 - [ ] T003 [US1] (US1-S1, US1-S2, FR-002, FR-003) Capture pre-stop identity once

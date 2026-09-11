@@ -293,6 +293,61 @@ def test_upgrade_reads_old_identity_before_stop(
     )
 
 
+@pytest.mark.parametrize(
+    "initial_state",
+    ["absent", "malformed", "image-less"],
+)
+def test_upgrade_unknown_pre_stop_identity_removes_nothing(
+    isolated_state_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+) -> None:
+    """T002 / US1-S2 / FR-003: uncertainty cannot be backfilled by the replacement."""
+    state = isolated_state_home
+    _make_project(state)
+    target_version = "0.4.0"
+    if initial_state == "malformed":
+        identity_path(state).parent.mkdir(parents=True, exist_ok=True)
+        identity_path(state).write_text("not-json", encoding="utf-8")
+    elif initial_state == "image-less":
+        write_identity(
+            state,
+            EngineIdentity(
+                version="0.3.0",
+                started_at="2026-08-25T12:00:00+00:00",
+                image_reference=None,
+                image_digest=None,
+            ),
+        )
+
+    lifecycle_calls: list[tuple[str, tuple[Any, ...]]] = []
+    seam = _IdentityLifecycleSeam(
+        state,
+        target_version=target_version,
+        lifecycle_calls=lifecycle_calls,
+    )
+    real_read_identity = upgrade_module.read_identity
+
+    def read_pre_stop_identity(home: Path | str) -> EngineIdentity | None:
+        lifecycle_calls.append(("read_identity", (str(identity_path(home)),)))
+        return real_read_identity(home)
+
+    monkeypatch.setattr(upgrade_module, "read_identity", read_pre_stop_identity)
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: target_version)
+    older = image_reference("0.2.0")
+    seam.images = [image_reference(target_version), older]
+
+    report = upgrade_module.upgrade(
+        open_epics=lambda: (),
+        docker=seam,
+        _state_home=state,
+    )
+
+    assert [name for name, _arguments in lifecycle_calls] == ["read_identity", "stop", "start"]
+    assert seam.removed == []
+    assert any("keeping every local image" in note for note in report.notes)
+
+
 def test_default_inventory_failure_prevents_image_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

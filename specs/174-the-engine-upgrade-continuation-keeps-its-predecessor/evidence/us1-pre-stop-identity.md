@@ -30,3 +30,12 @@ docker rmi ghcr.io/bryantharpeorg/ergane:0.2.0
 ```
 
 Retention kept the target and the pre-stop `0.3.0` image and removed only the older exact-repository `0.2.0` release.
+
+## T002 unknown states
+
+```text
+uv run pytest -q tests/test_engine_upgrade.py::test_upgrade_unknown_pre_stop_identity_removes_nothing
+3 passed in 0.11s
+```
+
+`absent`, `malformed`, and `image-less` each read once before stop, retained uncertainty after start wrote `0.4.0`, and removed no image.
