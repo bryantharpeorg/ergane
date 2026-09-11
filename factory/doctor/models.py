@@ -196,6 +196,7 @@ def parse_historical_findings_batch(
     assert isinstance(data, dict)
     entries = data["findings"]
     rejections = _Rejections()
+    seen_observation_ids: set[str] = set()
     for idx, entry in enumerate(entries):
         if not isinstance(entry, dict):
             continue
@@ -204,6 +205,15 @@ def parse_historical_findings_batch(
             value = entry.get(field)
             if not isinstance(value, str) or not value:
                 rejections.add("missing_field", label, f"missing '{field}'")
+        raw_observation_id = entry.get("observation_id")
+        if isinstance(raw_observation_id, str):
+            if raw_observation_id in seen_observation_ids:
+                rejections.add(
+                    "duplicate_observation_id",
+                    raw_observation_id,
+                    "observation_id appears more than once in batch",
+                )
+            seen_observation_ids.add(raw_observation_id)
 
     rejections.raise_if_any()
 
