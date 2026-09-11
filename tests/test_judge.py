@@ -333,6 +333,16 @@ UNIVERSAL_SAFETY_DIFF = (
     "+    persist(record)\n"
 )
 
+UNRELATED_DEFECT_DIFF = (
+    "diff --git a/src/telemetry.py b/src/telemetry.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/src/telemetry.py\n"
+    "+++ b/src/telemetry.py\n"
+    "@@ -1,3 +1,5 @@\n"
+    "+def record_use():\n"
+    "+    append_log_without_rotation(\"completion-used\")\n"
+)
+
 
 def content_lines(section: str) -> list[str]:
     """The `+`/`-` lines of a diff section — its content, minus its headers."""
@@ -454,6 +464,38 @@ def test_the_system_prompt_traces_universal_safety_claims_by_branch_and_field() 
     assert "including a path that bypasses a nested helper" in system
     assert "a single violating field or branch" in system
     assert "the closest dispatched scenario" in system
+
+
+def test_an_unrelated_diff_defect_is_assembled_as_advisory_only() -> None:
+    """US1-S3 keeps an unbound defect out of the machine-readable decision."""
+    prompt = build_prompt(
+        COMPLETION_CRITERIA,
+        UNRELATED_DEFECT_DIFF,
+        gate_results=[GREEN_TEST_GATE],
+    )
+    user = prompt.messages[1]["content"]
+
+    assert UNRELATED_DEFECT_DIFF in user
+    assert "does not contradict any dispatched criterion or scenario" in prompt.messages[0]["content"]
+    assert "must not make that scenario fail" in prompt.messages[0]["content"]
+    assert "must not invent a new acceptance criterion" in prompt.messages[0]["content"]
+    assert "advisory feedback" in prompt.messages[0]["content"]
+
+
+def test_advisory_feedback_does_not_overturn_passing_scenarios() -> None:
+    """The parser keeps the structured per-scenario result as the decision."""
+    verdict = parse(
+        verdict_json(
+            verdict="pass",
+            scenarios=[("US1-S1", True)],
+            feedback="US1-S1 passes; the telemetry defect is unrelated advisory feedback.",
+        ),
+        ids=["US1-S1"],
+    )
+
+    assert verdict.outcome is JudgeOutcome.PASS
+    assert [finding.passed for finding in verdict.findings] == [True]
+    assert verdict.feedback == "US1-S1 passes; the telemetry defect is unrelated advisory feedback."
 
 
 @pytest.fixture
