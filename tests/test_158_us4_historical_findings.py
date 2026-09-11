@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import re
 from pathlib import Path
 from typing import Iterator
 from dataclasses import replace
@@ -322,3 +323,14 @@ def test_findings_ingest_defaults_to_analysis_only(
     )
 
     assert args.apply is False
+
+
+def test_findings_ingest_skill_keeps_analysis_and_apply_distinct() -> None:
+    skill = Path(".agents/skills/findings-ingest/SKILL.md").read_text()
+
+    assert "## 6. Analysis-only rehearsal" in skill
+    assert "## 6.1 Separate authorized application" in skill
+    assert "findings ingest --batch batch.json --rehearsal-db" in skill
+    assert "--batch batch.json" in skill
+    assert "--apply \\\n  --db" in skill
+    assert "uv run ergane findings report --batch" not in skill
