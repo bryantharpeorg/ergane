@@ -447,6 +447,79 @@ def test_analysis_only_ingest_closes_the_descriptor_when_writing_fails(
     assert closed_fds == created_fds
 
 
+def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    markers = (
+        "sk-test-observation-alpha",
+        "sk-test-source-alpha",
+        "sk-test-summary-alpha",
+        "sk-test-reference-alpha",
+        "sk-test-note-alpha",
+    )
+    batch = tmp_path / "batch.json"
+    batch.write_text(
+        f"""
+        {{
+          "source": "{markers[1]}",
+          "findings": [
+            {{
+              "key": "ops/historical",
+              "category": "ops",
+              "severity": "warning",
+              "summary": "{markers[2]}",
+              "refs": ["{markers[3]}"],
+              "notes": "{markers[4]}",
+              "observation_id": "{markers[0]}",
+              "observed_at": "{OBSERVED_AT}"
+            }}
+          ]
+        }}
+        """
+    )
+    parser = argparse.ArgumentParser()
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    add_findings_parser(verbs)
+    args = parser.parse_args(["findings", "ingest", "--batch", str(batch)])
+
+    def leak_on_write(
+        _conn: sqlite3.Connection, observation: object, ingested_at: str
+    ) -> bool:
+        raise RuntimeError(str(observation))
+
+    monkeypatch.setattr(
+        "factory.doctor.cli.apply_historical_observation", leak_on_write
+    )
+    try:
+        args.run(args)
+        raise AssertionError("historical write unexpectedly succeeded")
+    except RuntimeError as exc:
+        exception_text = str(exc)
+
+    output = capsys.readouterr()
+    assert not any(marker in exception_text for marker in markers)
+    assert not any(marker in output.out for marker in markers)
+    assert not any(marker in output.err for marker in markers)
+
+    rehearsal_paths = [Path(line) for line in output.out.splitlines()]
+    assert len(rehearsal_paths) == 1
+    assert rehearsal_paths[0].is_file()
+    database_bytes = rehearsal_paths[0].read_bytes()
+    with connect(rehearsal_paths[0]) as rehearsal_conn:
+        stored = get_finding(rehearsal_conn, "ops/historical")
+        events = list_events(rehearsal_conn, "ops/historical")
+    assert stored is not None
+    assert markers[2] not in stored.summary
+    assert all(markers[3] not in ref for ref in stored.refs)
+    assert markers[4] not in (stored.notes or "")
+    assert markers[1] not in stored.source
+    assert len(events) == 1
+    assert all(marker not in database_bytes for marker in markers)
+    assert all(marker not in (event.observation_id or "") for event in events)
+
+
 def test_findings_ingest_skill_keeps_analysis_and_apply_distinct() -> None:
     skill = Path(".agents/skills/findings-ingest/SKILL.md").read_text()
 
