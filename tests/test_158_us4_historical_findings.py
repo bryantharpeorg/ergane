@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sqlite3
-import re
 import json
 import tempfile
 from pathlib import Path
@@ -25,7 +25,6 @@ from factory.doctor.models import (
 from factory.doctor.store import (
     SCHEMA_VERSION,
     connect,
-    connect_readonly,
     get_finding,
     list_events,
     apply_historical_observation,
@@ -191,6 +190,39 @@ def test_historical_fix_prose_does_not_resolve_a_current_row(
     assert stored == before
 
 
+def test_historical_prose_requires_the_separate_resolution_action(
+    store: sqlite3.Connection,
+) -> None:
+    observation = _observation()
+    report(store, observation.observation, seen_at=OBSERVED_AT)
+    before = get_finding(store, "ops/historical")
+    assert before is not None
+    assert before.status == Status.OPEN
+
+    apply_historical_observation(
+        store,
+        replace(
+            observation,
+            observation_id="audit-2026-09-02:ops/historical",
+            ingested_at=INGESTED_AT,
+        ),
+        ingested_at=INGESTED_AT,
+    )
+
+    still_open = get_finding(store, "ops/historical")
+    assert still_open == before
+
+    assert resolve(
+        store,
+        "ops/historical",
+        reason="current implementation evidence",
+        resolved_at="2026-09-11T12:00:00Z",
+    )
+    resolved = get_finding(store, "ops/historical")
+    assert resolved is not None
+    assert resolved.status == Status.RESOLVED
+
+
 def test_current_live_report_keeps_the_old_recurrence_semantics(
     store: sqlite3.Connection,
 ) -> None:
@@ -305,6 +337,38 @@ def test_analysis_only_ingest_rehearses_and_never_opens_the_operational_store(
         rehearsal_conn.close()
     assert operational.read_bytes() == b""
     assert str(rehearsal) in capsys.readouterr().out
+
+
+def test_analysis_only_ingest_leaves_the_operational_hash_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    operational = tmp_path / "doctor.db"
+    operational.write_bytes(b"populated operational ledger")
+    before_hash = hashlib.sha256(operational.read_bytes()).hexdigest()
+    rehearsal = tmp_path / "rehearsal.db"
+    batch = tmp_path / "batch.json"
+    batch.write_text(_historical_batch())
+    args = argparse.Namespace(
+        batch=str(batch),
+        apply=False,
+        rehearsal_db=str(rehearsal),
+    )
+
+    real_connect = connect
+
+    def forbidden(path: Path) -> sqlite3.Connection:
+        if path == operational:
+            raise AssertionError("analysis-only ingestion opened the operational store")
+        return real_connect(path)
+
+    monkeypatch.setattr("factory.doctor.cli.connect", forbidden)
+    monkeypatch.setattr("factory.doctor.cli._utcnow", lambda: INGESTED_AT)
+
+    assert findings_ingest_command(args) == 0
+    assert str(rehearsal) in capsys.readouterr().out
+    assert hashlib.sha256(operational.read_bytes()).hexdigest() == before_hash
 
 
 def test_authorized_ingest_can_apply_to_an_explicit_store(
