@@ -290,6 +290,18 @@ GREEN_TEST_GATE = GateResult(
     output_tail="1 passed in 0.01s\n",
 )
 
+
+def added_lines(diff: str, *, path: str) -> list[str]:
+    """Read the executable additions from one file in a synthetic diff."""
+    section_start = diff.index(f"diff --git a/{path} b/{path}")
+    next_start = diff.find("diff --git ", section_start + 1)
+    section = diff[section_start:] if next_start == -1 else diff[section_start:next_start]
+    return [
+        line[1:]
+        for line in section.splitlines()
+        if line.startswith("+") and not line.startswith("+++")
+    ]
+
 SAFETY_CRITERIA = CriteriaSet(
     feature="counterexample-demo",
     spec_ref="counterexample-demo/universal-safety",
@@ -433,6 +445,42 @@ def test_the_counterexample_contract_reaches_the_assembled_system_message() -> N
     assert "unless the criterion explicitly narrows it" in system
     assert "the closest dispatched scenario must fail" in system
     assert "must not return PASS" in system
+
+
+def test_the_parked_completion_fixture_omission_is_safe_as_written() -> None:
+    """The negative control executes the fixture's claimed crash path."""
+    fixture_globals: dict[str, Any] = {
+        "crash_when_omitted": lambda target, option: f"{target}:explicit"
+    }
+    exec("\n".join(added_lines(COUNTEREXAMPLE_DIFF, path="src/completion.py")), fixture_globals)
+    complete = fixture_globals["complete"]
+
+    result = complete("target", option=None)
+
+    assert result == "target:explicit"
+
+
+def test_the_parked_safety_fixture_persists_sanitized_siblings_as_written() -> None:
+    """The negative control executes the fixture's claimed bypass path."""
+    persisted: list[tuple[str, str]] = []
+    fixture_globals: dict[str, Any] = {
+        "sanitize_nested": lambda value: "[SANITIZED]",
+        "persist": lambda record: persisted.append((record.name, record.slug)),
+    }
+    source = (
+        "def save_record(record):\n"
+        + "\n".join(
+            f"    {line}" for line in added_lines(UNIVERSAL_SAFETY_DIFF, path="src/records.py")
+        )
+    )
+    exec(source, fixture_globals)
+
+    record = type("Record", (), {})()
+    record.name = "raw name"
+    record.slug = "raw slug"
+    fixture_globals["save_record"](record)
+
+    assert persisted == [("[SANITIZED]", "[SANITIZED]")]
 
 
 def test_the_universal_safety_fixture_carries_the_bypassing_branch_and_field() -> None:
