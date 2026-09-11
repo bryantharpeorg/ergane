@@ -369,7 +369,7 @@ SAFETY_CRITERIA = CriteriaSet(
     snapshotted_at="2026-09-11T00:00:00Z",
 )
 
-UNIVERSAL_SAFETY_DIFF = (
+PARKED_SAFETY_DIFF = (
     "diff --git a/src/records.py b/src/records.py\n"
     "index 1111111..2222222 100644\n"
     "--- a/src/records.py\n"
@@ -379,6 +379,21 @@ UNIVERSAL_SAFETY_DIFF = (
     "+    record.slug = record.name\n"
     "+    persist(record)\n"
 )
+
+SAFETY_BEFORE = (
+    "def save_record(record):\n"
+    "    record.name = sanitize_nested(record.name)\n"
+    "    record.slug = record.name\n"
+    "    persist(record)\n"
+)
+
+SAFETY_AFTER = (
+    "def save_record(record):\n"
+    "    record.name = sanitize_nested(record.name)\n"
+    "    persist(record.name, record.slug)\n"
+)
+
+UNIVERSAL_SAFETY_DIFF = source_diff("src/records.py", SAFETY_BEFORE, SAFETY_AFTER)
 
 UNRELATED_DEFECT_DIFF = (
     "diff --git a/src/telemetry.py b/src/telemetry.py\n"
@@ -519,7 +534,7 @@ def test_the_parked_safety_fixture_persists_sanitized_siblings_as_written() -> N
     source = (
         "def save_record(record):\n"
         + "\n".join(
-            f"    {line}" for line in added_lines(UNIVERSAL_SAFETY_DIFF, path="src/records.py")
+            f"    {line}" for line in added_lines(PARKED_SAFETY_DIFF, path="src/records.py")
         )
     )
     exec(source, fixture_globals)
@@ -532,6 +547,24 @@ def test_the_parked_safety_fixture_persists_sanitized_siblings_as_written() -> N
     assert persisted == [("[SANITIZED]", "[SANITIZED]")]
 
 
+def test_the_repaired_safety_after_source_persists_a_raw_sibling() -> None:
+    """The sanitized field and raw sibling are both observed at persistence."""
+    persisted: list[tuple[str, str]] = []
+    namespace: dict[str, Any] = {
+        "sanitize_nested": lambda value: "[SANITIZED]",
+        "persist": lambda name, slug: persisted.append((name, slug)),
+    }
+    exec(SAFETY_AFTER, namespace)
+
+    record = type("Record", (), {})()
+    record.name = "raw name"
+    record.slug = "raw slug"
+    namespace["save_record"](record)
+
+    assert persisted == [("[SANITIZED]", "raw slug")]
+    assert "+    persist(record.name, record.slug)\n" in UNIVERSAL_SAFETY_DIFF
+
+
 def test_the_universal_safety_fixture_carries_the_bypassing_branch_and_field() -> None:
     """A universal claim must be testable against the evidence that violates it."""
     prompt = build_prompt(SAFETY_CRITERIA, UNIVERSAL_SAFETY_DIFF, gate_results=[GREEN_TEST_GATE])
@@ -540,7 +573,7 @@ def test_the_universal_safety_fixture_carries_the_bypassing_branch_and_field() -
     assert SAFETY_CRITERIA.requirements[0].scenarios[0].raw_text in user
     assert "sanitize_nested" in user
     assert "record.slug" in user
-    assert "persist(record)" in user
+    assert "persist(record.name, record.slug)" in user
 
 
 def test_the_system_prompt_traces_universal_safety_claims_by_branch_and_field() -> None:
