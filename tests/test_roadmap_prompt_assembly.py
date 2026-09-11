@@ -482,16 +482,24 @@ async def test_the_operator_unparks_a_fixed_spec_and_the_next_tick_dispatches_it
         assert parked.check == "preflight:prompt-assembly"
         assert INCIDENT_REFUSAL in parked.detail
 
+        # Bravo's child is the live barrier: observe it in `status.running`
+        # before touching the parked spec or waking the roadmap. This is the
+        # same state-based query used throughout, not elapsed-time trust.
+        await _await_running(handle, "002-bravo")
+
+        # The operator's repair and release signal are the tested
+        # edit-to-unpark step, taken only after the held child is running.
         (spec_dir / "tasks.md").write_text(FIXED_TASKS, encoding="utf-8")
         await handle.signal("unpark_spec", "001-runtime-root")
 
-        # Let the held child finish; the roadmap's next pass is what dispatches.
-        await _await_running(handle, "002-bravo")
+        # With the roadmap woken, release the held child directly so its
+        # dispatch is recorded first and the next pass dispatches the unparked
+        # spec after it.
         await env.client.get_workflow_handle("epic-002-bravo").signal("release")
         status = await handle.result()
 
     assert status.parked == []
-    assert set(dispatched) == {"002-bravo", "001-runtime-root"}
+    assert dispatched == ["002-bravo", "001-runtime-root"]
     assert _status_of(status, "001-runtime-root").landed is True
 
 
