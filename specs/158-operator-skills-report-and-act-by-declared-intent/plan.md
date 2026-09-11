@@ -2,12 +2,12 @@
 
 ## Current seams
 
-- `.claude/skills/floor-status/SKILL.md` currently mixes observation with fetch and merge behavior and still tests the retired subscription sentinel.
-- `factory/cli/nouns/build.py:489` — `render_status`, `factory/cli/nouns/build.py:1201` — `status_command`, and `factory/cli/nouns/build.py:1559` — `render_attempts` are read surfaces to reuse rather than recreate.
+- `.agents/skills/floor-status/floor_render.py:43` — `render_floor` and `.agents/skills/escalation-triage/escalation_render.py:34` — `render_brief` are the landed US1 renderer seams.
+- `factory/cli/nouns/build.py:491` — `render_status`, `factory/cli/nouns/build.py:1203` — `status_command`, and `factory/cli/nouns/build.py:1577` — `render_attempts` are the read surfaces US1 consumes.
 - `factory/cli/nouns/escalations.py:29` — `render` and the escalation query expose current options without choosing one.
-- `.claude/skills/build-metrics/scripts/rework.py:42` — `main` hardcodes old roots and lacks dispatch identity; `CLOC_URL` in `.claude/skills/build-metrics/scripts/loc.py` names executable code on mutable `master`.
-- `factory/spec/composition.py:64` — `validate_spec` is the one validation composition. `.claude/skills/spec-html/render.py:158` — `landed_map` currently converts a command failure into an empty mapping.
-- `factory/doctor/cli.py:121` — `_report_command` stamps ingestion time, while `factory/doctor/store.py:137` — `report` accepts only `seen_at`; neither surface represents historical observation identity.
+- `.agents/skills/build-metrics/scripts/rework.py:165` — `main` and `.agents/skills/build-metrics/scripts/loc.py:18` — `loc_tool` are the landed US2 aggregation and stable-local-tool boundaries.
+- `factory/spec/composition.py:64` — `validate_spec` remains the one validation composition. `.agents/skills/spec-html/render.py:94` — `read_landing` is the landed US3 tagged landing-read boundary.
+- `factory/doctor/cli.py:150` — `_report_command` stamps ingestion time, while `factory/doctor/store.py:167` — `report` accepts only `seen_at`; neither remaining US4 seam represents historical observation identity.
 - Spec 087 moves these project skills to their canonical packaged location. Resolve paths from the installed skill root rather than baking either client's home into helpers.
 
 ## Story slices
@@ -52,6 +52,8 @@ resolution transition.
 10. **Ingestion time is not observation time.** Historical replay must not look like a new sighting.
 11. **A duplicate observation may have a different file name.** Idempotency keys on source identity, not batch position.
 12. **Operational root is explicit.** Tests use temporary stores; later operator validation names `/home/admin/code/ergane/.factory` without opening it for writes.
+13. **`mkstemp` returns an open descriptor and a path.** The optional rehearsal-store path must use and clean up the path, close the descriptor, and work when the caller omits `--rehearsal-db`; never pass the descriptor itself to `Path`.
+14. **Historical identity is persisted data.** Sanitize `observation_id` and all event metadata before either rehearsal or apply, not only the nested `Finding`; a credential-shaped identity must never reach `finding_events` verbatim.
 
 ## Verification
 
