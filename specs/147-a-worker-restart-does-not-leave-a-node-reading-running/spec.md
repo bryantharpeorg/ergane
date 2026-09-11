@@ -1,7 +1,9 @@
 ---
-state: ready
+state: landed
 fixes:
   - hardening/a-worker-restart-orphans-the-in-flight-agent-activity-for-the-full-heartbeat-timeout
+# Attested landed 2026-09-11. US1 9468342ef943 (#474) and
+# US2 4feba7f9e5c4 (#476) — both observed on ergane-buildout by content.
 # DRAFTED 2026-09-04 by the refinement workflow (refinement-2026-09-04-tail) from
 # docs/triage-2026-09-03-ergane-web-round3.md § "a-worker-restart-does-not-leave-a-node-reading-running"
 # (lines 312-328), against ergane-buildout at 602a92c. Every `file:line` in

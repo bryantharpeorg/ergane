@@ -1,8 +1,12 @@
 ---
-state: ready
+state: landed
 fixes:
   - status/parked-is-reported-as-a-bare-count-so-the-operator-cannot-tell-which-spec-is-parked
   - operator/a-completed-epic-goes-unattested-in-silence-while-status-keeps-calling-it-dispatchable
+# Attested landed 2026-09-11. US1 20ab4803db8e (#473),
+# US2 4132064d4523 (#475), US3 eeb3e8011c52 (#478),
+# US4 7836b77d58c7 (#477), and US5 a654fca272c3 (#479) — all five
+# observed on ergane-buildout by content.
 # DRAFTED 2026-09-03 by the operator session, against ergane-buildout at 238b494.
 # Every `file:line` in spec.md and plan.md was read from that commit and verified
 # to resolve to the symbol named, not recalled.

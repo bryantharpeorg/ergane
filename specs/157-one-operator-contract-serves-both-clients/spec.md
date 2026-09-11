@@ -1,5 +1,7 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 0d909c5fd96a (#480) and
+# US2 4a92e0648e17 (#482) — both observed on ergane-buildout by content.
 ---
 
 # Feature Specification: one operator contract serves both clients

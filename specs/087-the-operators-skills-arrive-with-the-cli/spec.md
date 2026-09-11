@@ -1,7 +1,12 @@
 ---
-state: ready
+state: landed
 depends_on_landed:
   - 157-one-operator-contract-serves-both-clients
+# Attested landed 2026-09-11. US1 80b9b75c3d46 (#488),
+# US2 d7118c57e57c (#489), US3 e3faf707038d (#490), and
+# US4 60943a0ce3cb (#493) — all four observed on ergane-buildout by content.
+# This attests the dispatched scope only; separately held follow-up repairs
+# remain held.
 ---
 
 # Feature Specification: the operator's skills arrive with the CLI
