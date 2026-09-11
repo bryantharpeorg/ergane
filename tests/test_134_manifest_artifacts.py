@@ -101,16 +101,21 @@ def test_no_artifact_declaration_preserves_existing_config_fields() -> None:
     text = manifest("")
     config = parse_factory_config(text)
 
-    legacy = dataclasses.replace(config, artifacts=())
+    legacy = FactoryConfig(
+        version=2, runtime="bwrap", gates={"test": "uv run pytest -q", "lint": "uv run ruff check ."}
+    )
     for field in dataclasses.fields(FactoryConfig):
-        if field.name == "artifacts":
-            continue
-        assert getattr(config, field.name) == getattr(legacy, field.name)
+        if field.name != "artifacts":
+            assert getattr(config, field.name) == getattr(legacy, field.name)
     assert config.artifacts == ()
 
 
 def test_v1_refuses_artifacts_as_unknown_top_level_key() -> None:
-    text = manifest("").replace("version: 2", "version: 1")
+    text = manifest(
+        "artifacts:\n      - {gate: test, path: coverage.xml, type: coverage}\n"
+    ).replace(
+        "version: 2", "version: 1"
+    )
 
     with pytest.raises(FactoryConfigError) as error:
         parse_factory_config(text)
