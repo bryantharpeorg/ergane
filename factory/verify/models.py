@@ -267,6 +267,29 @@ class CacheDeclaration:
     env: str | None = None
 
 
+class ArtifactType(StrEnum):
+    """What a gate's declared artifact is, in the type the platform knows."""
+
+    SBOM = "sbom"
+    COVERAGE = "coverage"
+    SCAN = "scan"
+    OPAQUE = "opaque"
+
+
+@dataclass(frozen=True)
+class ArtifactDeclaration:
+    """One artifact a manifest says a gate writes.
+
+    `path` is already the normalised worktree-root-relative spelling, and
+    `type` is a `StrEnum` so the declaration survives `dataclasses.asdict` and
+    `json.dumps` on the parser CLI's boundary.
+    """
+
+    gate: str
+    path: str
+    type: ArtifactType
+
+
 def _default_ladder() -> "VerificationConfig":
     """Deferred default so `VerificationConfig` need not move above `FactoryConfig`."""
     return VerificationConfig()
@@ -368,6 +391,10 @@ class FactoryConfig:
     #: reads this field yet; 128 US2 threads it into onboarding, and this field
     #: is the key that story consults.
     boundary_only_gates: tuple[str, ...] = ()
+    #: 134 FR-001. The artifacts this repository's gates write, in declaration
+    #: order. Empty is what every manifest that exists says, and it means
+    #: today's behaviour exactly: collect nothing, and change no gate verdict.
+    artifacts: tuple[ArtifactDeclaration, ...] = ()
 
 
 @dataclass(frozen=True)

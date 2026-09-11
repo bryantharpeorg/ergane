@@ -32,9 +32,9 @@ def _yaml(text: str) -> str:
 
 def _artifact_manifest(
     artifacts: str = """
-      - gate: test
-        path: coverage.xml
-        type: coverage
+          - gate: test
+            path: coverage.xml
+            type: coverage
 """,
     *,
     version: int = 2,
@@ -239,9 +239,9 @@ def test_a_required_artifact_field_is_refused_by_the_library(
     field_name: str,
 ) -> None:
     lines = {
-        "gate": "        path: coverage.xml\n        type: coverage",
-        "path": "        gate: test\n        type: coverage",
-        "type": "        gate: test\n        path: coverage.xml",
+        "gate": "          path: coverage.xml\n          type: coverage",
+        "path": "          gate: test\n          type: coverage",
+        "type": "          gate: test\n          path: coverage.xml",
     }
     with pytest.raises(FactoryConfigError) as caught:
         parse_factory_config(_artifact_manifest(lines[field_name]))
