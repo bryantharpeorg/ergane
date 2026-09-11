@@ -11,7 +11,7 @@ them is the honest "had to be redone" number:
 
 Both stores are opened read-only. This is production data.
 
-usage: rework.py [repo_path]
+usage: rework.py [repo_path] [--runtime-root DIR]
 """
 import collections
 import datetime
@@ -20,8 +20,131 @@ import re
 import sqlite3
 import subprocess
 import sys
+import argparse
 
 WINDOW = 20  # rolling window, in stories
+
+
+def runtime_root(repo, override=None):
+    """Resolve the operator's runtime root without creating it."""
+    if override:
+        return os.path.join(repo, override) if not os.path.isabs(override) else override
+    for name in ("ERGANE_ROOT", "FACTORY_ROOT"):
+        if os.environ.get(name):
+            value = os.environ[name]
+            return value if os.path.isabs(value) else os.path.join(repo, value)
+    new = os.path.join(repo, ".ergane")
+    legacy = os.path.join(repo, ".factory")
+    if os.path.isdir(new):
+        return new
+    if os.path.isdir(legacy):
+        return legacy
+    sys.exit(f"missing runtime root: {new} (pass --runtime-root for a temporary store)")
+
+
+def columns(conn, table):
+    return {row[1] for row in conn.execute(f"pragma table_info({table})")}
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="rework rate and its trend")
+    parser.add_argument("repo", nargs="?", default=".")
+    parser.add_argument("--runtime-root")
+    return parser.parse_args(argv)
+
+
+def dispatch_executions(ver):
+    available = columns(ver, "verification_results")
+    selections = {
+        "persona": "persona" if "persona" in available else "NULL",
+        "model_alias": "model_alias" if "model_alias" in available else "NULL",
+        "route": "route" if "route" in available else "NULL",
+        "dispatch": "dispatch" if "dispatch" in available else "NULL",
+    }
+    rows = ver.execute(
+        "select epic_id, node_id, attempt, verdict, "
+        f"{selections['persona']}, {selections['model_alias']}, {selections['route']}, "
+        f"{selections['dispatch']} "
+        "from verification_results "
+        "order by epic_id, node_id, 8, 3, 6"
+    ).fetchall()
+    executions = collections.defaultdict(list)
+    for epic, node, attempt, verdict, persona, model, route, dispatch in rows:
+        dispatch = dispatch if dispatch not in (None, "") else "<unknown>"
+        executions[(epic, node, dispatch)].append(
+            (
+                attempt,
+                verdict,
+                persona if persona is not None else "unknown",
+                model if model is not None else "unknown",
+                route if route is not None else "unknown",
+            )
+        )
+    return sorted(executions.items(), key=lambda item: (item[0][0], item[0][1], item[0][2]))
+
+
+def usage_rows(led):
+    available = columns(led, "usage_records")
+    tokens = ("prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens")
+    provenance = ("usage_source", "usage_status", "cost_basis")
+    names = (
+        "epic_id", "node_id", "attempt", "termination", "issued_at", "key_alias",
+        *tokens, "request_count", "spend_usd", *provenance,
+    )
+    selections = []
+    for name in names:
+        if name in provenance:
+            default = "legacy" if name != "cost_basis" else "unknown"
+            selections.append(name if name in available else f"'{default}'")
+        elif name in tokens or name in ("request_count", "spend_usd"):
+            selections.append(name if name in available else "NULL")
+        else:
+            selections.append(name)
+    return [dict(zip(names, row)) for row in led.execute(f"select {', '.join(selections)} from usage_records")]
+
+
+def quantity(label, values, total):
+    measured = sum(values) if values else "unknown"
+    suffix = f" ({len(values)}/{total} measured)" if total else " (no rows)"
+    return f"  {label} measured {measured}{suffix}"
+
+
+def print_usage_metrics(led):
+    rule("USAGE MEASUREMENTS")
+    rows = usage_rows(led)
+    print(f"  usage rows {len(rows)}")
+    if not rows:
+        print("  no ledger rows")
+        return
+    print(quantity("prompt tokens", [row["prompt_tokens"] for row in rows if row["prompt_tokens"] is not None], len(rows)))
+    print(quantity("completion tokens", [row["completion_tokens"] for row in rows if row["completion_tokens"] is not None], len(rows)))
+    print(quantity("cache-read tokens", [row["cache_read_tokens"] for row in rows if row["cache_read_tokens"] is not None], len(rows)))
+    print(quantity("cache-write tokens", [row["cache_write_tokens"] for row in rows if row["cache_write_tokens"] is not None], len(rows)))
+    print(quantity("requests", [row["request_count"] for row in rows if row["request_count"] is not None], len(rows)))
+    print(quantity("dollars", [row["spend_usd"] for row in rows if row["spend_usd"] is not None], len(rows)))
+    unmeasured = sum(value is None for row in rows for value in (
+        row["prompt_tokens"], row["completion_tokens"], row["cache_read_tokens"],
+        row["cache_write_tokens"], row["request_count"], row["spend_usd"],
+    ))
+    print(f"  unmeasured quantities  {unmeasured}")
+    rule("ACCOUNTING PROVENANCE")
+    runner_unknown = sum(row["usage_source"] in ("legacy", "", None) for row in rows)
+    print(f"  runner unknown {runner_unknown}")
+    print(f"  usage sources          {' '.join(sorted({row['usage_source'] for row in rows}))}")
+    print(f"  usage statuses         {' '.join(sorted({row['usage_status'] for row in rows}))}")
+    print(f"  cost bases             {' '.join(sorted({row['cost_basis'] for row in rows}))}")
+
+
+def print_dispatches(ver):
+    rule("DISPATCH EXECUTIONS")
+    executions = dispatch_executions(ver)
+    if not executions:
+        print("  no verification results")
+        return
+    for (epic, node, dispatch), attempts in executions:
+        print(f"  {epic}/{node} dispatch {dispatch}")
+        for attempt, verdict, persona, model, route in attempts:
+            print(f"    attempt {attempt} {verdict} persona={persona} model={model} route={route}")
 
 
 def monday(day):
@@ -39,26 +162,33 @@ def rule(title):
     print(f"\n=== {title} ===")
 
 
-def main(repo):
-    os.chdir(repo)
-    ver = ro(".factory/verification.db")
-    led = ro(".factory/ledger.db")
+def main(argv=None):
+    parsed = parse_args(argv)
+    repo = os.path.abspath(parsed.repo)
+    root = runtime_root(repo, parsed.runtime_root)
+    ver = ro(os.path.join(root, "verification.db"))
+    led = ro(os.path.join(root, "ledger.db"))
 
     # ---- verification level -------------------------------------------------
+    verification_columns = columns(ver, "verification_results")
     rows = ver.execute(
-        "select epic_id, node_id, attempt, verdict, finished_at, form "
+        "select epic_id, node_id, attempt, verdict, finished_at, form, "
+        f"{'dispatch' if 'dispatch' in verification_columns else 'NULL'} "
         "from verification_results order by finished_at"
     ).fetchall()
     if not rows:
-        sys.exit("verification_results is empty")
+        rule("VERIFICATION-LEVEL REWORK (first verified attempt came back FAIL)")
+        print("  verification rows 0")
+        print("  no verification results")
 
     forms = {r[5] for r in rows}
     attempts = collections.defaultdict(dict)
-    for epic, node, att, verdict, fin, _form in rows:
+    for epic, node, att, verdict, fin, _form, dispatch in rows:
+        dispatch = dispatch if dispatch not in (None, "") else "<unknown>"
         # keep the worst verdict if a story somehow has both forms at one attempt
-        prev = attempts[(epic, node)].get(att)
+        prev = attempts[(epic, node, dispatch)].get(att)
         if prev is None or (prev["v"] == "PASS" and verdict == "FAIL"):
-            attempts[(epic, node)][att] = {"v": verdict, "f": fin}
+            attempts[(epic, node, dispatch)][att] = {"v": verdict, "f": fin}
 
     stories = []
     for key, att in attempts.items():
@@ -78,19 +208,22 @@ def main(repo):
     n = len(stories)
     rw = sum(s["reworked"] for s in stories)
 
-    print(f"window: {rows[0][4][:10]} -> {rows[-1][4][:10]}   forms present: {sorted(forms)}")
-    rule("VERIFICATION-LEVEL REWORK (first verified attempt came back FAIL)")
-    print(f"  stories verified   {n}")
-    print(f"  passed first try   {n - rw}  ({100 * (n - rw) / n:.1f}%)")
-    print(f"  REWORKED           {rw}  ({100 * rw / n:.1f}%)")
+    if rows:
+        print(f"window: {rows[0][4][:10]} -> {rows[-1][4][:10]}   forms present: {sorted(forms)}")
+        rule("VERIFICATION-LEVEL REWORK (first verified attempt came back FAIL)")
+        print(f"  stories verified   {n}")
+        print(f"  passed first try   {n - rw}  ({100 * (n - rw) / n:.1f}%)")
+        print(f"  REWORKED           {rw}  ({100 * rw / n:.1f}%)")
 
-    depth = collections.Counter(
-        s["passed_at"] if s["passed_at"] is not None else "never" for s in stories
-    )
-    print("\n  landed on:")
-    for k in sorted(depth, key=lambda x: (x == "never", x)):
-        label = "never passed" if k == "never" else f"attempt {k}"
-        print(f"    {label:<14}{depth[k]:>4}  ({100 * depth[k] / n:>5.1f}%)")
+        depth = collections.Counter(
+            s["passed_at"] if s["passed_at"] is not None else "never" for s in stories
+        )
+        print("\n  landed on:")
+        for k in sorted(depth, key=lambda x: (x == "never", x)):
+            label = "never passed" if k == "never" else f"attempt {k}"
+            print(f"    {label:<14}{depth[k]:>4}  ({100 * depth[k] / n:>5.1f}%)")
+
+    print_dispatches(ver)
 
     # ---- dispatch level -----------------------------------------------------
     urows = led.execute(
@@ -110,14 +243,23 @@ def main(repo):
 
     rule("DISPATCH-LEVEL REWORK (dispatched more than once, for any reason)")
     print(f"  stories dispatched {dn}")
-    print(f"  REWORKED           {drw}  ({100 * drw / dn:.1f}%)   <- lead with this one")
-    print(f"  mean attempts/story {sum(len(v) for v in disp.values()) / dn:.2f}")
-    print("\n  attempts dispatched per story:")
-    for k, c in sorted(collections.Counter(len(v) for v in disp.values()).items()):
-        print(f"    {k} attempt(s)  {c:>4}  ({100 * c / dn:>5.1f}%)")
-    print("\n  terminations (rows, ~2 per attempt - one per persona):")
-    for k, c in term.most_common():
-        print(f"    {k:<14}{c:>5}  ({100 * c / len(urows):>5.1f}%)")
+    if dn:
+        print(f"  REWORKED           {drw}  ({100 * drw / dn:.1f}%)   <- lead with this one")
+        print(f"  mean attempts/story {sum(len(v) for v in disp.values()) / dn:.2f}")
+    else:
+        print("  REWORKED           0  (no ledger stories)")
+    if dn:
+        print("\n  attempts dispatched per story:")
+        for k, c in sorted(collections.Counter(len(v) for v in disp.values()).items()):
+            print(f"    {k} attempt(s)  {c:>4}  ({100 * c / dn:>5.1f}%)")
+    if urows:
+        print("\n  terminations (rows, ~2 per attempt - one per persona):")
+        for k, c in term.most_common():
+            print(f"    {k:<14}{c:>5}  ({100 * c / len(urows):>5.1f}%)")
+    else:
+        print("  no terminations")
+
+    print_usage_metrics(led)
 
     # ---- trend --------------------------------------------------------------
     rule("TREND BY WEEK (stories dated by their first attempt)")
@@ -156,7 +298,7 @@ def main(repo):
     # ---- coverage -----------------------------------------------------------
     rule("COVERAGE (state this in the report - the stores are not a census)")
     subj = subprocess.run(
-        ["git", "log", "--no-merges", "--format=%s"], capture_output=True, text=True
+        ["git", "log", "--no-merges", "--format=%s"], capture_output=True, text=True, cwd=repo
     ).stdout.splitlines()
     node_re = re.compile(r"^(\d{3}-[a-z0-9-]+)/(us\d+)")
     landed = {f"{m.group(1)}/{m.group(2)}" for s in subj if (m := node_re.match(s))}
@@ -165,8 +307,9 @@ def main(repo):
     never = sorted(have - landed)
     print(f"  story landings in git   {len(landed)}")
     print(f"  stories in the ledger   {len(have)}")
-    cov = 100 * len(landed & have) / len(landed) if landed else 0
-    print(f"  landed AND measured     {len(landed & have)}  ({cov:.0f}% coverage)")
+    measured = len(landed & have)
+    cov = f"{100 * measured / len(landed):.0f}%" if landed else "unknown"
+    print(f"  landed AND measured     {len(landed & have)}  ({cov} coverage)")
     print(f"\n  landed but NOT in the ledger ({len(missing)}) - lost store data:")
     for s in missing[:12]:
         print(f"    {s}")
@@ -178,4 +321,4 @@ def main(repo):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else ".")
+    main(None)
