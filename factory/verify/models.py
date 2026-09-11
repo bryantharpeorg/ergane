@@ -267,6 +267,30 @@ class CacheDeclaration:
     env: str | None = None
 
 
+class ArtifactType(StrEnum):
+    """The closed set of artifact kinds a gate may declare (134 FR-001)."""
+
+    SBOM = "sbom"
+    COVERAGE = "coverage"
+    SCAN = "scan"
+    OPAQUE = "opaque"
+
+
+@dataclass(frozen=True)
+class ArtifactDeclaration:
+    """One artifact a gate declares it writes (134 FR-001).
+
+    `path` is worktree-root-relative and uses POSIX separators with no `.` or
+    `..` segment, matching `git diff-tree --name-only` spelling (134 FR-012).
+    The declaration travels through the parser CLI as JSON, so both fields stay
+    string-backed (134 FR-013).
+    """
+
+    gate: str
+    path: str
+    type: ArtifactType
+
+
 def _default_ladder() -> "VerificationConfig":
     """Deferred default so `VerificationConfig` need not move above `FactoryConfig`."""
     return VerificationConfig()
@@ -368,6 +392,8 @@ class FactoryConfig:
     #: reads this field yet; 128 US2 threads it into onboarding, and this field
     #: is the key that story consults.
     boundary_only_gates: tuple[str, ...] = ()
+    #: 134 FR-001. Artifacts declared beside the gates, in declaration order.
+    artifacts: tuple[ArtifactDeclaration, ...] = ()
 
 
 @dataclass(frozen=True)
