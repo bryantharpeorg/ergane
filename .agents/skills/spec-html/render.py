@@ -2,49 +2,39 @@
 """Render an Ergane spec trio as one readable HTML page.
 
 The point is not prettier markdown. A spec is hard to read because the parts
-that matter most are the machine parts — the Work Graph as raw YAML, anchors you
-cannot verify by looking, coverage you have to compute — and this resolves all
-three against the tree before it renders anything.
+that matter most are the machine parts — the Work Graph as raw YAML, validation
+coverage, and landing truth — and this view consumes the library's validator
+before it renders anything.
 
 Usage:
     python3 render.py <spec-dir> [-o out.html] [--tree <dir>] [--landed]
 
-`--tree` is the tree anchors are resolved against; it defaults to the repository
-root. Point it at a checkout of the landing branch when you want the answer an
-agent's worktree would get, which is not the same as your working copy.
+`--tree` is the target repository the validator resolves against; it defaults to
+the repository root. Point it at a checkout of the landing branch when you want
+the answer an agent's worktree would get, which is not the same as your working
+copy.
 """
 
 from __future__ import annotations
 
 import argparse
-import ast
 import html
-import json
+import os
 import pathlib
 import re
-import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 
-ANCHOR_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|md|ya?ml|toml|sql|sh)):(\d+)(?:-(\d+))?`")
-BARE_RE = re.compile(r"`:(\d+)(?:-(\d+))?`")
-FILE_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|md|ya?ml|toml|sql|sh))`")
+from factory.spec import SpecValidation, validate_spec
+from factory.workgraph.landed import landed_facts
+from factory.workgraph.worktree import WorktreeError
+
 STORY_RE = re.compile(r"^### User Story (\d+)\s*[-–]\s*(.+?)\s*\(Priority:\s*(P\d)\)", re.M)
 FR_RE = re.compile(r"^- \*\*(FR-\d+)\*\*:\s*(.+)$", re.M)
 SC_RE = re.compile(r"^- \*\*(SC-\d+)\*\*:\s*(.+)$", re.M)
 TASK_RE = re.compile(r"^- \[([ x])\]\s+(T\d+[a-z]?)\s*(.*)$", re.M)
 TRAP_RE = re.compile(r"^\*\*(\d+[a-z]?)\.\s+(.+?)\*\*", re.M)
-
-
-@dataclass
-class Anchor:
-    doc: str
-    doc_line: int
-    path: str
-    line: int
-    end: int | None
-    status: str = "ok"          # ok | blank | eof | missing
-    text: str = ""
 
 
 @dataclass
@@ -59,9 +49,11 @@ class Spec:
     graph: dict = field(default_factory=dict)
     traps: list[tuple[str, str]] = field(default_factory=list)
     tasks: list[tuple[str, str, str]] = field(default_factory=list)
-    anchors: list[Anchor] = field(default_factory=list)
     landed: dict[str, str] = field(default_factory=dict)
     sections: dict[str, str] = field(default_factory=dict)
+    validation: SpecValidation | None = None
+    landing_state: str = "unavailable"
+    landing_detail: str = "no --landed-branch was supplied"
 
 
 def split_frontmatter(text: str) -> tuple[list[str], str, int]:
@@ -99,74 +91,31 @@ def parse_graph(body: str) -> dict:
     return graph
 
 
-def resolve_anchors(docs: dict[str, tuple[str, int]], tree: pathlib.Path) -> list[Anchor]:
-    """Every `path:line` citation, resolved against `tree`. Frontmatter is skipped."""
-    out: list[Anchor] = []
-    cache: dict[str, list[str] | None] = {}
-    for doc, (text, skip) in docs.items():
-        lines = text.splitlines()
-        # A bare `:NN` inherits the last qualified path — but only within the same
-        # paragraph. Carrying it further guesses, and guessing here produces a
-        # confident wrong answer: on 075 a `:1357` meant for workflow.py resolved
-        # against a ladder.py cited two bullets earlier and reported EOF. A bare
-        # ref with no antecedent in its own paragraph is reported `ambiguous`,
-        # which is the true finding — a reader cannot resolve it either.
-        last_path = None
-        for i, line in enumerate(lines, 1):
-            if i <= skip:
-                continue
-            if not line.strip():
-                last_path = None
-            for m in ANCHOR_RE.finditer(line):
-                last_path = m.group(1)
-                out.append(_probe(doc, i, m.group(1), int(m.group(2)),
-                                  int(m.group(3)) if m.group(3) else None, tree, cache))
-            # A filename with no line number is an antecedent too. Without this the
-            # scan walks past `` `factory/cli/nouns/build.py` `` and resolves the
-            # `:511` after it against whatever file was cited further up.
-            for m in FILE_RE.finditer(line):
-                last_path = m.group(1)
-            for m in BARE_RE.finditer(line):
-                line_no = int(m.group(1))
-                end = int(m.group(2)) if m.group(2) else None
-                if last_path:
-                    out.append(_probe(doc, i, last_path, line_no, end, tree, cache))
-                else:
-                    a = Anchor(doc, i, "(no file named in this paragraph)", line_no, end)
-                    a.status = "ambiguous"
-                    out.append(a)
-    return out
-
-
-def _probe(doc, doc_line, path, line, end, tree, cache) -> Anchor:
-    a = Anchor(doc, doc_line, path, line, end)
-    if path not in cache:
-        p = tree / path
-        cache[path] = p.read_text(encoding="utf-8").splitlines() if p.is_file() else None
-    body = cache[path]
-    if body is None:
-        a.status = "missing"
-    elif line > len(body):
-        a.status = "eof"
-    elif not body[line - 1].strip():
-        a.status = "blank"
-    else:
-        a.text = body[line - 1].strip()
-    return a
-
-
-def landed_map(spec_dir: pathlib.Path, branch: str) -> dict[str, str]:
+def read_landing(spec_dir: pathlib.Path, tree: pathlib.Path, branch: str | None):
+    """Read landing facts without network access, or name why the answer is absent."""
+    if not branch:
+        return "unavailable", {}, "no --landed-branch was supplied"
     try:
-        r = subprocess.run(
-            ["uv", "run", "ergane", "spec", "landed", str(spec_dir), "--default-branch", branch],
-            capture_output=True, text=True, timeout=120,
+        facts = landed_facts(
+            tree,
+            spec_dir.name,
+            default_branch=branch,
+            fetch=False,
         )
-    except Exception:
-        return {}
-    return dict(re.findall(r"^(US\d+) landed at ([0-9a-f]+)", r.stdout, re.M))
+    except (WorktreeError, OSError) as error:
+        return "error", {}, str(error)
+    return ("empty" if not facts else "ready"), {
+        story: fact.commit for story, fact in facts.items()
+    }, "landing facts returned"
 
 
-def load(spec_dir: pathlib.Path, tree: pathlib.Path, branch: str | None) -> Spec:
+def load(
+    spec_dir: pathlib.Path,
+    tree: pathlib.Path,
+    branch: str | None,
+    *,
+    specs_root: pathlib.Path,
+) -> Spec:
     s = Spec(slug=spec_dir.name)
     docs: dict[str, tuple[str, int]] = {}
     bodies: dict[str, str] = {}
@@ -196,10 +145,12 @@ def load(spec_dir: pathlib.Path, tree: pathlib.Path, branch: str | None) -> Spec
     s.traps = TRAP_RE.findall(bodies.get("plan.md", ""))
     s.tasks = [(tid, txt, "done" if mark == "x" else "todo")
                for mark, tid, txt in TASK_RE.findall(bodies.get("tasks.md", ""))]
-    s.anchors = resolve_anchors(docs, tree)
     s.sections = bodies
-    if branch:
-        s.landed = landed_map(spec_dir, branch)
+    s.validation = validate_spec(spec_dir, target_repo=str(tree), specs_root=str(specs_root))
+    state, landing, detail = read_landing(spec_dir, tree, branch)
+    s.landing_state = state
+    s.landing_detail = detail
+    s.landed = landing
     return s
 
 
@@ -489,8 +440,38 @@ details[open] summary{border-bottom:1px solid var(--hairline)}
 """
 
 
-def build(s: Spec, tree_label: str) -> str:
-    broken = [a for a in s.anchors if a.status != "ok"]
+def validation_html(report: SpecValidation) -> str:
+    """Render the library report in run order, preserving severity and reasons."""
+    finding_rows = []
+    for finding in report.findings:
+        cls = {"refusal": "bad", "advisory": "warn"}.get(finding.severity, "neutral")
+        finding_rows.append(
+            f'<tr><td>{html.escape(finding.severity, quote=False)}</td>'
+            f'<td>{html.escape(finding.layer, quote=False)}</td>'
+            f'<td>{html.escape(finding.message, quote=False)}</td></tr>'
+        )
+    skipped_rows = []
+    for skipped in report.skipped:
+        skipped_rows.append(
+            f'<tr><td>{html.escape(skipped["layer"], quote=False)}</td>'
+            f'<td>{html.escape(skipped["reason"], quote=False)}</td></tr>'
+        )
+    checked = ", ".join(report.checked) or "—"
+    summary = (f"refusals={len(report.refusals)}, advisories={len(report.advisories)}, "
+               f"skipped={len(report.skipped)}")
+    return f"""<table><tr><th>verdict</th><th>layer</th><th>message</th></tr>
+<tr><td>{html.escape(report.verdict, quote=False)}</td><td colspan="2">{html.escape(summary)}</td></tr>
+{"".join(finding_rows)}
+</table>
+<h3>Skipped layers</h3>
+<table><tr><th>layer</th><th>reason</th></tr>
+{"".join(skipped_rows)}
+</table>
+<p><b>Checked:</b> {html.escape(checked)}</p>"""
+
+
+def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) -> str:
+    report = validation if validation is not None else (s.validation or SpecValidation())
     story_ids = {sid for sid, _, _ in s.stories}
     covered_fr = set(re.findall(r"FR-\d+", "\n".join(t[1] for t in s.tasks)))
     declared_fr = {f for f, _ in s.frs}
@@ -499,28 +480,32 @@ def build(s: Spec, tree_label: str) -> str:
     def chip(cls, label):
         return f'<span class="chip {cls}">{html.escape(label)}</span>'
 
-    anchor_chip = chip("ok", f"{len(s.anchors)} anchors ok") if not broken \
-        else chip("bad", f"{len(broken)} of {len(s.anchors)} broken")
     fr_gap = declared_fr - covered_fr
     fr_chip = chip("ok", f"{len(declared_fr)}/{len(declared_fr)} FR") if not fr_gap \
         else chip("bad", f"{len(fr_gap)} FR uncovered")
     state_cls = {"landed": "ok", "ready": "warn", "draft": "neutral"}.get(s.state, "neutral")
-
-    rows = []
-    for a in sorted(broken, key=lambda x: (x.doc, x.doc_line)):
-        rows.append(f'<tr class="anchor-row"><td>{html.escape(a.doc)}:{a.doc_line}</td>'
-                    f'<td><code>{html.escape(a.path)}:{a.line}</code></td>'
-                    f'<td>{chip("bad", a.status)}</td></tr>')
-    anchor_tbl = ("<div class='scroll'><table><tr><th>cited in</th><th>anchor</th><th>status</th></tr>"
-                  + "".join(rows) + "</table></div>") if rows else \
-        "<p class='empty'>Every citation resolves against the tree.</p>"
+    landing_count = len(s.landed)
+    landing_label = (
+        f"{landing_count}/{len(s.stories)} landed"
+        if s.landing_state in {"empty", "ready"}
+        else s.landing_state
+    )
+    landing_cls = "neutral" if s.landing_state == "empty" else (
+        "ok" if s.landing_state == "ready" and landing_count == len(s.stories)
+        else "bad"
+    )
 
     srows = []
     for sid, title, pri in s.stories:
         g = s.graph.get(sid, {})
         deps = ", ".join(g.get("depends_on_merged", [])) or "—"
         vdeps = ", ".join(g.get("depends_on", [])) or "—"
-        land = chip("ok", "landed " + s.landed[sid][:7]) if sid in s.landed else chip("neutral", "not landed")
+        if sid in s.landed:
+            land = chip("ok", "landed " + s.landed[sid][:7])
+        elif s.landing_state in {"unavailable", "error"}:
+            land = chip("bad", "landing " + s.landing_state)
+        else:
+            land = chip("neutral", "not landed")
         srows.append(f"<tr><td><code>{sid}</code></td><td>{html.escape(title)}</td><td>{pri}</td>"
                      f"<td><code>{html.escape(g.get('persona') or 'implementer')}</code></td>"
                      f"<td>{html.escape(vdeps)}</td><td>{html.escape(deps)}</td><td>{land}</td></tr>")
@@ -534,10 +519,18 @@ def build(s: Spec, tree_label: str) -> str:
     prov = html.escape("\n".join(s.provenance)) or "No provenance recorded."
 
     nav = "".join(f'<a href="#{i}">{n}</a>' for i, n in
-                  [("graph", "Work graph"), ("stories", "Stories"), ("anchors", "Anchor health"),
+                  [("graph", "Work graph"), ("stories", "Stories"),
                    ("traps", "Traps"), ("spec", "Specification"), ("plan", "Plan"), ("tasks", "Tasks")])
 
     done = sum(1 for _, _, st in s.tasks if st == "done")
+    if s.landing_state == "empty":
+        landing_body = "<p class='empty'>No landing facts returned.</p>"
+    elif s.landing_state in {"unavailable", "error"}:
+        landing_body = f"<div class='trap'><b>{html.escape(s.landing_state)}</b> {html.escape(s.landing_detail)}</div>"
+    else:
+        landing_body = "<p class='empty'>No landing facts returned.</p>"
+    validation_section = validation_html(report)
+    validation_chip = chip("ok" if report.verdict == "pass" else "bad", report.verdict)
     return f"""<meta charset="utf-8">
 <title>{html.escape(s.slug)}</title>
 <style>{CSS}</style>
@@ -546,9 +539,9 @@ def build(s: Spec, tree_label: str) -> str:
   <p class="eyebrow">Ergane spec</p>
   <div class="health">
     <div><span>state</span>{chip(state_cls, s.state)}</div>
-    <div><span>anchors</span>{anchor_chip}</div>
     <div><span>requirements</span>{fr_chip}</div>
-    <div><span>stories</span>{chip("neutral", f"{len(s.landed)}/{len(s.stories)} landed")}</div>
+    <div><span>validation</span>{validation_chip}</div>
+    <div><span>stories</span>{chip(landing_cls, landing_label)}</div>
     <div><span>tasks</span>{chip("neutral", f"{done}/{len(s.tasks)} done")}</div>
   </div>
   <nav>{nav}</nav>
@@ -568,8 +561,11 @@ def build(s: Spec, tree_label: str) -> str:
   <h2 id="stories">Stories</h2>
   {story_tbl}
 
-  <h2 id="anchors">Anchor health</h2>
-  {anchor_tbl}
+  <h2 id="landing">Landing: {html.escape(s.landing_state)}</h2>
+  {landing_body}
+
+  <h2 id="validation">Validation: {report.verdict}</h2>
+  {validation_section}
 
   <h2 id="traps">Traps</h2>
   {traps}
@@ -586,6 +582,35 @@ def build(s: Spec, tree_label: str) -> str:
 </div>"""
 
 
+def render_local(
+    spec_dir: pathlib.Path,
+    tree: pathlib.Path,
+    branch: str | None,
+    *,
+    specs_root: pathlib.Path,
+    output: pathlib.Path | None = None,
+    scratch_dir: pathlib.Path | None = None,
+) -> pathlib.Path:
+    """Render once to the caller's local path, or one unique local scratch path."""
+    spec_dir = pathlib.Path(spec_dir)
+    tree = pathlib.Path(tree).resolve()
+    spec = load(spec_dir, tree, branch, specs_root=pathlib.Path(specs_root))
+    page = build(spec, str(tree), validation=spec.validation)
+    if output is not None:
+        out = pathlib.Path(output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        directory = pathlib.Path(scratch_dir) if scratch_dir is not None else spec_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(
+            prefix=f"{spec_dir.name}-", suffix=".html", dir=directory
+        )
+        os.close(descriptor)
+        out = pathlib.Path(name)
+    out.write_text(page, encoding="utf-8")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("spec_dir")
@@ -600,12 +625,14 @@ def main() -> int:
         print(f"no spec.md in {spec_dir}", file=sys.stderr)
         return 2
     tree = pathlib.Path(args.tree).resolve()
-    s = load(spec_dir, tree, args.landed_branch)
-    page = build(s, str(tree))
-    out = pathlib.Path(args.output) if args.output else spec_dir / f"{spec_dir.name}.html"
-    out.write_text(page, encoding="utf-8")
-    broken = sum(1 for a in s.anchors if a.status != "ok")
-    print(f"{out}  ({len(s.stories)} stories, {len(s.anchors)} anchors, {broken} broken)")
+    out = render_local(
+        spec_dir,
+        tree,
+        args.landed_branch,
+        specs_root=spec_dir.parent,
+        output=pathlib.Path(args.output) if args.output else None,
+    )
+    print(f"{out}")
     return 0
 
 

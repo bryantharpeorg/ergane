@@ -1,13 +1,13 @@
 ---
 name: spec-html
-description: Render an Ergane spec trio (spec.md, plan.md, tasks.md) as one readable HTML page, with the Work Graph drawn as a DAG, every file:line anchor resolved live against the tree, and coverage computed. Optionally publish it as a Claude artifact. Use when asked to make a spec readable, share a spec, review one visually, or check a spec's anchor health.
+description: Render an Ergane spec trio (spec.md, plan.md, tasks.md) as one readable HTML page, with the Work Graph drawn as a DAG and the library validator's actual report. Rendering returns that local path; publication is a separate authorized action. Use when asked to make a spec readable, share a spec, review one visually, or check one validation verdict.
 ---
 
 # Rendering a spec as HTML
 
 A spec is hard to read because the parts that matter most are the parts prose is
-worst at: a Work Graph as raw YAML, anchors you cannot verify by looking, and
-coverage you have to compute in your head across three files.
+worst at: a Work Graph as raw YAML, validator findings, and landing truth across
+three files.
 
 This renders the trio as one page and **resolves all three against the tree
 first**. The reading improvement is a side effect; the point is that the page
@@ -17,12 +17,12 @@ states facts the markdown only claims.
 
 ```bash
 cd /home/admin/code/ergane
-python3 .claude/skills/spec-html/render.py specs/<spec-dir> -o /tmp/<name>.html
+python3 .agents/skills/spec-html/render.py specs/<spec-dir> -o <caller-selected-local-path>
 ```
 
 Options that change the answer, not the styling:
 
-- `--tree <dir>` — the tree anchors resolve against. **Defaults to the repo
+- `--tree <dir>` — the target repository the validator resolves against. **Defaults to the repo
   root, which is usually the wrong tree.** A node's worktree branches from the
   landing branch, not from your working copy, so a spec can read clean for you
   and land an agent in the middle of a docstring. To get the answer an agent
@@ -33,11 +33,11 @@ Options that change the answer, not the styling:
   ```
   then `--tree /tmp/origin`.
 - `--landed-branch ergane-buildout` — marks landed stories green in the DAG and
-  fills the story table. Costs one `ergane spec landed` call. **Never pass
-  `main`**; the factory does not land there.
+  fills the story table. Reads landing facts from the declared target without
+  fetching. **Never pass `main`**; the factory does not land there.
 
-The command prints a one-line summary — stories, anchors, broken — so a bad spec
-is visible without opening the page.
+The command prints the local output path. Without `-o`, it writes one unique
+scratch path beside the trio.
 
 ## What the page shows that the markdown does not
 
@@ -46,25 +46,22 @@ is visible without opening the page.
   (`depends_on`).** That distinction is invisible in YAML and it is the one that
   costs reworks: a dashed edge releases a story while its dependency is still in
   the merge queue, so the dependent builds against a base without it.
-- **Anchor health**, per citation, with the status. Four kinds: `missing` file,
-  `eof`, `blank` line, and `ambiguous` — a bare `` `:NN` `` with no filename
-  named in its own paragraph. Ambiguous is a real finding, not a parser
-  limitation: if the scan cannot resolve the antecedent, neither can a reader.
+- **The validator's verdict**, with every finding's layer, message, and severity;
+  every skipped layer's reason; and the checked sequence. This is
+  `factory.spec.validate_spec`, not a second implementation.
 - **Coverage**, computed: FRs with no task, stories against the graph, tasks done.
 - **Provenance**, collapsed. The frontmatter comment block is where a spec records
   why it is held, and it is usually the longest thing in the file — worth keeping,
   worth folding away.
 
-## Publishing it as a Claude artifact
+## Publication is separate
 
-Optional, and only when asked. The page is self-contained — inline CSS, inline
-SVG, no external requests — so it satisfies the artifact CSP as generated.
+Rendering never publishes. It returns that local path and touches no remote.
+Publication is a separate authorized action, and only after an operator grants
+that intent.
 
-1. Render to a file first.
-2. Call `Artifact` with that `file_path`, a `favicon`, and a one-sentence
-   `description`.
-3. **To update a spec's page later, pass the same `file_path`** — it redeploys to
-   the same URL. A different path mints a new one.
+1. Confirm the publication is authorized and where it may go.
+2. Publish the returned local file, never as part of the render call.
 
 Publishing sends the spec's full text off the machine. Ergane specs are ordinary
 engineering documents, but check the frontmatter before publishing one: hold
@@ -72,13 +69,10 @@ notes sometimes quote incident detail, and 064's records a live credential leak.
 
 ## Reading the output honestly
 
-**A green anchor count is not a clean spec.** The check proves each citation
-lands on a non-blank line — not that it lands on the symbol the prose names. The
-worst anchor found on 2026-08-20 was `_judge_rewrites_spent` cited 54 lines off:
-it resolved to real code inside a different function, and this page would have
-called it fine. Read the ones the prose makes load-bearing.
+**A pass is not a clean spec by itself.** Read refusals, advisories, skipped
+layers, and the validator's reasons. Information and skipped layers do not
+change the verdict, but they still tell the reader what was not proven.
 
-**Re-render after anything lands.** Anchors rot when the factory ships into a
-file a pending spec cites — 067's plan lost fourteen overnight. A page rendered
-before a merge is evidence about a tree that no longer exists; the footer records
-which tree it was resolved against for exactly this reason.
+**Re-render after anything lands.** Validation and landing facts age when the
+factory ships. A page rendered before a merge is evidence about a tree that no
+longer exists; the footer records which tree it was resolved against.
