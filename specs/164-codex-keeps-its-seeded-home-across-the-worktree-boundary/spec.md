@@ -1,7 +1,9 @@
 ---
-state: ready
+state: landed
 fixes:
   - workgraph/codex-relative-home-is-resolved-from-the-node-worktree
+# Attested landed 2026-09-11. US1 e22bbdc29e50 (#472) was observed on
+# ergane-buildout by content.
 ---
 
 # Feature Specification: Codex keeps its seeded home across the worktree boundary

@@ -1,5 +1,7 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 6bb23b910385 (#467) was observed on
+# ergane-buildout by content.
 ---
 
 # Feature Specification: a declared gate deadline reaches the workflow
