@@ -21,7 +21,13 @@ import factory.supervision.engine_upgrade as upgrade_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.controlplane.verify import render_findings
 from factory.mergequeue.models import Finding
-from factory.supervision.engine_identity import EngineIdentity, cli_version, identity_path, image_reference
+from factory.supervision.engine_identity import (
+    EngineIdentity,
+    IMAGE_REPOSITORY,
+    cli_version,
+    identity_path,
+    image_reference,
+)
 from factory.supervision.units import CommandResult, supervision_home
 from factory.versioning import OpenEpic
 
@@ -112,6 +118,24 @@ def _write_identity(state_home: Path, version: str, *, image_reference_value: st
             image_digest=None,
         ),
     )
+
+
+def test_retention_removes_only_exact_repository_older_releases() -> None:
+    """T001 / US1-S1 / FR-001: exact repository equality bounds cleanup."""
+    target = image_reference("0.4.0")
+    previous = image_reference("0.3.0")
+    older = [image_reference("0.1.0"), image_reference("0.2.0")]
+    unrelated = "example.com/operator/another-service:0.1.0"
+    prefix_lookalike = f"{IMAGE_REPOSITORY}-operator/another-service:0.1.0"
+
+    decision = upgrade_module._retention_decision(
+        [target, previous, *older, unrelated, prefix_lookalike],
+        target_image=target,
+        previous_image=previous,
+    )
+
+    assert decision.remove == tuple(older)
+    assert decision.keep == (target, previous, unrelated, prefix_lookalike)
 
 
 # ---------------------------------------------------------------------------
