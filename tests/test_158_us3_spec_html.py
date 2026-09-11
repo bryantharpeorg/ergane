@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import pytest
 from pathlib import Path
 
 
@@ -49,3 +50,64 @@ def test_page_renders_the_typed_refusal_advisory_and_skip() -> None:
     for skipped in report.skipped:
         assert skipped["layer"] in page
         assert skipped["reason"] in page
+
+
+def test_no_landing_branch_is_unavailable_not_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lookup that was not requested cannot masquerade as zero landings."""
+    renderer = load_renderer()
+    monkeypatch.setattr(renderer, "landed_facts", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("lookup attempted")))
+    spec = renderer.load(
+        DEFECTIVE_TRIO,
+        FIXTURE_REPO,
+        None,
+        specs_root=FIXTURE_ROOT / "defective-specs",
+    )
+    assert spec.landed == {}
+    assert spec.landing_state == "unavailable"
+    assert "--landed-branch" in spec.landing_detail
+    page = renderer.build(spec, str(FIXTURE_REPO))
+    assert "Landing: unavailable" in page
+    assert "--landed-branch" in page
+    assert "0/1 stories" not in page
+
+
+def test_empty_landing_result_is_empty_not_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty successful lookup remains its own state."""
+    renderer = load_renderer()
+    monkeypatch.setattr(renderer, "landed_facts", lambda *args, **kwargs: {})
+    spec = renderer.load(
+        DEFECTIVE_TRIO,
+        FIXTURE_REPO,
+        "main",
+        specs_root=FIXTURE_ROOT / "defective-specs",
+    )
+    assert spec.landed == {}
+    assert spec.landing_state == "empty"
+    page = renderer.build(spec, str(FIXTURE_REPO))
+    assert "Landing: empty" in page
+    assert "No landing facts returned." in page
+
+
+def test_landing_error_keeps_the_original_safe_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed lookup is visible with its original safe detail."""
+    from factory.workgraph.worktree import WorktreeError
+
+    renderer = load_renderer()
+
+    def fail(*args, **kwargs):
+        raise WorktreeError("git log refused: scratch failure")
+
+    monkeypatch.setattr(renderer, "landed_facts", fail)
+    spec = renderer.load(
+        DEFECTIVE_TRIO,
+        FIXTURE_REPO,
+        "main",
+        specs_root=FIXTURE_ROOT / "defective-specs",
+    )
+    assert spec.landed == {}
+    assert spec.landing_state == "error"
+    assert spec.landing_detail == "git log refused: scratch failure"
+    page = renderer.build(spec, str(FIXTURE_REPO))
+    assert "Landing: error" in page
+    assert "git log refused: scratch failure" in page
+    assert "0/1 stories" not in page

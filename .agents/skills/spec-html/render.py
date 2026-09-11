@@ -27,6 +27,8 @@ import sys
 from dataclasses import dataclass, field
 
 from factory.spec import SpecValidation, validate_spec
+from factory.workgraph.landed import landed_facts
+from factory.workgraph.worktree import WorktreeError
 
 ANCHOR_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|md|ya?ml|toml|sql|sh)):(\d+)(?:-(\d+))?`")
 BARE_RE = re.compile(r"`:(\d+)(?:-(\d+))?`")
@@ -65,6 +67,8 @@ class Spec:
     landed: dict[str, str] = field(default_factory=dict)
     sections: dict[str, str] = field(default_factory=dict)
     validation: SpecValidation | None = None
+    landing_state: str = "unavailable"
+    landing_detail: str = "no --landed-branch was supplied"
 
 
 def split_frontmatter(text: str) -> tuple[list[str], str, int]:
@@ -158,15 +162,22 @@ def _probe(doc, doc_line, path, line, end, tree, cache) -> Anchor:
     return a
 
 
-def landed_map(spec_dir: pathlib.Path, branch: str) -> dict[str, str]:
+def read_landing(spec_dir: pathlib.Path, tree: pathlib.Path, branch: str | None):
+    """Read landing facts without network access, or name why the answer is absent."""
+    if not branch:
+        return "unavailable", {}, "no --landed-branch was supplied"
     try:
-        r = subprocess.run(
-            ["uv", "run", "ergane", "spec", "landed", str(spec_dir), "--default-branch", branch],
-            capture_output=True, text=True, timeout=120,
+        facts = landed_facts(
+            tree,
+            spec_dir.name,
+            default_branch=branch,
+            fetch=False,
         )
-    except Exception:
-        return {}
-    return dict(re.findall(r"^(US\d+) landed at ([0-9a-f]+)", r.stdout, re.M))
+    except (WorktreeError, OSError) as error:
+        return "error", {}, str(error)
+    return ("empty" if not facts else "ready"), {
+        story: fact.commit for story, fact in facts.items()
+    }, "landing facts returned"
 
 
 def load(
@@ -208,8 +219,10 @@ def load(
     s.anchors = resolve_anchors(docs, tree)
     s.sections = bodies
     s.validation = validate_spec(spec_dir, target_repo=str(tree), specs_root=str(specs_root))
-    if branch:
-        s.landed = landed_map(spec_dir, branch)
+    state, landing, detail = read_landing(spec_dir, tree, branch)
+    s.landing_state = state
+    s.landing_detail = detail
+    s.landed = landing
     return s
 
 
@@ -545,6 +558,16 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
     fr_chip = chip("ok", f"{len(declared_fr)}/{len(declared_fr)} FR") if not fr_gap \
         else chip("bad", f"{len(fr_gap)} FR uncovered")
     state_cls = {"landed": "ok", "ready": "warn", "draft": "neutral"}.get(s.state, "neutral")
+    landing_count = len(s.landed)
+    landing_label = (
+        f"{landing_count}/{len(s.stories)} landed"
+        if s.landing_state in {"empty", "ready"}
+        else s.landing_state
+    )
+    landing_cls = "neutral" if s.landing_state == "empty" else (
+        "ok" if s.landing_state == "ready" and landing_count == len(s.stories)
+        else "bad"
+    )
 
     rows = []
     for a in sorted(broken, key=lambda x: (x.doc, x.doc_line)):
@@ -560,7 +583,12 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
         g = s.graph.get(sid, {})
         deps = ", ".join(g.get("depends_on_merged", [])) or "—"
         vdeps = ", ".join(g.get("depends_on", [])) or "—"
-        land = chip("ok", "landed " + s.landed[sid][:7]) if sid in s.landed else chip("neutral", "not landed")
+        if sid in s.landed:
+            land = chip("ok", "landed " + s.landed[sid][:7])
+        elif s.landing_state in {"unavailable", "error"}:
+            land = chip("bad", "landing " + s.landing_state)
+        else:
+            land = chip("neutral", "not landed")
         srows.append(f"<tr><td><code>{sid}</code></td><td>{html.escape(title)}</td><td>{pri}</td>"
                      f"<td><code>{html.escape(g.get('persona') or 'implementer')}</code></td>"
                      f"<td>{html.escape(vdeps)}</td><td>{html.escape(deps)}</td><td>{land}</td></tr>")
@@ -578,6 +606,12 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
                    ("traps", "Traps"), ("spec", "Specification"), ("plan", "Plan"), ("tasks", "Tasks")])
 
     done = sum(1 for _, _, st in s.tasks if st == "done")
+    if s.landing_state == "empty":
+        landing_body = "<p class='empty'>No landing facts returned.</p>"
+    elif s.landing_state in {"unavailable", "error"}:
+        landing_body = f"<div class='trap'><b>{html.escape(s.landing_state)}</b> {html.escape(s.landing_detail)}</div>"
+    else:
+        landing_body = "<p class='empty'>No landing facts returned.</p>"
     validation_section = validation_html(validation or SpecValidation())
     validation_chip = chip(
         "ok" if (validation or SpecValidation()).verdict == "pass" else "bad",
@@ -594,7 +628,7 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
     <div><span>anchors</span>{anchor_chip}</div>
     <div><span>requirements</span>{fr_chip}</div>
     <div><span>validation</span>{validation_chip}</div>
-    <div><span>stories</span>{chip("neutral", f"{len(s.landed)}/{len(s.stories)} landed")}</div>
+    <div><span>stories</span>{chip(landing_cls, landing_label)}</div>
     <div><span>tasks</span>{chip("neutral", f"{done}/{len(s.tasks)} done")}</div>
   </div>
   <nav>{nav}</nav>
@@ -613,6 +647,9 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
 
   <h2 id="stories">Stories</h2>
   {story_tbl}
+
+  <h2 id="landing">Landing: {html.escape(s.landing_state)}</h2>
+  {landing_body}
 
   <h2 id="anchors">Anchor health</h2>
   {anchor_tbl}
