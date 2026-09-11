@@ -1,5 +1,11 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 94406402cb33 (#514) on attempt 1 — observed
+# on ergane-buildout by content. The node itself is recorded KILLED: its stall
+# window expired at 12:36:15Z while the PR was still riding the queue healthy,
+# and the forge merged it 27 minutes later. The store's verdict and the branch
+# disagree, and the branch is the fact. Occurrence 3 of the landing finding
+# a-cancelled-required-check-is-not-a-failing-check-...-and-dies.
 depends_on_landed:
   - 170-the-historical-ingest-default-is-a-real-path
 fixes:

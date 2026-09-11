@@ -1,5 +1,7 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 556803eaa89e (#506) on attempt 1 — observed
+# on ergane-buildout by content.
 fixes:
   - tests/unpark-order-race-is-hidden-by-a-set-assertion
 ---
