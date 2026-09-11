@@ -1,10 +1,10 @@
 ---
 name: "findings-ingest"
-description: "Absorb a large external corpus of reported issues — a consumer's hand-over document, an audit, a review — into the doctor's ledger as stable identity-keyed findings, then classify them with `ergane findings triage`. Covers minting keys, the severity collapse, the defect-versus-want lane, the mandatory scratch-store rehearsal, and the `fixes:` back-fill that lets triage close anything. Use when a document arrives with more findings than you would file by hand."
+description: "Turn a large external corpus of reported issues into a sanitized analysis-only rehearsal, then — only when the operator declares the separate apply intent — record historical observations without manufactured recurrence. Covers minting keys, the severity collapse, the defect-versus-want lane, idempotent observation identity, and the `fixes:` back-fill that lets triage close anything. Use when a document arrives with more findings than you would file by hand."
 compatibility: "Requires the ergane CLI via scripts/ergane-env.sh and a checkout of this repository"
 metadata:
   author: "operator session, 2026-08-28"
-  status: "revised 2026-08-28 after the first sweep: §2 (dedup) added, §8 back-fill still unproven"
+  status: "revised 2026-09-11: analysis and apply are distinct intents; historical observation identity is first-class"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -93,21 +93,19 @@ A token-overlap heuristic helps but **under-reports** — it missed the
 first two above, which are the two highest-severity collisions in that
 set. Use it to narrow, then read.
 
-**When a mechanism already has a key, re-report that key** with the new
-evidence in `notes` and the source's number as a back-reference. That is
-the recurrence signal, and it is the whole point of an identity-keyed
-ledger. Mint a new key only for a mechanism genuinely absent from the
-corpus.
+**When a mechanism already has a key, prepare a new observation for that
+key** with the new evidence in `notes` and the source's number as a
+back-reference. That is the recurrence signal, and it is the whole point
+of an identity-keyed ledger. Mint a new key only for a mechanism
+genuinely absent from the corpus.
 
-> **But first: check whether the mechanism was fixed after the document was
-> written.** `report()` stamps `last_seen` with *now*, not with when the
-> reporter saw it. A hand-over describing a defect against an older release
-> is a **historical** sighting, and re-reporting it dates it today — which
-> is precisely how `triage` decides `seen-after-fix` (FR-006), the class
-> that means "we shipped a fix and it came back". Re-reporting a stale
-> sighting onto a key some landed spec already closed manufactures a
-> regression that never happened, in the one class the module exists to
-> protect.
+> **But first: separate observation time from ingestion time.** A
+> hand-over describing a defect against an older release is a
+> **historical** sighting. `findings ingest` records its observation time;
+> it does not advance `last_seen` to ingestion time. Its stable observation
+> id makes a second copy of the same observation a no-op, even when the
+> file is renamed. Never turn it into `findings report`, because report is
+> the live recurrence machine.
 >
 > This happened on 2026-08-28. The round-2 document reported a landing-base
 > defect against `ergane-cli 0.2.0`; spec 107 fixed it and declared it on
@@ -115,11 +113,11 @@ corpus.
 > had been "seen again on 2026-08-29". One row of seven — the other six
 > were genuinely still open, so the date was harmless there.
 >
-> So, before re-reporting: verify the mechanism against the **current
-> tree**. Still present → re-report, and the recurrence is real. Already
-> fixed → `resolve` the key naming the spec that fixed it, and put the
-> document's sighting in the resolution reason. Never re-report a sighting
-> you cannot date to after the fix.
+> So, before applying: verify the mechanism against the **current tree**.
+> Still present → apply the historical observation with its own time. A
+> claim in prose that the defect was fixed is evidence to inspect, not a
+> resolution. Already fixed by current implementation evidence → use the
+> separate `findings resolve` action; only that action resolves.
 
 ## 3. Mint keys that will still match in six months
 
@@ -179,12 +177,12 @@ Put `reporter severity: <original>` in every note. The collapse is a
 storage constraint, not a re-judgement, and a later reader needs to be
 able to tell the two apart.
 
-## 6. Rehearse against a scratch store — this step is not optional
+## 6. Analysis-only rehearsal
 
 ```bash
 eval "$(scripts/ergane-env.sh)"          # NOT `source` — it emits export lines
-uv run ergane findings report --db /tmp/rehearse.db --batch batch.json
-uv run ergane findings list  --db /tmp/rehearse.db --json | jq length
+uv run ergane findings ingest --batch batch.json --rehearsal-db /tmp/rehearse.db
+uv run ergane findings list --db /tmp/rehearse.db --json | jq length
 ```
 
 Check the rehearsal store, not just the exit code: row count, the severity
@@ -192,23 +190,8 @@ distribution, and that every `feedback/` row really is `info`. A generator
 bug that files a want at `critical` passes ingestion silently and is
 tedious to unwind afterwards.
 
-> **`--batch` is all-or-nothing on the *grammar* only.** The help text and
-> spec 015 FR-004 both say all-or-nothing, and `parse_findings_batch`
-> genuinely delivers that for the JSON grammar — every violation collected
-> before anything is written. **The credential sweep is not covered by it.**
-> `_contains_secret` runs *inside* the write loop at
-> `factory/cli/doctor.py:458-466`, and `report()` commits per call
-> (`factory/doctor/store.py:149`). Entry N tripping the sweep leaves
-> entries 1..N-1 **committed** while the verb exits 1 saying "batch
-> refused". Filed as
-> `doctor/the-credential-sweep-runs-inside-the-batch-write-loop-so-a-refused-batch-is-partially-written`.
-
-That is why the rehearsal is mandatory, and why **you may not simply
-re-run a refused batch against the real store.** `report()` is a
-recurrence machine: a re-report increments `occurrences` and advances
-`last_seen`, and `last_seen` is the exact field triage uses to separate
-`fixed` from `seen-after-fix`. Re-running a partially-written batch
-corrupts the evidence triage depends on.
+The rehearsal store is the only store this command opens without
+`--apply`. The operational ledger is not opened for writing until §6.1.
 
 **The sweep's regex is `sk-[A-Za-z0-9_\-]{8,}`, unanchored on the left.**
 Ordinary hyphenated English words whose interior contains that
@@ -231,23 +214,31 @@ was refused on its first filing for exactly that.
       "severity": "critical | warning | info",
       "summary": "one sentence stating the defect",
       "refs": ["factory/path.py:123"],          // required, may be []
-      "notes": "[N30] reporter severity: critical. ...evidence..."
+      "notes": "[N30] reporter severity: critical. ...evidence...",
+      "observation_id": "<source>-<finding-key>-<stable-source-record-id>",
+      "observed_at": "YYYY-MM-DDTHH:MM:SSZ"
     }
   ]
 }
 ```
 
 Entries may **not** carry their own `source` or `status` — the file is one
-provenance and the store owns the status machine. Duplicate keys within one
-file are refused naming the key. Use one file per source; if a document
-carries both defects and platform requirements, that is two sources and
-two files, so `findings list --json` can separate them later.
+provenance and the store owns the status machine. Each historical entry
+must carry `observation_id` and `observed_at`; the id must be derived from
+the reporter's own record identity, never from a batch position or file
+name. Ingestion time is stamped separately when the rehearsal or apply runs.
+Duplicate keys within one file are refused naming the key. Use one file per
+source; if a document carries both defects and platform requirements, that
+is two sources and two files, so `findings list --json` can separate them
+later.
 
-Then ingest for real:
+## 6.1 Separate authorized application
 
 ```bash
-uv run ergane findings report --batch batch-defects.json
-uv run ergane findings report --batch batch-platform.json
+uv run ergane findings ingest \
+  --batch batch.json \
+  --apply \
+  --db "$OPERATIONAL_ROOT/doctor.db"
 ```
 
 ## 7. Triage, read-only first
@@ -313,11 +304,14 @@ close them.
 
 ## Hard rules
 
-- **Rehearse against `--db /tmp/…` before every real ingest.** The
-  credential sweep can partially write a batch the verb calls refused.
-- **Never re-run a partially-written batch against the real store** — it
-  double-counts `occurrences` and advances `last_seen`, corrupting the
-  field triage classifies on.
+- **Analysis is not application.** `findings ingest` without `--apply`
+  writes only its rehearsal; `--apply` is a separate declared intent.
+- **Observation time is not ingestion time.** Historical events preserve
+  `observed_at` and the stable `observation_id`; they never become new
+  recurrences at apply time.
+- **Historical fix prose is evidence, not a resolution.** A current-row
+  resolution requires current implementation evidence and the separate
+  `findings resolve` action.
 - **Never hand-filter the corpus before ingesting.** Let triage decide.
 - **A want is filed at `info` in the `feedback/` lane**, whatever the
   reporter called it.
