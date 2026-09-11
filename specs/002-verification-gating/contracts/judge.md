@@ -49,7 +49,7 @@ criterion.
 2. Every acceptance scenario with its steps, verbatim, each tagged with its exact
    `scenario_id` (`US<n>-S<k>`; the response must echo these ids).
 3. `prior_feedback` when this is a judge-initiated retry (verbatim, FR-006).
-4. The diff: unified format, capped at 60 KiB with proportional per-file head+tail
+4. The diff: unified format, capped at 64 KiB with proportional per-file head+tail
    truncation and explicit `[... N lines truncated ...]` markers (research R6);
    full file list + diffstat always included. Truncation is disclosed in the
    prompt and flagged `truncated_input` in the verdict.

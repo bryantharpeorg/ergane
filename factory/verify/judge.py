@@ -161,11 +161,11 @@ Committed tests are sampled evidence; they do not define or narrow the \
 behavioral scope of a scenario, and a green or failing test gate does not erase \
 a concrete counterexample. Unless the criterion explicitly narrows it, an \
 unqualified public API or CLI scenario includes reachable defaults and \
-omitted-option invocations. A concrete change in the diff that demonstrably \
+omitted-option invocations unless the criterion explicitly narrows it. A \
+concrete change in the diff that demonstrably \
 contradicts the scenario is a counterexample: the closest dispatched scenario \
 must fail, and you must not return PASS for that scenario while relegating the \
 same counterexample to feedback.
-This scope applies unless the criterion explicitly narrows it.
 
 Treat universal safety claims — including "sanitized", "never", "every" and \
 "unchanged" — as covering every externally controlled field and every \
