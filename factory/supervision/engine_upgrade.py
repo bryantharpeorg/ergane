@@ -16,6 +16,7 @@ from factory.cli.errors import EXIT_USER, OperatorError
 from factory.controlplane.verify import verify_controlplane
 from factory.mergequeue.models import Finding
 from factory.registry import resolve_state_home
+from factory.supervision.container_manifest import retarget_project
 from factory.supervision.engine_identity import (
     IMAGE_REPOSITORY,
     cli_version,
@@ -74,7 +75,9 @@ class _ComposeDockerSeam:
     def __init__(self, project_dir: Path) -> None:
         self._project_dir = project_dir
 
-    def _compose(self, *arguments: str) -> CommandResult:
+    def _compose(
+        self, *arguments: str, env: dict[str, str] | None = None
+    ) -> CommandResult:
         argv = ["docker", "compose", "-f", str(self._project_dir / COMPOSE_NAME), *arguments]
         finished = subprocess.run(
             argv,
@@ -82,6 +85,7 @@ class _ComposeDockerSeam:
             text=True,
             check=False,
             cwd=str(self._project_dir),
+            env={**os.environ, **env} if env else None,
         )
         return CommandResult(finished.returncode, finished.stdout + finished.stderr)
 
@@ -97,7 +101,7 @@ class _ComposeDockerSeam:
     def start(self, image_reference: str, *, env: dict[str, str] | None = None) -> None:
         env = dict(env) if env else {}
         env.setdefault("ERGANE_VERSION", image_reference.rsplit(":", 1)[-1])
-        result = self._compose("up", "-d", "--no-build")
+        result = self._compose("up", "-d", "--no-build", env=env)
         if result.code != 0:
             raise OperatorError(
                 f"`docker compose up -d` failed for the engine container project "
@@ -283,7 +287,10 @@ def upgrade(
 
     Refuses while work is in flight unless ``force`` is true.  Stops the running
     engine, starts the new pinned image, verifies through it, and reaps images
-    older than the previous version.
+    older than the previous version.  Before anything disruptive it validates
+    the generated project's ownership and retargets the persisted image and
+    version declarations, so a refusal or persistence failure leaves the prior
+    project untouched (spec 174 US2).
     """
     if open_epics is None:
         from factory.supervision.units import _open_epics
@@ -300,7 +307,8 @@ def upgrade(
     if docker is None:
         docker = _ComposeDockerSeam(project_dir)
 
-    target_image = image_reference(cli_version())
+    target_version = cli_version()
+    target_image = image_reference(target_version)
 
     state_home = _state_home or resolve_state_home()
     identity = read_identity(state_home)
@@ -312,11 +320,25 @@ def upgrade(
             f"proceeding with upgrade despite {', '.join(epic.epic_id for epic in epics)} in flight"
         )
 
+    # Ownership is not bypassable: `force` reaches the in-flight-work refusal
+    # only, so no force is passed here.  Refusals and persistence failures
+    # leave the project bytes untouched and stop before docker.stop (FR-007,
+    # FR-008).
+    retargeted = retarget_project(
+        project_dir, image=target_image, version=target_version
+    )
+    if retargeted.retargeted:
+        notes.append(
+            f"retargeted {', '.join(retargeted.retargeted)} to {target_image}"
+        )
+    else:
+        notes.append(f"project at {project_dir} already selects {target_image}")
+
     docker.stop()
 
     # The new engine needs ERGANE_VERSION set so compose.reference.yaml:10 resolves
     # the image tag it was pinned to (trap 9).
-    docker.start(target_image, env={"ERGANE_VERSION": cli_version()})
+    docker.start(target_image, env={"ERGANE_VERSION": target_version})
 
     findings, _verify_exit = docker.verify()
     findings = list(findings)

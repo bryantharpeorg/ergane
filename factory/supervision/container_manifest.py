@@ -33,16 +33,25 @@ reason the manifest exists.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
-from collections.abc import Mapping
+import stat
+import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from factory.cli.errors import OperatorError
 from factory.supervision.container_project import (
+    APPARMOR_ARTIFACT,
     COMPOSE_NAME,
     ContainerProject,
+    ENV_NAME,
     project_dir,
     project_files,
+    SERVICE_NAME,
+    SECCOMP_ARTIFACT,
+    _scalar,
 )
 from factory.supervision.units import (
     MANIFEST_NAME,
@@ -61,11 +70,14 @@ __all__ = [
     "KEPT_CHANGED",
     "KEPT_UNCLAIMED",
     "MANIFEST_NAME",
+    "RetargetReport",
     "InstalledProject",
     "KeptFile",
     "RemovalReport",
     "WriteReport",
     "installed_project",
+    "installed_project_at",
+    "retarget_project",
     "remove_project",
     "write_project",
 ]
@@ -312,6 +324,235 @@ def installed_project(layout: InstallLayout | None = None) -> InstalledProject |
     if not recorded:
         return None
     return InstalledProject(directory=directory, digests=dict(recorded))
+
+
+def installed_project_at(directory: Path) -> InstalledProject | None:
+    """The same ownership query as `installed_project`, pinned to an
+    explicit directory.
+
+    The upgrade honours `ERGANE_COMPOSE_PROJECT`, which can move the project
+    off the layout default; ownership must follow the project the command is
+    actually driving, never the directory the layout happens to derive.
+    """
+    recorded = _read_manifest(directory)
+    if not recorded:
+        return None
+    return InstalledProject(directory=directory, digests=dict(recorded))
+
+
+@dataclasses.dataclass(frozen=True)
+class RetargetReport:
+    """What a retarget rewrote, and what already sat at the target."""
+
+    directory: Path
+    retargeted: tuple[str, ...]
+    unchanged: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class _StagedFile:
+    """One retargeted file waiting in its temporary sibling, carrying the
+    previous bytes so a mid-sequence failure can put them back."""
+
+    path: Path
+    temp: Path
+    previous: bytes
+
+
+#: The files a retarget requires the manifest to claim — every file
+#: `project_files` renders.  A project missing one is not one this engine
+#: owns, and no `--force` reaches here (spec 174 FR-007).
+_REQUIRED_ARTIFACTS = (COMPOSE_NAME, ENV_NAME, SECCOMP_ARTIFACT, APPARMOR_ARTIFACT)
+
+
+def retarget_project(
+    directory: Path,
+    *,
+    image: str,
+    version: str,
+) -> RetargetReport:
+    """Retarget the owned image and version declarations of the generated
+    project at `directory`, leaving every other byte exactly as it is.
+
+    Every refusal happens before stop or write and names the affected path:
+    an unreadable manifest, an artifact that is unclaimed, missing,
+    unreadable or changed, and a shape with no owned declaration to retarget.
+    There is no force parameter on purpose — `--force` reaches the
+    in-flight-work refusal only, never ownership (spec 174 FR-007).
+
+    Persistence is one transaction: the updated files and the manifest are
+    staged as temporary siblings, the files are renamed in order, and the
+    manifest is renamed last as the commit point.  A rename that fails
+    mid-sequence is rolled back to the previous bytes, so the prior project
+    stays usable and a later invocation never proceeds on a half-retargeted
+    one (spec 174 FR-008).
+    """
+    manifest_path = directory / MANIFEST_NAME
+    recorded = _read_manifest(directory)
+    if not recorded:
+        raise OperatorError(
+            f"refusing to retarget the engine container project at {directory}: "
+            f"{manifest_path} is not a readable ownership manifest, so no file "
+            "in it is provably ergane's; reconcile it or remove the project by "
+            "hand, or re-run `ergane install` to regenerate it"
+        )
+    for name in _REQUIRED_ARTIFACTS:
+        path = directory / name
+        if name not in recorded:
+            raise OperatorError(
+                f"refusing to retarget the engine container project: {path} "
+                "was not written by ergane, so the upgrade will not retarget "
+                "it; move it aside and re-run `ergane install` to regenerate it"
+            )
+        if not path.is_file():
+            raise OperatorError(
+                f"refusing to retarget the engine container project: {path} "
+                "is recorded as generated but is missing; run `ergane install` "
+                "to regenerate it, or `ergane uninstall` to retire the project"
+            )
+        try:
+            current = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as failure:
+            raise OperatorError(
+                f"refusing to retarget the engine container project: {path} "
+                f"cannot be read as text ({failure}), so its ownership cannot "
+                "be proven; fix its permissions or encoding, or move it aside "
+                "and re-run `ergane install`"
+            ) from failure
+        if recorded[name] != _digest(current):
+            raise OperatorError(
+                f"refusing to retarget the engine container project: {path} "
+                "changed since ergane wrote it, so the upgrade will not "
+                "retarget it; reconcile the change or move the file aside, "
+                "then re-run — `--force` does not adopt operator edits"
+            )
+
+    compose_text = (directory / COMPOSE_NAME).read_text(encoding="utf-8")
+    env_text = (directory / ENV_NAME).read_text(encoding="utf-8")
+    new_compose = _retargeted_compose(
+        compose_text, image=image, path=directory / COMPOSE_NAME
+    )
+    new_env = _retargeted_env(env_text, version=version, path=directory / ENV_NAME)
+
+    updates: dict[str, str] = {}
+    if new_compose != compose_text:
+        updates[COMPOSE_NAME] = new_compose
+    if new_env != env_text:
+        updates[ENV_NAME] = new_env
+    unchanged = tuple(sorted(name for name in _REQUIRED_ARTIFACTS if name not in updates))
+    if not updates:
+        return RetargetReport(directory=directory, retargeted=(), unchanged=unchanged)
+
+    recorded = {
+        **recorded,
+        **{name: _digest(text) for name, text in updates.items()},
+    }
+    updates[MANIFEST_NAME] = json.dumps(
+        {_MANIFEST_KEY: dict(recorded)}, indent=2, sort_keys=True
+    )
+
+    staged: list[_StagedFile] = []
+    try:
+        for name, text in updates.items():
+            path = directory / name
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=directory,
+                prefix=f".{name}.",
+                suffix=".retarget",
+                delete=False,
+            ) as temp:
+                temp.write(text)
+                temp_path = Path(temp.name)
+            temp_path.chmod(stat.S_IMODE(path.stat().st_mode))
+            staged.append(
+                _StagedFile(path=path, temp=temp_path, previous=path.read_bytes())
+            )
+    except OSError as failure:
+        for item in staged:
+            with contextlib.suppress(OSError):
+                item.temp.unlink(missing_ok=True)
+        raise OperatorError(
+            f"could not stage the retargeted engine container project at "
+            f"{directory}: {failure}"
+        ) from failure
+
+    _commit_staged(staged)
+    return RetargetReport(
+        directory=directory,
+        retargeted=tuple(sorted(name for name in updates if name != MANIFEST_NAME)),
+        unchanged=unchanged,
+    )
+
+
+def _commit_staged(staged: Sequence[_StagedFile]) -> None:
+    """Rename every staged retarget into place, manifest last.
+
+    The manifest is the commit point: it is renamed after the files, so a
+    crash can only leave a project the manifest still fully owns.  A rename
+    that fails mid-sequence is rolled back to the previous bytes rather than
+    left half-applied (spec 174 FR-008).
+    """
+    renamed: list[tuple[Path, bytes]] = []
+    try:
+        for item in staged:
+            item.temp.replace(item.path)
+            renamed.append((item.path, item.previous))
+    except OSError as failure:
+        failed = item.path
+        for path, previous in renamed:
+            with contextlib.suppress(OSError):
+                path.write_bytes(previous)
+        for item in staged:
+            with contextlib.suppress(OSError):
+                item.temp.unlink(missing_ok=True)
+        raise OperatorError(
+            f"could not commit the retargeted engine container project: "
+            f"{failed} could not be replaced ({failure}); the previous "
+            "project bytes were restored"
+        ) from failure
+
+
+def _retargeted_compose(text: str, *, image: str, path: Path) -> str:
+    """`text` with the ergane service's owned image line swapped for `image`.
+
+    The digest check has just proven the bytes are the generator's render, so
+    the declaration is the first `image:` line inside the service block, and
+    every other byte is carried through untouched.
+    """
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.rstrip("\n") != f"  {SERVICE_NAME}:":
+            continue
+        for offset in range(index + 1, len(lines)):
+            following = lines[offset]
+            if not following.startswith("    "):
+                break
+            if following.startswith("    image:"):
+                lines[offset] = f"    image: {_scalar(image)}\n"
+                return "".join(lines)
+        break
+    raise OperatorError(
+        f"refusing to retarget the engine container project: {path} has no "
+        f"image declaration under the {SERVICE_NAME} service, so this "
+        "project's shape is unsupported for retargeting; regenerate it with "
+        "`ergane install`"
+    )
+
+
+def _retargeted_env(text: str, *, version: str, path: Path) -> str:
+    """`text` with the owned ERGANE_VERSION assignment swapped for `version`."""
+    lines = text.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.startswith("ERGANE_VERSION="):
+            lines[index] = f"ERGANE_VERSION={version}\n"
+            return "".join(lines)
+    raise OperatorError(
+        f"refusing to retarget the engine container project: {path} declares "
+        "no ERGANE_VERSION, so this project's shape is unsupported for "
+        "retargeting; regenerate it with `ergane install`"
+    )
 
 
 def remove_project(layout: InstallLayout | None = None) -> RemovalReport:
