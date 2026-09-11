@@ -204,7 +204,8 @@ Rules:
   your feedback would let the next attempt finish it; "fail" when the diff is not
   on the way to satisfying the requirement.
 - The diff may be abridged. A "[... N lines truncated ...]" marker means those
-  lines were elided to fit an input limit, not that the agent omitted them; say
+  lines were elided to fit the 64 KiB input limit, not that the agent omitted
+  them; say
   so in your reasoning rather than failing a scenario for evidence inside an
   elision.
 """

@@ -48,6 +48,7 @@ from __future__ import annotations
 import json
 import re
 import difflib
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -58,6 +59,7 @@ from factory.config import load_personas
 from factory.verify.judge import (
     DEFAULT_MAX_JUDGE_RETRIES,
     DIFF_INPUT_LIMIT,
+    GATE_SECTION_HEADING,
     MAX_HTTP_ATTEMPTS,
     MAX_OUTPUT_TOKENS,
     SYSTEM_PROMPT,
@@ -576,6 +578,30 @@ def test_the_universal_safety_fixture_carries_the_bypassing_branch_and_field() -
     assert "persist(record.name, record.slug)" in user
 
 
+def test_counterexample_evidence_arrives_in_the_production_prompt_order() -> None:
+    """Exact source-derived diffs sit after their criteria and sampled gate."""
+    cases = [
+        (COMPLETION_CRITERIA, COUNTEREXAMPLE_DIFF),
+        (SAFETY_CRITERIA, UNIVERSAL_SAFETY_DIFF),
+    ]
+    for criteria, diff in [
+        (COMPLETION_CRITERIA, COUNTEREXAMPLE_DIFF),
+        (SAFETY_CRITERIA, UNIVERSAL_SAFETY_DIFF),
+    ]:
+        prompt = build_prompt(criteria, diff, gate_results=[GREEN_TEST_GATE])
+        user = prompt.messages[1]["content"]
+        scenario = criteria.requirements[0].scenarios[0]
+
+        assert user.endswith(diff)
+        assert (
+            user.index(criteria.requirements[0].body)
+            < user.index(scenario.raw_text)
+            < user.index(GATE_SECTION_HEADING)
+            < user.index(GREEN_TEST_GATE.command)
+            < user.index(diff)
+        )
+
+
 def test_the_system_prompt_traces_universal_safety_claims_by_branch_and_field() -> None:
     """US1-S2 applies a universal claim to every reachable branch and field."""
     system = build_prompt(
@@ -768,6 +794,18 @@ def test_the_input_cap_is_64_kib() -> None:
     # (operator-directed; the 60 KiB comfort margin's first false positive
     # refused a fully-green story four times at 61,725 bytes).
     assert DIFF_INPUT_LIMIT == 64 * 1024
+
+
+def test_the_judge_contract_and_prompt_share_the_corrected_bound_wording() -> None:
+    """The fixed prompt and contract agree that the bound is 64 KiB."""
+    contract = (
+        Path(__file__).resolve().parents[1]
+        / "specs/002-verification-gating/contracts/judge.md"
+    ).read_text()
+
+    assert DIFF_INPUT_LIMIT == 64 * 1024
+    assert "capped at 64 KiB" in contract
+    assert "64 KiB input limit" in SYSTEM_PROMPT
 
 
 def test_a_diff_under_the_cap_arrives_whole() -> None:
