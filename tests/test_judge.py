@@ -366,6 +366,22 @@ def test_the_concrete_counterexample_fixture_is_assembled_as_real_prompt_evidenc
     assert COUNTEREXAMPLE_DIFF in user
 
 
+def test_the_counterexample_contract_reaches_the_assembled_system_message() -> None:
+    """US1-S1 is scored from the whole evidence, not from committed tests alone."""
+    system = build_prompt(
+        COMPLETION_CRITERIA,
+        COUNTEREXAMPLE_DIFF,
+        gate_results=[GREEN_TEST_GATE],
+    ).messages[0]["content"]
+
+    assert "Committed tests are sampled evidence" in system
+    assert "a green or failing test gate does not erase a concrete counterexample" in system
+    assert "an unqualified public API or CLI scenario includes reachable defaults and omitted-option invocations" in system
+    assert "unless the criterion explicitly narrows it" in system
+    assert "the closest dispatched scenario must fail" in system
+    assert "must not return PASS" in system
+
+
 @pytest.fixture
 def proxy(monkeypatch: pytest.MonkeyPatch) -> FakeJudgeProxy:
     """A fake `/chat/completions`, with the master key sitting in the env.
