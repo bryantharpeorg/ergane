@@ -48,7 +48,7 @@ No Docker daemon, worker, provider, credential store or live Temporal service.
 - [x] T012 [US2] (US2-S5, FR-009, FR-010) Reconcile the two upgrade docs while
       preserving README/on-ramp behavior and distinguishing synthetic captures
       from required real-image/rollback qualification.
-- [ ] T013 [US2] (US2-S5, FR-009, FR-010) Commit compact labelled evidence, run
+- [x] T013 [US2] (US2-S5, FR-009, FR-010) Commit compact labelled evidence, run
       upgrade/identity/project/manifest/onboarding controls, check the hashes and
       64 KiB bound, then run the full declared gate before normal judge and native
       merge-queue handling.
