@@ -59,3 +59,17 @@ uv run pytest -q tests/test_engine_upgrade.py
 ```
 
 Failed stop and failed start stop at their seam call; a failed engine finding is visible and degraded, but inventory/removal do not run. With a passing engine finding, unrelated failed findings remain in the report and degraded stays false.
+
+## T005 controls and full gate
+
+```text
+uv run pytest -q tests/test_engine_upgrade.py -k "exact_repository or unknown_previous or unrecognized_and_ambiguous or orders_numeric or reads_old_identity or unknown_pre_stop or lifecycle_failure or degraded_when or unrelated_probe"
+12 passed, 11 deselected in 0.10s
+```
+
+```text
+uv run pytest -q
+6283 passed, 58 skipped in 658.71s
+```
+
+The story diff from its dispatch base is below 16 KiB, within the 64 KiB bound. The skipped tiers are environmental and did not contact Docker or a live worker.
