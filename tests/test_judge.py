@@ -70,6 +70,8 @@ from factory.verify.judge import (
 )
 from factory.verify.models import (
     CriteriaSet,
+    GateResult,
+    GateStatus,
     JudgeOutcome,
     JudgeVerdict,
     Requirement,
@@ -225,6 +227,70 @@ OVERSIZED_DIFF = BIG_DIFF + MEDIUM_DIFF + TINY_DIFF
 SMALL_DIFF = unified_diff("src/gates.py", added=12, removed=3)
 
 
+# --- concrete-counterexample prompt fixture -----------------------------------
+
+COMPLETION_CRITERIA = CriteriaSet(
+    feature="counterexample-demo",
+    spec_ref="counterexample-demo/completion",
+    requirements=[
+        Requirement(
+            key="US1",
+            kind=RequirementKind.STORY,
+            title="Complete a CLI invocation",
+            priority="P1",
+            body="The public completion command completes the supplied target.",
+            scenarios=[
+                Scenario(
+                    scenario_id="US1-S1",
+                    steps=[
+                        "**Given** a CLI target to complete",
+                        "**When** the public completion command runs",
+                        "**Then** the target's completion is produced",
+                    ],
+                    raw_text=(
+                        "1. **Given** a CLI target to complete, **When** the "
+                        "public completion command runs, **Then** the target's "
+                        "completion is produced."
+                    ),
+                )
+            ],
+        )
+    ],
+    source_path="specs/counterexample-demo/spec.md",
+    source_sha256="c0ffee" + "0" * 58,
+    snapshotted_at="2026-09-11T00:00:00Z",
+)
+
+COUNTEREXAMPLE_DIFF = (
+    "diff --git a/src/completion.py b/src/completion.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/src/completion.py\n"
+    "+++ b/src/completion.py\n"
+    "@@ -1,4 +1,8 @@ def complete(target, *, option=None):\n"
+    "+def complete(target, *, option=\"explicit\"):\n"
+    "+    if option is None:\n"
+    "+        option = \"omitted\"\n"
+    "+    return crash_when_omitted(target, option)\n"
+    "\n"
+    "diff --git a/tests/test_completion.py b/tests/test_completion.py\n"
+    "index 3333333..4444444 100644\n"
+    "--- a/tests/test_completion.py\n"
+    "+++ b/tests/test_completion.py\n"
+    "@@ -1,2 +1,5 @@\n"
+    "+def test_explicit_option_completes():\n"
+    "+    assert complete(\"target\", option=\"explicit\") == \"target\"\n"
+)
+
+GREEN_TEST_GATE = GateResult(
+    name="test",
+    command="uv run pytest -q",
+    status=GateStatus.PASS,
+    exit_code=0,
+    duration_s=0.2,
+    output_tail="1 passed in 0.01s\n",
+)
+
+
 def content_lines(section: str) -> list[str]:
     """The `+`/`-` lines of a diff section — its content, minus its headers."""
     return [
@@ -286,6 +352,18 @@ def all_pass(feedback: str = "every scenario is satisfied") -> str:
 
 def user_message(criteria: CriteriaSet = CRITERIA, diff_text: str = SMALL_DIFF, **kwargs: Any) -> str:
     return build_prompt(criteria, diff_text, **kwargs).messages[1]["content"]
+
+
+def test_the_concrete_counterexample_fixture_is_assembled_as_real_prompt_evidence() -> None:
+    """The fixture itself supplies a sampled green gate beside a visible default-path defect."""
+    prompt = build_prompt(COMPLETION_CRITERIA, COUNTEREXAMPLE_DIFF, gate_results=[GREEN_TEST_GATE])
+    user = prompt.messages[1]["content"]
+
+    assert prompt.messages[0]["content"] == SYSTEM_PROMPT
+    assert COMPLETION_CRITERIA.requirements[0].scenarios[0].raw_text in user
+    assert GREEN_TEST_GATE.name in user
+    assert GREEN_TEST_GATE.command in user
+    assert COUNTEREXAMPLE_DIFF in user
 
 
 @pytest.fixture
