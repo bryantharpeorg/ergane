@@ -1,5 +1,9 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 57e1077f809b (#515) and US2
+# fbb34e444a88 (#517) both landed on attempt 1 and were observed on
+# ergane-buildout by content. The workflow recorded both nodes MERGED and the
+# epic COMPLETED.
 depends_on_landed:
   - 104-install-brings-the-container-up-configured
   - 105-the-cli-and-the-image-share-one-version
