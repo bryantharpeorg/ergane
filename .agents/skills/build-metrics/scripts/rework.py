@@ -20,8 +20,72 @@ import re
 import sqlite3
 import subprocess
 import sys
+import argparse
 
 WINDOW = 20  # rolling window, in stories
+
+
+def runtime_root(repo, override=None):
+    """Resolve the operator's runtime root without creating it."""
+    if override:
+        return os.path.join(repo, override) if not os.path.isabs(override) else override
+    for name in ("ERGANE_ROOT", "FACTORY_ROOT"):
+        if os.environ.get(name):
+            value = os.environ[name]
+            return value if os.path.isabs(value) else os.path.join(repo, value)
+    new = os.path.join(repo, ".ergane")
+    legacy = os.path.join(repo, ".factory")
+    if os.path.isdir(new):
+        return new
+    if os.path.isdir(legacy):
+        return legacy
+    sys.exit(f"missing runtime root: {new} (pass --runtime-root for a temporary store)")
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="rework rate and its trend")
+    parser.add_argument("repo", nargs="?", default=".")
+    parser.add_argument("--runtime-root")
+    return parser.parse_args(argv)
+
+
+def dispatch_executions(ver):
+    columns = {
+        row[1] for row in ver.execute("pragma table_info(verification_results)")
+    }
+    persona = "persona" if "persona" in columns else "NULL"
+    model = "model_alias" if "model_alias" in columns else "NULL"
+    route = "route" if "route" in columns else "NULL"
+    rows = ver.execute(
+        "select epic_id, node_id, attempt, verdict, persona, model_alias, route, dispatch "
+        f"from verification_results order by epic_id, node_id, dispatch, attempt, {persona}"
+    ).fetchall()
+    executions = collections.defaultdict(list)
+    for epic, node, attempt, verdict, persona, model, route, dispatch in rows:
+        executions[(epic, node, dispatch)].append(
+            (
+                attempt,
+                verdict,
+                persona if persona is not None else "unknown",
+                model if model is not None else "unknown",
+                route if route is not None else "unknown",
+            )
+        )
+    return sorted(executions.items(), key=lambda item: (item[0][0], item[0][1], item[0][2]))
+
+
+def print_dispatches(ver):
+    rule("DISPATCH EXECUTIONS")
+    executions = dispatch_executions(ver)
+    if not executions:
+        print("  no verification results")
+        return
+    for (epic, node, dispatch), attempts in executions:
+        print(f"  {epic}/{node} dispatch {dispatch}")
+        for attempt, verdict, persona, model, route in attempts:
+            print(
+                f"    attempt {attempt:<3}{verdict:<8}{persona:<18}{model:<28}{route}"
+            )
 
 
 def monday(day):
@@ -41,8 +105,11 @@ def rule(title):
 
 def main(repo):
     os.chdir(repo)
-    ver = ro(".factory/verification.db")
-    led = ro(".factory/ledger.db")
+    parsed = parse_args()
+    repo = parsed.repo
+    root = runtime_root(parsed.repo, parsed.runtime_root)
+    ver = ro(os.path.join(root, "verification.db"))
+    led = ro(os.path.join(root, "ledger.db"))
 
     # ---- verification level -------------------------------------------------
     rows = ver.execute(
@@ -91,6 +158,8 @@ def main(repo):
     for k in sorted(depth, key=lambda x: (x == "never", x)):
         label = "never passed" if k == "never" else f"attempt {k}"
         print(f"    {label:<14}{depth[k]:>4}  ({100 * depth[k] / n:>5.1f}%)")
+
+    print_dispatches(ver)
 
     # ---- dispatch level -----------------------------------------------------
     urows = led.execute(
