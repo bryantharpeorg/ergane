@@ -66,6 +66,8 @@ from factory.verify.factory_yaml import (
 )
 from factory.verify.gate_annotation import annotate_install_advice
 from factory.verify.models import (
+    ArtifactDeclaration,
+    ArtifactType,
     CacheDeclaration,
     GateResult,
     GateStatus,
@@ -217,6 +219,7 @@ class _AcceptedConfig:
     gates: dict[str, str] | None = None
     timeouts: dict[str, int] | None = None
     writes: dict[str, bool] | None = None
+    artifacts: tuple[ArtifactDeclaration, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -1076,6 +1079,7 @@ def _interpret_candidate(
     gates_view = document.get("gates")
     timeouts_view = document.get("timeouts", {})
     writes_view = document.get("writes", {})
+    artifacts_view = document.get("artifacts", [])
 
     if not isinstance(gates_view, dict) or not gates_view:
         return _CannotRun(reason="protocol gates mapping is empty")
@@ -1102,10 +1106,32 @@ def _interpret_candidate(
     ):
         return _CannotRun(reason="protocol writes are not str-to-bool")
 
+    if not isinstance(artifacts_view, list) or not all(
+        isinstance(artifact, dict)
+        and isinstance(artifact.get("gate"), str)
+        and isinstance(artifact.get("path"), str)
+        and isinstance(artifact.get("type"), str)
+        for artifact in artifacts_view
+    ):
+        return _CannotRun(reason="protocol artifacts are not valid declarations")
+
+    try:
+        declarations = tuple(
+            ArtifactDeclaration(
+                gate=artifact["gate"],
+                path=artifact["path"],
+                type=ArtifactType(artifact["type"]),
+            )
+            for artifact in artifacts_view
+        )
+    except ValueError:
+        return _CannotRun(reason="protocol artifacts contain an unknown type")
+
     return _AcceptedConfig(
         gates=dict(gates_view),
         timeouts=dict(timeouts_view),
         writes=dict(writes_view),
+        artifacts=declarations,
     )
 
 
@@ -1290,12 +1316,14 @@ def run_gates(
         gates_view = interpreted.gates or {}
         timeouts_view = interpreted.timeouts or {}
         writes_view = interpreted.writes or {}
+        artifacts_view = interpreted.artifacts or {}
         return _run_gate_list(
             worktree,
             manifest,
             gates_view,
             timeouts_view,
             writes_view,
+            artifacts_view,
             executor=backend,
             timeout_overrides=timeout_overrides,
             concurrency_limiter=concurrency_limiter,
@@ -1419,6 +1447,9 @@ def _run_gate_list(
     gates_view: Mapping[str, str],
     timeouts_view: Mapping[str, int],
     writes_view: Mapping[str, bool] | None = None,
+    artifacts_view: Sequence[ArtifactDeclaration]
+    | Mapping[str, Sequence[ArtifactDeclaration]]
+    | None = None,
     *,
     executor: GateExecutor,
     timeout_overrides: Mapping[str, int] | None,
@@ -1434,6 +1465,15 @@ def _run_gate_list(
     """
     backend = executor
     declared = dict(writes_view or {})
+    if isinstance(artifacts_view, Mapping):
+        artifacts = dict(artifacts_view)
+    else:
+        artifacts = {
+            artifact.gate: tuple(
+                entry for entry in (artifacts_view or ()) if entry.gate == artifact.gate
+            )
+            for artifact in (artifacts_view or ())
+        }
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
     limiter = (
@@ -1459,6 +1499,7 @@ def _run_gate_list(
             before=before,
             env=env,
             writes_declared=declared.get(name, False),
+            artifacts=artifacts.get(name, ()),
         )
         results.append(result)
     return results
@@ -1478,6 +1519,13 @@ def _run_gate_list_from_config(
     # config objects a caller built, and a shape that predates 084 declares
     # nothing rather than failing here.
     declared = dict(getattr(config, "writes", None) or {})
+    artifacts = {
+        artifact.gate: tuple(
+            entry for entry in (getattr(config, "artifacts", None) or ())
+            if entry.gate == artifact.gate
+        )
+        for artifact in (getattr(config, "artifacts", None) or ())
+    }
     overrides = dict(timeout_overrides or {})
     env = scrubbed_env()
     limiter = (
@@ -1503,6 +1551,7 @@ def _run_gate_list_from_config(
             before=before,
             env=env,
             writes_declared=declared.get(name, False),
+            artifacts=artifacts.get(name, ()),
         )
         results.append(result)
     return results
@@ -1516,6 +1565,7 @@ def _run_watched(
     before: TreeSnapshot,
     env: Mapping[str, str],
     writes_declared: bool = False,
+    artifacts: Sequence[ArtifactDeclaration] = (),
 ) -> tuple[GateResult, TreeSnapshot]:
     """Run one gate and report what running it did to the worktree (084 FR-001).
 
@@ -1559,6 +1609,7 @@ def _run_watched(
         worktree_writes=change.paths,
         snapshot_error=change.error,
         writes_declared=writes_declared,
+        artifacts=artifacts,
     )
     # Carried forward even when it is an error: a gate that ran while the check
     # had no readable baseline cannot be vouched for either, and fail-closed is
@@ -1588,6 +1639,7 @@ def _to_result(
     worktree_writes: tuple[str, ...] = (),
     snapshot_error: str = "",
     writes_declared: bool = False,
+    artifacts: Sequence[ArtifactDeclaration] = (),
 ) -> GateResult:
     """Turn one execution into the evidence the verdict truth table reads.
 
@@ -1626,7 +1678,11 @@ def _to_result(
         status, exit_code = GateStatus.FAIL, outcome.exit_code
     elif snapshot_error:
         status, exit_code = GateStatus.DIRTIED_WORKTREE, 0
-    elif worktree_writes and not writes_declared:
+    elif not writes_declared and tuple(
+        path
+        for path in worktree_writes
+        if path not in {artifact.path for artifact in artifacts}
+    ):
         status, exit_code = GateStatus.DIRTIED_WORKTREE, 0
     else:
         status, exit_code = GateStatus.PASS, 0

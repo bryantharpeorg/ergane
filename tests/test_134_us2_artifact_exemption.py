@@ -16,12 +16,18 @@ from factory.verify.factory_yaml import (
     load_factory_config,
 )
 from factory.verify.gates import (
+    _AcceptedConfig,
     CandidateOutcome,
     SubprocessGateExecutor,
+    _interpret_candidate,
     run_gates,
 )
-from factory.verify.gates import GateResult
-from factory.verify.models import GateStatus
+from factory.verify.models import (
+    ArtifactDeclaration,
+    ArtifactType,
+    GateResult,
+    GateStatus,
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -141,6 +147,33 @@ def test_a_declared_written_artifact_passes_and_is_still_recorded(
     assert result.status is GateStatus.PASS
     assert result.worktree_writes == ("report.txt",)
     assert result.writes_declared is False
+
+
+def test_the_candidate_acceptance_lifts_artifacts() -> None:
+    """US2-S4: `_interpret_candidate` carries the JSON route's declaration."""
+    interpreted = _interpret_candidate(
+        PARSE_CLI_OK,
+        json.dumps(
+            {
+                "kind": "accepted",
+                "gates": {"test": "uv run pytest -q"},
+                "timeouts": {},
+                "writes": {},
+                "artifacts": [
+                    {"gate": "test", "path": "report.txt", "type": "coverage"}
+                ],
+            }
+        ),
+        "",
+        False,
+    )
+
+    assert isinstance(interpreted, _AcceptedConfig)
+    assert interpreted.artifacts == (
+        ArtifactDeclaration(
+            gate="test", path="report.txt", type=ArtifactType.COVERAGE
+        ),
+    )
 
 
 def test_an_undeclared_write_is_still_demoted(tmp_path: Path) -> None:
