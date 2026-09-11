@@ -9,6 +9,7 @@ sanitization helpers that both nouns share.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sqlite3
 import sys
@@ -218,20 +219,24 @@ def _historical_ingest_command(args: argparse.Namespace) -> int:
             handle, rehearsal_value = tempfile.mkstemp(
                 prefix="findings-rehearsal-", suffix=".db"
             )
-            Path(handle).unlink()
+            os.close(handle)
             rehearsal_path = Path(rehearsal_value)
 
-        rehearsal_path.parent.mkdir(parents=True, exist_ok=True)
-        rehearsal_conn = connect(rehearsal_path)
         try:
-            for observation in sanitized:
-                apply_historical_observation(
-                    rehearsal_conn,
-                    observation,
-                    ingested_at=observation.ingested_at,
-                )
-        finally:
-            rehearsal_conn.close()
+            rehearsal_path.parent.mkdir(parents=True, exist_ok=True)
+            rehearsal_conn = connect(rehearsal_path)
+            try:
+                for observation in sanitized:
+                    apply_historical_observation(
+                        rehearsal_conn,
+                        observation,
+                        ingested_at=observation.ingested_at,
+                    )
+            finally:
+                rehearsal_conn.close()
+        except BaseException:
+            rehearsal_path.unlink(missing_ok=True)
+            raise
         print(rehearsal_path)
         return EXIT_OK
 

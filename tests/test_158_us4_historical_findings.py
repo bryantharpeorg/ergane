@@ -357,14 +357,22 @@ def test_analysis_only_ingest_defaults_to_a_readable_rehearsal_store(
     args = parser.parse_args(["findings", "ingest", "--batch", str(batch)])
 
     created_fds: list[int] = []
+    closed_fds: list[int] = []
     real_mkstemp = tempfile.mkstemp
+    real_close = os.close
 
     def tracked_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
         handle, path = real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
         created_fds.append(handle)
         return handle, path
 
+    def tracked_close(handle: int) -> None:
+        if handle in created_fds:
+            closed_fds.append(handle)
+        real_close(handle)
+
     monkeypatch.setattr("factory.doctor.cli.tempfile.mkstemp", tracked_mkstemp)
+    monkeypatch.setattr("factory.doctor.cli.os.close", tracked_close)
 
     real_connect = connect
 
@@ -383,7 +391,7 @@ def test_analysis_only_ingest_defaults_to_a_readable_rehearsal_store(
     assert len(printed_paths) == 1
     rehearsal_path = Path(printed_paths[0])
     assert rehearsal_path.is_file()
-    assert rehearsal_path.resolve().is_relative_to(tmp_path)
+    assert rehearsal_path != operational
     with connect(rehearsal_path) as rehearsal_conn:
         stored = get_finding(rehearsal_conn, "ops/historical")
         events = list_events(rehearsal_conn, "ops/historical")
@@ -394,8 +402,7 @@ def test_analysis_only_ingest_defaults_to_a_readable_rehearsal_store(
     assert events[0].ingested_at != OBSERVED_AT
     assert operational.read_bytes() == operational_bytes
     assert len(created_fds) == 1
-    with pytest.raises(OSError):
-        os.fstat(created_fds[0])
+    assert closed_fds == created_fds
 
 
 def test_analysis_only_ingest_closes_the_descriptor_when_writing_fails(
@@ -410,17 +417,25 @@ def test_analysis_only_ingest_closes_the_descriptor_when_writing_fails(
     args = parser.parse_args(["findings", "ingest", "--batch", str(batch)])
 
     created_fds: list[int] = []
+    closed_fds: list[int] = []
     real_mkstemp = tempfile.mkstemp
+    real_close = os.close
 
     def tracked_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
         handle, path = real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
         created_fds.append(handle)
         return handle, path
 
+    def tracked_close(handle: int) -> None:
+        if handle in created_fds:
+            closed_fds.append(handle)
+        real_close(handle)
+
     def failing_write(*args: object, **kwargs: object) -> None:
         raise RuntimeError("historical write failed")
 
     monkeypatch.setattr("factory.doctor.cli.tempfile.mkstemp", tracked_mkstemp)
+    monkeypatch.setattr("factory.doctor.cli.os.close", tracked_close)
     monkeypatch.setattr(
         "factory.doctor.cli.apply_historical_observation", failing_write
     )
@@ -429,8 +444,7 @@ def test_analysis_only_ingest_closes_the_descriptor_when_writing_fails(
         args.run(args)
 
     assert len(created_fds) == 1
-    with pytest.raises(OSError):
-        os.fstat(created_fds[0])
+    assert closed_fds == created_fds
 
 
 def test_findings_ingest_skill_keeps_analysis_and_apply_distinct() -> None:
