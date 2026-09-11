@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -201,6 +202,28 @@ def test_retention_orders_numeric_versions_not_tag_strings() -> None:
 
     assert decision.remove == (image_reference("0.8.0"),)
     assert decision.keep == (target, previous, image_reference("0.10.0"))
+
+
+def test_default_inventory_failure_prevents_image_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T004 / US1-S3 / FR-003: a failed inventory read disables all cleanup."""
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    def run_subprocess(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((tuple(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 1, "", "connection refused")
+
+    monkeypatch.setattr(upgrade_module.subprocess, "run", run_subprocess)
+    seam = upgrade_module._ComposeDockerSeam(tmp_path / "engine-project")
+
+    with pytest.raises(OperatorError, match="docker images.*connection refused"):
+        seam.list_images()
+
+    assert [argv for argv, _kwargs in calls] == [(
+        "docker", "images", "--format", "{{.Repository}}:{{.Tag}}",
+    )]
 
 
 # ---------------------------------------------------------------------------
