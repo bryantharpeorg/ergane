@@ -7,19 +7,19 @@ No Docker daemon, worker, provider, credential store or live Temporal service.
 
 ## User Story 1 — Preserve pre-stop rollback identity
 
-- [ ] T001 [US1] (US1-S1, FR-002, FR-009) Add a file-backed regression using
+- [x] T001 [US1] (US1-S1, FR-002, FR-009) Add a file-backed regression using
       real identity writer/reader/remover.  Synthetic stop removes the old file
       and start writes the target; assert the old read precedes stop and capture
       the complete ordered lifecycle and retention result.  Record the old red.
-- [ ] T002 [US1] (US1-S2, FR-003) Cover absent, malformed and image-less initial
+- [x] T002 [US1] (US1-S2, FR-003) Cover absent, malformed and image-less initial
       identities separately.  A later readable target identity authorizes no
       removal.  Do not patch the reader to return a constant object.
-- [ ] T003 [US1] (US1-S1, US1-S2, FR-002, FR-003) Capture pre-stop identity once
+- [x] T003 [US1] (US1-S1, US1-S2, FR-002, FR-003) Capture pre-stop identity once
       and carry that immutable value to retention.  Keep uncertainty sticky.
-- [ ] T004 [US1] (US1-S3, FR-004) Prove failed stop, failed start and failing
+- [x] T004 [US1] (US1-S3, FR-004) Prove failed stop, failed start and failing
       engine verification cause no inventory or removal.  Preserve unrelated
       finding visibility and the engine-specific degraded verdict.
-- [ ] T005 [US1] (US1-S4, FR-001, FR-009) Re-run landed exact-repository,
+- [x] T005 [US1] (US1-S4, FR-001, FR-009) Re-run landed exact-repository,
       ambiguous-tag, unknown-identity and numeric-order controls; commit compact
       synthetic red/green evidence, then run the full declared gate.
 

@@ -29,6 +29,8 @@ from factory.supervision.engine_identity import (
     cli_version,
     identity_path,
     image_reference,
+    read_identity,
+    write_identity,
 )
 from factory.supervision.units import CommandResult, supervision_home
 from factory.versioning import OpenEpic
@@ -57,7 +59,10 @@ class _FakeDockerSeam:
         *,
         stop_ok: bool = True,
         start_ok: bool = True,
-        verify_result: tuple[list[Finding], int] = ([], EXIT_OK),
+        verify_result: tuple[list[Finding], int] = (
+            [Finding(check="engine", passed=True, detail="engine verified")],
+            EXIT_OK,
+        ),
         images: list[str] | None = None,
         remove_ok: bool = True,
     ) -> None:
@@ -73,6 +78,8 @@ class _FakeDockerSeam:
 
     def stop(self) -> None:
         self.calls.append(("stop", ()))
+        if not self.stop_ok:
+            raise OperatorError("stop failed")
 
     def start(self, image_reference: str, *, env: dict[str, str] | None = None) -> None:
         self.calls.append(("start", (image_reference,)))
@@ -120,6 +127,42 @@ def _write_identity(state_home: Path, version: str, *, image_reference_value: st
             image_digest=None,
         ),
     )
+
+
+class _IdentityLifecycleSeam(_FakeDockerSeam):
+    """Moves the real identity file on the two disruptive lifecycle calls."""
+
+    def __init__(
+        self,
+        state_home: Path,
+        *,
+        target_version: str,
+        lifecycle_calls: list[tuple[str, tuple[Any, ...]]],
+    ) -> None:
+        super().__init__()
+        self._state_home = state_home
+        self._target_version = target_version
+        self._lifecycle_calls = lifecycle_calls
+
+    def stop(self) -> None:
+        self._lifecycle_calls.append(("stop", ()))
+        self.calls.append(("stop", ()))
+        from factory.supervision.engine_identity import remove_identity
+
+        remove_identity(self._state_home)
+
+    def start(self, image_reference: str, *, env: dict[str, str] | None = None) -> None:
+        self._lifecycle_calls.append(("start", (image_reference,)))
+        super().start(image_reference, env=env)
+        write_identity(
+            self._state_home,
+            EngineIdentity(
+                version=self._target_version,
+                started_at="2026-08-25T12:00:00+00:00",
+                image_reference=image_reference,
+                image_digest=None,
+            ),
+        )
 
 
 def test_retention_removes_only_exact_repository_older_releases() -> None:
@@ -203,6 +246,137 @@ def test_retention_orders_numeric_versions_not_tag_strings() -> None:
 
     assert decision.remove == (image_reference("0.8.0"),)
     assert decision.keep == (target, previous, image_reference("0.10.0"))
+
+
+def test_upgrade_reads_old_identity_before_stop(
+    isolated_state_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T001 / US1-S1 / FR-002: shutdown replaces the identity, not the rollback candidate."""
+    state = isolated_state_home
+    _make_project(state)
+    old_version = "0.3.0"
+    target_version = "0.4.0"
+    _write_identity(state, old_version)
+    lifecycle_calls: list[tuple[str, tuple[Any, ...]]] = []
+    seam = _IdentityLifecycleSeam(
+        state,
+        target_version=target_version,
+        lifecycle_calls=lifecycle_calls,
+    )
+    real_read_identity = upgrade_module.read_identity
+
+    def read_pre_stop_identity(home: Path | str) -> EngineIdentity | None:
+        lifecycle_calls.append(("read_identity", (str(identity_path(home)),)))
+        return real_read_identity(home)
+
+    monkeypatch.setattr(upgrade_module, "read_identity", read_pre_stop_identity)
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: target_version)
+    older = image_reference("0.2.0")
+    seam.images = [image_reference(target_version), image_reference(old_version), older]
+
+    report = upgrade_module.upgrade(
+        open_epics=lambda: (),
+        docker=seam,
+        _state_home=state,
+    )
+
+    assert [name for name, _arguments in lifecycle_calls] == ["read_identity", "stop", "start"]
+    assert [name for name, _arguments in seam.calls] == [
+        "stop",
+        "start",
+        "verify",
+        "list_images",
+        "remove_image",
+    ]
+    assert lifecycle_calls[0][1][0] == str(identity_path(state))
+    assert seam.removed == [older]
+    assert report.notes == (
+        f"keeping target image {image_reference(target_version)}",
+        f"keeping previous image {image_reference(old_version)}",
+        f"removing 1 older image(s): {older}",
+    )
+
+
+@pytest.mark.parametrize(
+    "initial_state",
+    ["absent", "malformed", "image-less"],
+)
+def test_upgrade_unknown_pre_stop_identity_removes_nothing(
+    isolated_state_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+) -> None:
+    """T002 / US1-S2 / FR-003: uncertainty cannot be backfilled by the replacement."""
+    state = isolated_state_home
+    _make_project(state)
+    target_version = "0.4.0"
+    if initial_state == "malformed":
+        identity_path(state).parent.mkdir(parents=True, exist_ok=True)
+        identity_path(state).write_text("not-json", encoding="utf-8")
+    elif initial_state == "image-less":
+        write_identity(
+            state,
+            EngineIdentity(
+                version="0.3.0",
+                started_at="2026-08-25T12:00:00+00:00",
+                image_reference=None,
+                image_digest=None,
+            ),
+        )
+
+    lifecycle_calls: list[tuple[str, tuple[Any, ...]]] = []
+    seam = _IdentityLifecycleSeam(
+        state,
+        target_version=target_version,
+        lifecycle_calls=lifecycle_calls,
+    )
+    real_read_identity = upgrade_module.read_identity
+
+    def read_pre_stop_identity(home: Path | str) -> EngineIdentity | None:
+        lifecycle_calls.append(("read_identity", (str(identity_path(home)),)))
+        return real_read_identity(home)
+
+    monkeypatch.setattr(upgrade_module, "read_identity", read_pre_stop_identity)
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: target_version)
+    older = image_reference("0.2.0")
+    seam.images = [image_reference(target_version), older]
+
+    report = upgrade_module.upgrade(
+        open_epics=lambda: (),
+        docker=seam,
+        _state_home=state,
+    )
+
+    assert [name for name, _arguments in lifecycle_calls] == ["read_identity", "stop", "start"]
+    assert seam.removed == []
+    assert any("keeping every local image" in note for note in report.notes)
+
+
+@pytest.mark.parametrize("failure", ["stop", "start"])
+def test_upgrade_lifecycle_failure_prevents_inventory_and_removal(
+    isolated_state_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """T004 / US1-S3 / FR-004: lifecycle failure ends before image work."""
+    _make_project(isolated_state_home)
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+    seam = _FakeDockerSeam(
+        stop_ok=failure != "stop",
+        start_ok=failure != "start",
+        images=[image_reference("0.2.0")],
+    )
+
+    with pytest.raises(OperatorError, match=f"{failure} failed"):
+        upgrade_module.upgrade(
+            open_epics=lambda: (),
+            docker=seam,
+        )
+
+    assert [name for name, _args in seam.calls] == ["stop", "start"][: 1 if failure == "stop" else 2]
+    assert ("list_images", ()) not in seam.calls
+    assert seam.removed == []
 
 
 def test_default_inventory_failure_prevents_image_removal(
@@ -446,7 +620,11 @@ def test_upgrade_degraded_when_engine_finding_mismatches(
     findings = [
         Finding(check="engine", passed=False, detail="engine mismatch"),
     ]
-    seam = _FakeDockerSeam(verify_result=(findings, EXIT_USER))
+    older = image_reference("0.2.0")
+    seam = _FakeDockerSeam(
+        verify_result=(findings, EXIT_USER),
+        images=[image_reference("0.4.0"), older],
+    )
 
     report = upgrade_module.upgrade(
         open_epics=lambda: (),
@@ -455,6 +633,8 @@ def test_upgrade_degraded_when_engine_finding_mismatches(
 
     assert report.degraded is True
     assert any(f.check == "engine" and not f.passed for f in report.findings)
+    assert ("list_images", ()) not in seam.calls
+    assert seam.removed == []
 
 
 def test_upgrade_success_when_only_unrelated_probe_fails(

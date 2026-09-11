@@ -302,6 +302,10 @@ def upgrade(
 
     target_image = image_reference(cli_version())
 
+    state_home = _state_home or resolve_state_home()
+    identity = read_identity(state_home)
+    previous_image = identity.image_reference if identity is not None else None
+
     notes: list[str] = []
     if force and epics:
         notes.append(
@@ -320,12 +324,9 @@ def upgrade(
     # `degraded` is keyed on the engine finding alone (FR-019).
     engine_finding = next((f for f in findings if f.check == "engine"), None)
     degraded = False if engine_finding is None else not engine_finding.passed
+    engine_verified = engine_finding is not None and engine_finding.passed
 
-    state_home = _state_home or resolve_state_home()
-    identity = read_identity(state_home)
-    previous_image = identity.image_reference if identity is not None else None
-
-    local_images = docker.list_images()
+    local_images = docker.list_images() if engine_verified else ()
     retention = _retention_decision(
         local_images,
         target_image=target_image,
