@@ -5,7 +5,7 @@
 - `factory/cli/init.py:1134` — `init_command` owns repository initialization; install the target unit only in this path, not in demo scaffolds.
 - `factory/stack_packs.py:50` — `StackPack` and `factory/stack_packs.py:141` — `_pack_from_data` are the declarative source-root seams.
 - `factory/stack_packs.py:253` — `_leading_executable` demonstrates ordered shell parsing; protected-path derivation must not use an unordered word set.
-- `factory/verify/models.py:291` — `FactoryConfig` owns the target manifest's gates.
+- `factory/verify/models.py:314` — `FactoryConfig` owns the target manifest's gates.
 - `factory/cli/repo.py:105` — `add_repo_parser` is the installed-package CLI boundary for listing and checking paths.
 - `factory/workgraph/worktree.py:191` — `resolve_factory_root` proves the runtime root may be relocated; node detection cannot key on one directory name.
 - Official Codex hook contract and trust model: https://learn.chatgpt.com/docs/hooks . Re-fetched 2026-09-10: `apply_patch` supplies patch text in `tool_input.command`. Project-local hook loading requires trust in the project configuration layer, and execution of a non-managed hook separately requires trust in its exact definition hash. Neither check substitutes for the other.

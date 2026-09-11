@@ -26,7 +26,7 @@ bypass, or modify a real target repository during implementation.
 - [ ] [US3-S3] Add a failing no-guess empty-result test.
 - [ ] [US3-S4] Add a failing repeat-run transcript/status test for `ergane repo gate-paths`.
 - [ ] [US3] Add validated optional source roots at `factory/stack_packs.py:50` — `StackPack` and `factory/stack_packs.py:141` — `_pack_from_data`.
-- [ ] [US3] Implement client-neutral derivation from `factory/verify/models.py:291` — `FactoryConfig`, ordered gate tokens, existing roots, and origin metadata.
+- [ ] [US3] Implement client-neutral derivation from `factory/verify/models.py:314` — `FactoryConfig`, ordered gate tokens, existing roots, and origin metadata.
 - [ ] [US3] Add the deterministic read-only listing through `factory/cli/repo.py:105` — `add_repo_parser`.
 
 ## Phase 4: User Story 5 — One installed checker normalizes paths and decodes Claude events
