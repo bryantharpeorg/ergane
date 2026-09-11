@@ -42,7 +42,7 @@ qualification in this epic.
 ## Phase 5: User Story 4 — Readiness explains the same credential contract everywhere
 
 - [ ] [US4-S1] Add table-driven failing status tests for Claude subscription, Codex subscription, gateway, and no-runner in `factory/workgraph/credential_status.py`.
-- [ ] [US4-S2] Add contract tests feeding structurally eligible/unqualified, busy, invalid, recoverable, provider-rejected, host/root-mismatch, and missing-source states through install, preflight, and `factory/cli/nouns/build.py:1207` — `credential_status_command`.
+- [ ] [US4-S2] Add contract tests feeding structurally eligible/unqualified, busy, invalid, recoverable, provider-rejected, host/root-mismatch, and missing-source states through install, preflight, and `factory/cli/nouns/build.py:1208` — `credential_status_command`.
 - [ ] [US4-S3] Add renderer tests for complete, partial and absent subscription runner measurements without a gateway row. Preserve landed source/status/cost provenance and measured subtotals, unknown optional metrics and unavailable subscription dollars; independently vary auth readiness so it never supplies usage evidence.
 - [ ] [US4] Implement the shared runner-aware status model and migrate all three consumers without duplicating auth parsers.
 
