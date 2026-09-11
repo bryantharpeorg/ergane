@@ -9,6 +9,7 @@ sanitization helpers that both nouns share.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import sqlite3
@@ -107,6 +108,14 @@ def _sanitize_text(value: str | None) -> str | None:
     return _CREDENTIAL_RE.sub("[REDACTED]", value)
 
 
+def _sanitize_observation_id(value: str) -> str:
+    def redact(match: re.Match[str]) -> str:
+        digest = hashlib.sha256(match.group(0).encode()).hexdigest()[:16]
+        return f"[REDACTED:{digest}]"
+
+    return _CREDENTIAL_RE.sub(redact, value)
+
+
 def _sanitize_finding(finding: Finding) -> Finding:
     """Return a finding with any credential-like strings redacted."""
     return Finding(
@@ -132,7 +141,7 @@ def _sanitize_historical_observation(
 ) -> HistoricalObservation:
     return HistoricalObservation(
         observation=_sanitize_finding(observation.observation),
-        observation_id=observation.observation_id,
+        observation_id=_sanitize_observation_id(observation.observation_id),
         observed_at=observation.observed_at,
         ingested_at=observation.ingested_at,
     )
@@ -209,6 +218,7 @@ def _historical_ingest_command(args: argparse.Namespace) -> int:
 
     if not args.apply:
         rehearsal_value = getattr(args, "rehearsal_db", None)
+        default_rehearsal = rehearsal_value is None
         if rehearsal_value is not None:
             rehearsal_path = Path(rehearsal_value)
             if rehearsal_path.exists():
@@ -235,7 +245,8 @@ def _historical_ingest_command(args: argparse.Namespace) -> int:
             finally:
                 rehearsal_conn.close()
         except BaseException:
-            rehearsal_path.unlink(missing_ok=True)
+            if default_rehearsal:
+                rehearsal_path.unlink(missing_ok=True)
             raise
         print(rehearsal_path)
         return EXIT_OK

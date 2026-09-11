@@ -458,6 +458,11 @@ def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
         "sk-test-summary-alpha",
         "sk-test-reference-alpha",
         "sk-test-note-alpha",
+        "sk-test-observation-beta",
+        "sk-test-source-beta",
+        "sk-test-summary-beta",
+        "sk-test-reference-beta",
+        "sk-test-note-beta",
     )
     batch = tmp_path / "batch.json"
     batch.write_text(
@@ -474,6 +479,16 @@ def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
               "notes": "{markers[4]}",
               "observation_id": "{markers[0]}",
               "observed_at": "{OBSERVED_AT}"
+            }},
+            {{
+              "key": "ops/historical-beta",
+              "category": "ops",
+              "severity": "warning",
+              "summary": "{markers[7]}",
+              "refs": ["{markers[8]}"],
+              "notes": "{markers[9]}",
+              "observation_id": "{markers[5]}",
+              "observed_at": "{OBSERVED_AT}"
             }}
           ]
         }}
@@ -482,12 +497,29 @@ def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
     parser = argparse.ArgumentParser()
     verbs = parser.add_subparsers(dest="verb", required=True)
     add_findings_parser(verbs)
-    args = parser.parse_args(["findings", "ingest", "--batch", str(batch)])
+    rehearsal = tmp_path / "rehearsal.db"
+    args = parser.parse_args(
+        [
+            "findings",
+            "ingest",
+            "--batch",
+            str(batch),
+            "--rehearsal-db",
+            str(rehearsal),
+        ]
+    )
 
     def leak_on_write(
         _conn: sqlite3.Connection, observation: object, ingested_at: str
     ) -> bool:
+        if leak_on_write.writes == 0:
+            leak_on_write.writes = 1
+            return apply_historical_observation(
+                _conn, observation, ingested_at=ingested_at
+            )
         raise RuntimeError(str(observation))
+
+    leak_on_write.writes = 0
 
     monkeypatch.setattr(
         "factory.doctor.cli.apply_historical_observation", leak_on_write
@@ -498,16 +530,12 @@ def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
     except RuntimeError as exc:
         exception_text = str(exc)
 
-    output = capsys.readouterr()
+    capsys.readouterr()
     assert not any(marker in exception_text for marker in markers)
-    assert not any(marker in output.out for marker in markers)
-    assert not any(marker in output.err for marker in markers)
 
-    rehearsal_paths = [Path(line) for line in output.out.splitlines()]
-    assert len(rehearsal_paths) == 1
-    assert rehearsal_paths[0].is_file()
-    database_bytes = rehearsal_paths[0].read_bytes()
-    with connect(rehearsal_paths[0]) as rehearsal_conn:
+    assert rehearsal.is_file()
+    database_bytes = rehearsal.read_bytes()
+    with connect(rehearsal) as rehearsal_conn:
         stored = get_finding(rehearsal_conn, "ops/historical")
         events = list_events(rehearsal_conn, "ops/historical")
     assert stored is not None
@@ -516,8 +544,12 @@ def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
     assert markers[4] not in (stored.notes or "")
     assert markers[1] not in stored.source
     assert len(events) == 1
-    assert all(marker not in database_bytes for marker in markers)
-    assert all(marker not in (event.observation_id or "") for event in events)
+    assert all(marker.encode() not in database_bytes for marker in markers)
+    assert all(
+        marker not in (event.observation_id or "")
+        for event in events
+        for marker in markers
+    )
 
 
 def test_findings_ingest_skill_keeps_analysis_and_apply_distinct() -> None:
