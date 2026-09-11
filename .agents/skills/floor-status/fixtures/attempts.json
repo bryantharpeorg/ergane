@@ -1,0 +1,57 @@
+{
+  "epic_id": "158-operator-skills-report-and-act-by-declared-intent",
+  "attempts": [
+    {
+      "node_id": "us1",
+      "dispatch": "workflow-run-158a",
+      "attempt": 1,
+      "form": "NODE",
+      "verdict": "FAIL",
+      "persona": "debugger",
+      "model_alias": "claude-opus-5",
+      "route": "gateway",
+      "evidence_source": "verification-store",
+      "started_at": "2026-09-09T09:00:00Z",
+      "finished_at": "2026-09-09T09:20:00Z"
+    },
+    {
+      "node_id": "us1",
+      "dispatch": "workflow-run-158b",
+      "attempt": 1,
+      "form": "NODE",
+      "verdict": "PASS",
+      "persona": "debugger",
+      "model_alias": "claude-opus-5",
+      "route": "subscription",
+      "evidence_source": "verification-store",
+      "started_at": "2026-09-09T10:00:00Z",
+      "finished_at": "2026-09-09T10:30:00Z"
+    },
+    {
+      "node_id": "us2",
+      "dispatch": "workflow-run-158c",
+      "attempt": 1,
+      "form": "NODE",
+      "verdict": "PASS",
+      "persona": "promotion-debugger",
+      "model_alias": "claude-sonnet-5",
+      "route": "gateway",
+      "evidence_source": "verification-store",
+      "started_at": "2026-09-09T11:00:00Z",
+      "finished_at": "2026-09-09T11:10:00Z"
+    },
+    {
+      "node_id": "us2",
+      "dispatch": "<unknown>",
+      "attempt": 2,
+      "form": "NODE",
+      "verdict": "FAIL",
+      "persona": "<unknown>",
+      "model_alias": "<unknown>",
+      "route": "<unknown>",
+      "evidence_source": "verification-store",
+      "started_at": "2026-09-09T11:00:00Z",
+      "finished_at": "2026-09-09T11:10:00Z"
+    }
+  ]
+}

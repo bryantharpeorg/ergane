@@ -1,0 +1,21 @@
+floor report: 158-operator-skills-report-and-act-by-declared-intent (RUNNING; worker 60943a0)
+evidence source: recorded status and verification-store rows
+node us1: state RUNNING  attempt 1
+node us2: state VERIFYING  attempt 2
+node us1: 2 recorded dispatches
+  dispatch 1 of 2: workflow-run-158a  attempt 1  runner debugger  model claude-opus-5  route gateway  evidence verification-store
+  dispatch 2 of 2: workflow-run-158b  attempt 1  runner debugger  model claude-opus-5  route subscription  evidence verification-store
+node us2: 2 recorded dispatches
+  dispatch 1 of 2: workflow-run-158c  attempt 1  runner promotion-debugger  model claude-sonnet-5  route gateway  evidence verification-store
+  dispatch 2 of 2: <unknown>  attempt 2  runner <unknown>  model <unknown>  route <unknown>  evidence verification-store
+unavailable: temporal socket unavailable
+unavailable: landing head target repo unavailable
+unavailable: process not running
+no action seam was called
+
+observed: escalation esc158 epic 158-operator-skills-report-and-act-by-declared-intent node us1 expires 2026-09-09T18:00:00Z
+observed: branch_moved False  classification deterministic  tested_sha 60943a0
+offered choices: RETRY, KILL_EPIC
+proposed answer: RETRY
+observation only: this is not an answer and no answer was sent
+no action seam was called
