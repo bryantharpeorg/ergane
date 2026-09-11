@@ -15,6 +15,7 @@ from dataclasses import replace
 import pytest
 
 from factory.cli.doctor import add_findings_parser, findings_ingest_command
+from factory.doctor.cli import _sanitize_historical_observation
 from factory.doctor.models import (
     HistoricalObservation,
     Status,
@@ -550,6 +551,47 @@ def test_analysis_only_rehearsal_sanitizes_observation_identity_too(
         for event in events
         for marker in markers
     )
+
+
+def test_sanitized_historical_ids_stay_idempotent_and_distinct(
+    store: sqlite3.Connection,
+) -> None:
+    observation = _observation()
+    credential_observation = replace(
+        observation, observation_id="sk-test-observation-credential"
+    )
+    sanitized = _sanitize_historical_observation(credential_observation)
+    repeat = _sanitize_historical_observation(credential_observation)
+    distinct_source = _sanitize_historical_observation(
+        replace(credential_observation, observation_id="sk-test-observation-other")
+    )
+
+    assert sanitized.observation_id == repeat.observation_id
+    assert sanitized.observation_id != distinct_source.observation_id
+
+    assert apply_historical_observation(
+        store, sanitized, ingested_at=INGESTED_AT
+    )
+    before = get_finding(store, observation.observation.key)
+    assert before is not None
+
+    assert apply_historical_observation(
+        store, distinct_source, ingested_at=INGESTED_AT
+    )
+    after_distinct = get_finding(store, observation.observation.key)
+    events = list_events(store, observation.observation.key)
+    assert after_distinct == before
+    assert len(events) == 2
+    assert {event.observation_id for event in events} == {
+        sanitized.observation_id,
+        distinct_source.observation_id,
+    }
+
+    assert not apply_historical_observation(
+        store, repeat, ingested_at="2026-09-11T13:00:00Z"
+    )
+    assert len(list_events(store, observation.observation.key)) == 2
+    assert get_finding(store, observation.observation.key) == after_distinct
 
 
 def test_findings_ingest_skill_keeps_analysis_and_apply_distinct() -> None:
