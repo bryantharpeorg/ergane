@@ -642,7 +642,7 @@ The reason this is a live hazard and not a tidiness note is that one entry point
 does not re-derive. The roadmap re-derives through its `derive_spec` activity and
 `ergane spec derive` re-derives by definition, so both read the trio; but
 `ergane build start` calls `load_workgraph(args.graph)`
-(`factory/cli/nouns/build.py:879` — `start_command`) and dispatches whatever is on
+(`factory/cli/nouns/build.py:852` — `start_command`) and dispatches whatever is on
 disk. The file is also untracked and **not** git-ignored, so a `git add` on this
 directory commits the stale graph alongside the spec.
 
