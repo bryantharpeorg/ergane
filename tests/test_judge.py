@@ -70,6 +70,8 @@ from factory.verify.judge import (
 )
 from factory.verify.models import (
     CriteriaSet,
+    GateResult,
+    GateStatus,
     JudgeOutcome,
     JudgeVerdict,
     Requirement,
@@ -225,6 +227,123 @@ OVERSIZED_DIFF = BIG_DIFF + MEDIUM_DIFF + TINY_DIFF
 SMALL_DIFF = unified_diff("src/gates.py", added=12, removed=3)
 
 
+# --- concrete-counterexample prompt fixture -----------------------------------
+
+COMPLETION_CRITERIA = CriteriaSet(
+    feature="counterexample-demo",
+    spec_ref="counterexample-demo/completion",
+    requirements=[
+        Requirement(
+            key="US1",
+            kind=RequirementKind.STORY,
+            title="Complete a CLI invocation",
+            priority="P1",
+            body="The public completion command completes the supplied target.",
+            scenarios=[
+                Scenario(
+                    scenario_id="US1-S1",
+                    steps=[
+                        "**Given** a CLI target to complete",
+                        "**When** the public completion command runs",
+                        "**Then** the target's completion is produced",
+                    ],
+                    raw_text=(
+                        "1. **Given** a CLI target to complete, **When** the "
+                        "public completion command runs, **Then** the target's "
+                        "completion is produced."
+                    ),
+                )
+            ],
+        )
+    ],
+    source_path="specs/counterexample-demo/spec.md",
+    source_sha256="c0ffee" + "0" * 58,
+    snapshotted_at="2026-09-11T00:00:00Z",
+)
+
+COUNTEREXAMPLE_DIFF = (
+    "diff --git a/src/completion.py b/src/completion.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/src/completion.py\n"
+    "+++ b/src/completion.py\n"
+    "@@ -1,4 +1,8 @@ def complete(target, *, option=None):\n"
+    "+def complete(target, *, option=\"explicit\"):\n"
+    "+    if option is None:\n"
+    "+        option = \"omitted\"\n"
+    "+    return crash_when_omitted(target, option)\n"
+    "\n"
+    "diff --git a/tests/test_completion.py b/tests/test_completion.py\n"
+    "index 3333333..4444444 100644\n"
+    "--- a/tests/test_completion.py\n"
+    "+++ b/tests/test_completion.py\n"
+    "@@ -1,2 +1,5 @@\n"
+    "+def test_explicit_option_completes():\n"
+    "+    assert complete(\"target\", option=\"explicit\") == \"target\"\n"
+)
+
+GREEN_TEST_GATE = GateResult(
+    name="test",
+    command="uv run pytest -q",
+    status=GateStatus.PASS,
+    exit_code=0,
+    duration_s=0.2,
+    output_tail="1 passed in 0.01s\n",
+)
+
+SAFETY_CRITERIA = CriteriaSet(
+    feature="counterexample-demo",
+    spec_ref="counterexample-demo/universal-safety",
+    requirements=[
+        Requirement(
+            key="US1",
+            kind=RequirementKind.STORY,
+            title="Persist sanitized records",
+            priority="P1",
+            body="Every persisted record remains sanitized and unchanged.",
+            scenarios=[
+                Scenario(
+                    scenario_id="US1-S1",
+                    steps=[
+                        "**Given** externally controlled record fields",
+                        "**When** a record is persisted",
+                        "**Then** its persisted fields remain sanitized and unchanged",
+                    ],
+                    raw_text=(
+                        "1. **Given** externally controlled record fields, "
+                        "**When** a record is persisted, **Then** its persisted "
+                        "fields remain sanitized and unchanged."
+                    ),
+                )
+            ],
+        )
+    ],
+    source_path="specs/counterexample-demo/spec.md",
+    source_sha256="c0ffee" + "0" * 58,
+    snapshotted_at="2026-09-11T00:00:00Z",
+)
+
+UNIVERSAL_SAFETY_DIFF = (
+    "diff --git a/src/records.py b/src/records.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/src/records.py\n"
+    "+++ b/src/records.py\n"
+    "@@ -1,5 +1,9 @@ def save_record(record):\n"
+    "+    record.name = sanitize_nested(record.name)\n"
+    "+    record.slug = record.name\n"
+    "+    persist(record)\n"
+)
+
+UNRELATED_DEFECT_DIFF = (
+    "diff --git a/src/telemetry.py b/src/telemetry.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/src/telemetry.py\n"
+    "+++ b/src/telemetry.py\n"
+    "@@ -1,3 +1,5 @@\n"
+    "+def record_use():\n"
+    "+    append_log_without_rotation(\"completion-used\")\n"
+)
+
+
 def content_lines(section: str) -> list[str]:
     """The `+`/`-` lines of a diff section — its content, minus its headers."""
     return [
@@ -286,6 +405,97 @@ def all_pass(feedback: str = "every scenario is satisfied") -> str:
 
 def user_message(criteria: CriteriaSet = CRITERIA, diff_text: str = SMALL_DIFF, **kwargs: Any) -> str:
     return build_prompt(criteria, diff_text, **kwargs).messages[1]["content"]
+
+
+def test_the_concrete_counterexample_fixture_is_assembled_as_real_prompt_evidence() -> None:
+    """The fixture itself supplies a sampled green gate beside a visible default-path defect."""
+    prompt = build_prompt(COMPLETION_CRITERIA, COUNTEREXAMPLE_DIFF, gate_results=[GREEN_TEST_GATE])
+    user = prompt.messages[1]["content"]
+
+    assert prompt.messages[0]["content"] == SYSTEM_PROMPT
+    assert COMPLETION_CRITERIA.requirements[0].scenarios[0].raw_text in user
+    assert GREEN_TEST_GATE.name in user
+    assert GREEN_TEST_GATE.command in user
+    assert COUNTEREXAMPLE_DIFF in user
+
+
+def test_the_counterexample_contract_reaches_the_assembled_system_message() -> None:
+    """US1-S1 is scored from the whole evidence, not from committed tests alone."""
+    system = build_prompt(
+        COMPLETION_CRITERIA,
+        COUNTEREXAMPLE_DIFF,
+        gate_results=[GREEN_TEST_GATE],
+    ).messages[0]["content"]
+
+    assert "Committed tests are sampled evidence" in system
+    assert "a green or failing test gate does not erase a concrete counterexample" in system
+    assert "an unqualified public API or CLI scenario includes reachable defaults and omitted-option invocations" in system
+    assert "unless the criterion explicitly narrows it" in system
+    assert "the closest dispatched scenario must fail" in system
+    assert "must not return PASS" in system
+
+
+def test_the_universal_safety_fixture_carries_the_bypassing_branch_and_field() -> None:
+    """A universal claim must be testable against the evidence that violates it."""
+    prompt = build_prompt(SAFETY_CRITERIA, UNIVERSAL_SAFETY_DIFF, gate_results=[GREEN_TEST_GATE])
+    user = prompt.messages[1]["content"]
+
+    assert SAFETY_CRITERIA.requirements[0].scenarios[0].raw_text in user
+    assert "sanitize_nested" in user
+    assert "record.slug" in user
+    assert "persist(record)" in user
+
+
+def test_the_system_prompt_traces_universal_safety_claims_by_branch_and_field() -> None:
+    """US1-S2 applies a universal claim to every reachable branch and field."""
+    system = build_prompt(
+        SAFETY_CRITERIA,
+        UNIVERSAL_SAFETY_DIFF,
+        gate_results=[GREEN_TEST_GATE],
+    ).messages[0]["content"]
+
+    assert "universal safety claims" in system
+    assert "sanitized" in system
+    assert "never" in system
+    assert "every" in system
+    assert "unchanged" in system
+    assert "every externally controlled field" in system
+    assert "every reachable branch visible in the evidence" in system
+    assert "including a path that bypasses a nested helper" in system
+    assert "a single violating field or branch" in system
+    assert "the closest dispatched scenario" in system
+
+
+def test_an_unrelated_diff_defect_is_assembled_as_advisory_only() -> None:
+    """US1-S3 keeps an unbound defect out of the machine-readable decision."""
+    prompt = build_prompt(
+        COMPLETION_CRITERIA,
+        UNRELATED_DEFECT_DIFF,
+        gate_results=[GREEN_TEST_GATE],
+    )
+    user = prompt.messages[1]["content"]
+
+    assert UNRELATED_DEFECT_DIFF in user
+    assert "does not contradict any dispatched criterion or scenario" in prompt.messages[0]["content"]
+    assert "must not make that scenario fail" in prompt.messages[0]["content"]
+    assert "must not invent a new acceptance criterion" in prompt.messages[0]["content"]
+    assert "advisory feedback" in prompt.messages[0]["content"]
+
+
+def test_advisory_feedback_does_not_overturn_passing_scenarios() -> None:
+    """The parser keeps the structured per-scenario result as the decision."""
+    verdict = parse(
+        verdict_json(
+            verdict="pass",
+            scenarios=[("US1-S1", True)],
+            feedback="US1-S1 passes; the telemetry defect is unrelated advisory feedback.",
+        ),
+        ids=["US1-S1"],
+    )
+
+    assert verdict.outcome is JudgeOutcome.PASS
+    assert [finding.passed for finding in verdict.findings] == [True]
+    assert verdict.feedback == "US1-S1 passes; the telemetry defect is unrelated advisory feedback."
 
 
 @pytest.fixture
