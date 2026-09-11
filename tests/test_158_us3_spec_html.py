@@ -42,7 +42,8 @@ def test_page_renders_the_typed_refusal_advisory_and_skip() -> None:
         None,
         specs_root=FIXTURE_ROOT / "defective-specs",
     )
-    page = renderer.build(spec, str(FIXTURE_REPO), validation=report)
+    assert spec.validation == report
+    page = renderer.build(spec, str(FIXTURE_REPO))
 
     assert f'Validation: {report.verdict}' in page
     for finding in report.findings:
@@ -166,3 +167,23 @@ def test_default_render_writes_one_unique_scratch_path(tmp_path, monkeypatch: py
     assert returned.name.startswith("001-local-only-")
     assert returned.suffix == ".html"
     assert after - before == {returned.name}
+
+
+def test_renderer_uses_the_library_report_instead_of_anchor_validation() -> None:
+    """The view owns no anchor parser, and its source binds the public validator."""
+    renderer = load_renderer()
+    source = SKILL_PATH.read_text(encoding="utf-8")
+    assert "from factory.spec import SpecValidation, validate_spec" in source
+    assert "resolve_anchors" not in source
+    assert "ANCHOR_RE" not in source
+    assert not hasattr(renderer, "Anchor")
+
+
+def test_skill_contract_names_local_path_and_separate_publication() -> None:
+    """The skill tells the operator what rendering returns and what it never does."""
+    contract = (REPO_ROOT / ".agents" / "skills" / "spec-html" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "returns that local path" in contract
+    assert "publication is a separate authorized action" in contract
+    assert ".agents/skills/spec-html/render.py" in contract

@@ -2,16 +2,17 @@
 """Render an Ergane spec trio as one readable HTML page.
 
 The point is not prettier markdown. A spec is hard to read because the parts
-that matter most are the machine parts — the Work Graph as raw YAML, anchors you
-cannot verify by looking, coverage you have to compute — and this resolves all
-three against the tree before it renders anything.
+that matter most are the machine parts — the Work Graph as raw YAML, validation
+coverage, and landing truth — and this view consumes the library's validator
+before it renders anything.
 
 Usage:
     python3 render.py <spec-dir> [-o out.html] [--tree <dir>] [--landed]
 
-`--tree` is the tree anchors are resolved against; it defaults to the repository
-root. Point it at a checkout of the landing branch when you want the answer an
-agent's worktree would get, which is not the same as your working copy.
+`--tree` is the target repository the validator resolves against; it defaults to
+the repository root. Point it at a checkout of the landing branch when you want
+the answer an agent's worktree would get, which is not the same as your working
+copy.
 """
 
 from __future__ import annotations
@@ -29,25 +30,11 @@ from factory.spec import SpecValidation, validate_spec
 from factory.workgraph.landed import landed_facts
 from factory.workgraph.worktree import WorktreeError
 
-ANCHOR_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|md|ya?ml|toml|sql|sh)):(\d+)(?:-(\d+))?`")
-BARE_RE = re.compile(r"`:(\d+)(?:-(\d+))?`")
-FILE_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|md|ya?ml|toml|sql|sh))`")
 STORY_RE = re.compile(r"^### User Story (\d+)\s*[-–]\s*(.+?)\s*\(Priority:\s*(P\d)\)", re.M)
 FR_RE = re.compile(r"^- \*\*(FR-\d+)\*\*:\s*(.+)$", re.M)
 SC_RE = re.compile(r"^- \*\*(SC-\d+)\*\*:\s*(.+)$", re.M)
 TASK_RE = re.compile(r"^- \[([ x])\]\s+(T\d+[a-z]?)\s*(.*)$", re.M)
 TRAP_RE = re.compile(r"^\*\*(\d+[a-z]?)\.\s+(.+?)\*\*", re.M)
-
-
-@dataclass
-class Anchor:
-    doc: str
-    doc_line: int
-    path: str
-    line: int
-    end: int | None
-    status: str = "ok"          # ok | blank | eof | missing
-    text: str = ""
 
 
 @dataclass
@@ -62,7 +49,6 @@ class Spec:
     graph: dict = field(default_factory=dict)
     traps: list[tuple[str, str]] = field(default_factory=list)
     tasks: list[tuple[str, str, str]] = field(default_factory=list)
-    anchors: list[Anchor] = field(default_factory=list)
     landed: dict[str, str] = field(default_factory=dict)
     sections: dict[str, str] = field(default_factory=dict)
     validation: SpecValidation | None = None
@@ -103,62 +89,6 @@ def parse_graph(body: str) -> dict:
             elif key == "persona":
                 graph[current]["persona"] = val
     return graph
-
-
-def resolve_anchors(docs: dict[str, tuple[str, int]], tree: pathlib.Path) -> list[Anchor]:
-    """Every `path:line` citation, resolved against `tree`. Frontmatter is skipped."""
-    out: list[Anchor] = []
-    cache: dict[str, list[str] | None] = {}
-    for doc, (text, skip) in docs.items():
-        lines = text.splitlines()
-        # A bare `:NN` inherits the last qualified path — but only within the same
-        # paragraph. Carrying it further guesses, and guessing here produces a
-        # confident wrong answer: on 075 a `:1357` meant for workflow.py resolved
-        # against a ladder.py cited two bullets earlier and reported EOF. A bare
-        # ref with no antecedent in its own paragraph is reported `ambiguous`,
-        # which is the true finding — a reader cannot resolve it either.
-        last_path = None
-        for i, line in enumerate(lines, 1):
-            if i <= skip:
-                continue
-            if not line.strip():
-                last_path = None
-            for m in ANCHOR_RE.finditer(line):
-                last_path = m.group(1)
-                out.append(_probe(doc, i, m.group(1), int(m.group(2)),
-                                  int(m.group(3)) if m.group(3) else None, tree, cache))
-            # A filename with no line number is an antecedent too. Without this the
-            # scan walks past `` `factory/cli/nouns/build.py` `` and resolves the
-            # `:511` after it against whatever file was cited further up.
-            for m in FILE_RE.finditer(line):
-                last_path = m.group(1)
-            for m in BARE_RE.finditer(line):
-                line_no = int(m.group(1))
-                end = int(m.group(2)) if m.group(2) else None
-                if last_path:
-                    out.append(_probe(doc, i, last_path, line_no, end, tree, cache))
-                else:
-                    a = Anchor(doc, i, "(no file named in this paragraph)", line_no, end)
-                    a.status = "ambiguous"
-                    out.append(a)
-    return out
-
-
-def _probe(doc, doc_line, path, line, end, tree, cache) -> Anchor:
-    a = Anchor(doc, doc_line, path, line, end)
-    if path not in cache:
-        p = tree / path
-        cache[path] = p.read_text(encoding="utf-8").splitlines() if p.is_file() else None
-    body = cache[path]
-    if body is None:
-        a.status = "missing"
-    elif line > len(body):
-        a.status = "eof"
-    elif not body[line - 1].strip():
-        a.status = "blank"
-    else:
-        a.text = body[line - 1].strip()
-    return a
 
 
 def read_landing(spec_dir: pathlib.Path, tree: pathlib.Path, branch: str | None):
@@ -215,7 +145,6 @@ def load(
     s.traps = TRAP_RE.findall(bodies.get("plan.md", ""))
     s.tasks = [(tid, txt, "done" if mark == "x" else "todo")
                for mark, tid, txt in TASK_RE.findall(bodies.get("tasks.md", ""))]
-    s.anchors = resolve_anchors(docs, tree)
     s.sections = bodies
     s.validation = validate_spec(spec_dir, target_repo=str(tree), specs_root=str(specs_root))
     state, landing, detail = read_landing(spec_dir, tree, branch)
@@ -542,7 +471,7 @@ def validation_html(report: SpecValidation) -> str:
 
 
 def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) -> str:
-    broken = [a for a in s.anchors if a.status != "ok"]
+    report = validation if validation is not None else (s.validation or SpecValidation())
     story_ids = {sid for sid, _, _ in s.stories}
     covered_fr = set(re.findall(r"FR-\d+", "\n".join(t[1] for t in s.tasks)))
     declared_fr = {f for f, _ in s.frs}
@@ -551,8 +480,6 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
     def chip(cls, label):
         return f'<span class="chip {cls}">{html.escape(label)}</span>'
 
-    anchor_chip = chip("ok", f"{len(s.anchors)} anchors ok") if not broken \
-        else chip("bad", f"{len(broken)} of {len(s.anchors)} broken")
     fr_gap = declared_fr - covered_fr
     fr_chip = chip("ok", f"{len(declared_fr)}/{len(declared_fr)} FR") if not fr_gap \
         else chip("bad", f"{len(fr_gap)} FR uncovered")
@@ -567,15 +494,6 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
         "ok" if s.landing_state == "ready" and landing_count == len(s.stories)
         else "bad"
     )
-
-    rows = []
-    for a in sorted(broken, key=lambda x: (x.doc, x.doc_line)):
-        rows.append(f'<tr class="anchor-row"><td>{html.escape(a.doc)}:{a.doc_line}</td>'
-                    f'<td><code>{html.escape(a.path)}:{a.line}</code></td>'
-                    f'<td>{chip("bad", a.status)}</td></tr>')
-    anchor_tbl = ("<div class='scroll'><table><tr><th>cited in</th><th>anchor</th><th>status</th></tr>"
-                  + "".join(rows) + "</table></div>") if rows else \
-        "<p class='empty'>Every citation resolves against the tree.</p>"
 
     srows = []
     for sid, title, pri in s.stories:
@@ -601,7 +519,7 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
     prov = html.escape("\n".join(s.provenance)) or "No provenance recorded."
 
     nav = "".join(f'<a href="#{i}">{n}</a>' for i, n in
-                  [("graph", "Work graph"), ("stories", "Stories"), ("anchors", "Anchor health"),
+                  [("graph", "Work graph"), ("stories", "Stories"),
                    ("traps", "Traps"), ("spec", "Specification"), ("plan", "Plan"), ("tasks", "Tasks")])
 
     done = sum(1 for _, _, st in s.tasks if st == "done")
@@ -611,11 +529,8 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
         landing_body = f"<div class='trap'><b>{html.escape(s.landing_state)}</b> {html.escape(s.landing_detail)}</div>"
     else:
         landing_body = "<p class='empty'>No landing facts returned.</p>"
-    validation_section = validation_html(validation or SpecValidation())
-    validation_chip = chip(
-        "ok" if (validation or SpecValidation()).verdict == "pass" else "bad",
-        (validation or SpecValidation()).verdict,
-    )
+    validation_section = validation_html(report)
+    validation_chip = chip("ok" if report.verdict == "pass" else "bad", report.verdict)
     return f"""<meta charset="utf-8">
 <title>{html.escape(s.slug)}</title>
 <style>{CSS}</style>
@@ -624,7 +539,6 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
   <p class="eyebrow">Ergane spec</p>
   <div class="health">
     <div><span>state</span>{chip(state_cls, s.state)}</div>
-    <div><span>anchors</span>{anchor_chip}</div>
     <div><span>requirements</span>{fr_chip}</div>
     <div><span>validation</span>{validation_chip}</div>
     <div><span>stories</span>{chip(landing_cls, landing_label)}</div>
@@ -650,10 +564,7 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
   <h2 id="landing">Landing: {html.escape(s.landing_state)}</h2>
   {landing_body}
 
-  <h2 id="anchors">Anchor health</h2>
-  {anchor_tbl}
-
-  <h2 id="validation">Validation: {(validation or SpecValidation()).verdict}</h2>
+  <h2 id="validation">Validation: {report.verdict}</h2>
   {validation_section}
 
   <h2 id="traps">Traps</h2>
