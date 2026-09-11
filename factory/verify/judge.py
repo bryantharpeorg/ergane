@@ -167,6 +167,13 @@ must fail, and you must not return PASS for that scenario while relegating the \
 same counterexample to feedback.
 This scope applies unless the criterion explicitly narrows it.
 
+Treat universal safety claims — including "sanitized", "never", "every" and \
+"unchanged" — as covering every externally controlled field and every \
+reachable branch visible in the evidence, including a path that bypasses a \
+nested helper. Trace the claim across those fields and branches: a single \
+violating field or branch contradicts the universal claim and must fail the \
+closest dispatched scenario.
+
 The acceptance criteria are the standard, not a draft: never propose changing, \
 rewording or reconciling a criterion or a scenario as a remediation, and never \
 suggest the agent edit them. If a criterion cannot be satisfied by any diff, or \

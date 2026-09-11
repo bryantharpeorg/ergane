@@ -436,6 +436,26 @@ def test_the_universal_safety_fixture_carries_the_bypassing_branch_and_field() -
     assert "persist(record)" in user
 
 
+def test_the_system_prompt_traces_universal_safety_claims_by_branch_and_field() -> None:
+    """US1-S2 applies a universal claim to every reachable branch and field."""
+    system = build_prompt(
+        SAFETY_CRITERIA,
+        UNIVERSAL_SAFETY_DIFF,
+        gate_results=[GREEN_TEST_GATE],
+    ).messages[0]["content"]
+
+    assert "universal safety claims" in system
+    assert "sanitized" in system
+    assert "never" in system
+    assert "every" in system
+    assert "unchanged" in system
+    assert "every externally controlled field" in system
+    assert "every reachable branch visible in the evidence" in system
+    assert "including a path that bypasses a nested helper" in system
+    assert "a single violating field or branch" in system
+    assert "the closest dispatched scenario" in system
+
+
 @pytest.fixture
 def proxy(monkeypatch: pytest.MonkeyPatch) -> FakeJudgeProxy:
     """A fake `/chat/completions`, with the master key sitting in the env.
