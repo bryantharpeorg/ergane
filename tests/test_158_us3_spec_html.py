@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
+import pytest
 import pytest
 from pathlib import Path
 
@@ -111,3 +113,56 @@ def test_landing_error_keeps_the_original_safe_detail(monkeypatch: pytest.Monkey
     assert "Landing: error" in page
     assert "git log refused: scratch failure" in page
     assert "0/1 stories" not in page
+
+
+def test_requested_local_output_writes_only_that_path(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rendering without publication intent changes one local filesystem path."""
+    renderer = load_renderer()
+    spec_dir = tmp_path / "001-local-only"
+    spec_dir.mkdir()
+    for name in ("spec.md", "plan.md", "tasks.md"):
+        shutil.copyfile(DEFECTIVE_TRIO / name, spec_dir / name)
+    output = tmp_path / "chosen.html"
+    before = set(tmp_path.rglob("*"))
+    monkeypatch.setattr(
+        renderer,
+        "landed_facts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network or git action")),
+    )
+    returned = renderer.render_local(
+        spec_dir,
+        FIXTURE_REPO,
+        None,
+        specs_root=tmp_path / "specs",
+        output=output,
+    )
+    assert returned == output
+    after = set(tmp_path.rglob("*"))
+    assert after - before == {output}
+
+
+def test_default_render_writes_one_unique_scratch_path(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No requested output makes one local scratch path, never a remote publication."""
+    renderer = load_renderer()
+    spec_dir = tmp_path / "001-local-only"
+    spec_dir.mkdir()
+    for name in ("spec.md", "plan.md", "tasks.md"):
+        shutil.copyfile(DEFECTIVE_TRIO / name, spec_dir / name)
+    before = {path.name for path in tmp_path.iterdir()}
+    monkeypatch.setattr(
+        renderer,
+        "landed_facts",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network or git action")),
+    )
+    returned = renderer.render_local(
+        spec_dir,
+        FIXTURE_REPO,
+        None,
+        specs_root=tmp_path / "specs",
+        scratch_dir=tmp_path,
+    )
+    after = {path.name for path in tmp_path.iterdir()}
+    assert returned == tmp_path / returned.name
+    assert returned.name.startswith("001-local-only-")
+    assert returned.suffix == ".html"
+    assert after - before == {returned.name}

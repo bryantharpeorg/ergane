@@ -17,13 +17,12 @@ agent's worktree would get, which is not the same as your working copy.
 from __future__ import annotations
 
 import argparse
-import ast
 import html
-import json
+import os
 import pathlib
 import re
-import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 
 from factory.spec import SpecValidation, validate_spec
@@ -672,6 +671,35 @@ def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) ->
 </div>"""
 
 
+def render_local(
+    spec_dir: pathlib.Path,
+    tree: pathlib.Path,
+    branch: str | None,
+    *,
+    specs_root: pathlib.Path,
+    output: pathlib.Path | None = None,
+    scratch_dir: pathlib.Path | None = None,
+) -> pathlib.Path:
+    """Render once to the caller's local path, or one unique local scratch path."""
+    spec_dir = pathlib.Path(spec_dir)
+    tree = pathlib.Path(tree).resolve()
+    spec = load(spec_dir, tree, branch, specs_root=pathlib.Path(specs_root))
+    page = build(spec, str(tree), validation=spec.validation)
+    if output is not None:
+        out = pathlib.Path(output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        directory = pathlib.Path(scratch_dir) if scratch_dir is not None else spec_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor, name = tempfile.mkstemp(
+            prefix=f"{spec_dir.name}-", suffix=".html", dir=directory
+        )
+        os.close(descriptor)
+        out = pathlib.Path(name)
+    out.write_text(page, encoding="utf-8")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("spec_dir")
@@ -686,12 +714,14 @@ def main() -> int:
         print(f"no spec.md in {spec_dir}", file=sys.stderr)
         return 2
     tree = pathlib.Path(args.tree).resolve()
-    s = load(spec_dir, tree, args.landed_branch, specs_root=spec_dir.parent)
-    page = build(s, str(tree), validation=s.validation)
-    out = pathlib.Path(args.output) if args.output else spec_dir / f"{spec_dir.name}.html"
-    out.write_text(page, encoding="utf-8")
-    broken = sum(1 for a in s.anchors if a.status != "ok")
-    print(f"{out}  ({len(s.stories)} stories, {len(s.anchors)} anchors, {broken} broken)")
+    out = render_local(
+        spec_dir,
+        tree,
+        args.landed_branch,
+        specs_root=spec_dir.parent,
+        output=pathlib.Path(args.output) if args.output else None,
+    )
+    print(f"{out}")
     return 0
 
 
