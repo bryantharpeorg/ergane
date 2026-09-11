@@ -1,5 +1,10 @@
 # Tasks: a gate declares the artifact it writes and the platform carries it
 
+The 2026-09-11 sizing refinement adds US6 before US3. Preserve existing task
+and scenario IDs. US6 implements and tests the bounded source-reading boundary;
+US3 reuses it and retains the actual-collector safety/freshness checks. All
+original requirements remain. The current graph has six nodes.
+
 Read `plan.md` before starting. Nine of its traps decide whether this spec is
 worth anything, and most of them name a mistake a green suite will not catch:
 
@@ -217,7 +222,23 @@ without it touch a region an earlier task in the same phase is already editing.
       unignored path and passing, one emitting an undeclared path and being
       demoted, and one emitting both and being demoted.
 
-## Phase 3: User Story 3 — The boundary collects what was declared
+## Phase 3: User Story 6 — Source observation is bounded and attributable
+
+### Tests for this story (write FIRST, must fail)
+
+- [ ] T061 [US6] (US6-S1, FR-020) In `tests/test_134_bounded_artifact_capture.py`, exercise real regular files, escaping and substituted symlinks, hardlink aliases, FIFOs and other special files against the reusable source boundary. Prove bounded refusal without unrelated reads or blocking, plus a regular-file positive control. Keep reusable real-file cases available to US3 integration tests.
+- [ ] T062 [US6] (US6-S2, FR-022) Exercise pre-gate and post-gate observations with unchanged existing bytes, a new fixture report, and controlled mutation during capture. Assert honest unchanged/new/unstable outcomes; an unavailable baseline must not certify freshness.
+- [ ] T063 [US6] (US6-S3, FR-020, FR-022) Exercise absent, within-bound, oversized and growing files. Assert bounded actual reads on both observation phases, exact stable permitted bytes, and no partial or inconsistent bytes eligible for publication.
+
+### Implementation for this story
+
+- [ ] T064 [US6] (FR-020, FR-022) Implement `factory/verify/artifact_capture.py` with typed observations and capture results, an explicit worktree root/normalized relative path/byte limit, and safe handle-based regular-file reads. Do not resolve an operational root or write durable artifacts. Keep any internal bounded bytes outside Temporal result models; all refusals carry an explicit status/reason.
+
+### Verification for this story
+
+- [ ] T065 [US6] Commit a compact real-file qualification transcript with a permitted regular-file control, refused link/special file, bounded oversize and unstable-capture result. Do not paste payload bytes or duplicate the full fixture matrix in the transcript.
+
+## Phase 4: User Story 3 — The boundary collects what was declared
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -273,8 +294,8 @@ without it touch a region an earlier task in the same phase is already editing.
       admitting an artifact there is a constitutional change that belongs in its
       own spec with its own decision entry.
 
-- [ ] T053 [US3] (US3-S10, FR-020) Before the collector change, add failing real-file tests for escaping/substituted symlinks, hardlink aliases, FIFO/special files, bounded reads and explicit refusal without gate-verdict change.
-- [ ] T054 [US3] (US3-S11, FR-022) Add failing before/after capture tests distinguishing unchanged preexisting report, newly produced bytes and mutation during collection; no stale-as-fresh or inconsistent snapshot claim.
+- [ ] T053 [US3] (US3-S10, FR-020) Before collector integration, reuse US6's real-file cases to prove the actual collector routes escaping/substituted symlinks, hardlink aliases, FIFO/special files and bounded-read refusals through that boundary into artifact metadata without changing gate verdicts. Do not replace real files with mocked refusal results or duplicate the fixture implementation.
+- [ ] T054 [US3] (US3-S11, FR-022) Add failing actual-collector before/after tests using US6's real-file cases for unchanged preexisting report, newly produced bytes and mutation during capture; no stale-as-fresh or inconsistent snapshot claim. Confirm ignored reports receive a pre-gate observation independently of the git snapshot.
 
 ### Implementation for this story
 
@@ -285,7 +306,7 @@ without it touch a region an earlier task in the same phase is already editing.
       record's type field with the `ArtifactType` `StrEnum` US1 defined — do not
       mint a second spelling of the four names, or the refusal message US1 emits
       and the record US3 writes can drift apart.
-- [ ] T055 [US3] (FR-020, FR-022) Implement handle-based safe collection and freshness/status metadata in `factory/verify/gates.py` and `factory/verify/models.py`; keep output references bounded and never execute/interpret report bytes. T053/T054 run before this implementation.
+- [ ] T055 [US3] (FR-020, FR-022) Integrate US6's source boundary before and after gate execution in `factory/verify/gates.py`, with freshness/status metadata in `factory/verify/models.py`. Publish only stable permitted captures and preserve every refusal independently of the gate verdict. Add no parallel direct-read/copy path; keep output references bounded and never execute/interpret report bytes. T053/T054 run before this integration.
 - [ ] T032 [US3] (FR-006, FR-018, plan trap 8) Thread the destination across all
       four frames, defaulted empty and meaning "collect nothing" — `run_gates`
       (`factory/verify/gates.py:1225` — `run_gates`), `_run_gate_list`
@@ -310,7 +331,7 @@ without it touch a region an earlier task in the same phase is already editing.
       collected coverage artifact and a declared-but-absent one — one record of
       each, not one per type — and the directory listing of the destination.
 
-## Phase 4: User Story 5 — The bytes land in one absolute place the activity resolves
+## Phase 5: User Story 5 — The bytes land in one absolute place the activity resolves
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -400,7 +421,7 @@ without it touch a region an earlier task in the same phase is already editing.
       listing after the node worktree has been removed — "readable per attempt
       afterwards" is half of what the declared ledger keys asked for.
 
-## Phase 5: User Story 4 — An exported reader returns them per attempt
+## Phase 6: User Story 4 — An exported reader returns them per attempt
 
 ### Tests for this story (write FIRST, must fail)
 
@@ -433,7 +454,7 @@ without it touch a region an earlier task in the same phase is already editing.
 
 ## Verification
 
-- [ ] T060 Operator pre-dispatch: derive the refined five-node graph into a new isolated output, inspect FR-020 through FR-023 coverage, and reassess US3's code+tests+evidence size against64KiB; do not overwrite the user's stale untracked graph.
+- [ ] T060 Operator pre-dispatch: derive the refined six-node graph into a new isolated output, inspect FR-020 through FR-023 coverage and US1→US2→US6→US3→US5→US4 merge order, and review US6 source capture versus US3 integration sizing against64KiB; do not overwrite the user's stale untracked graph or relax the diff budget.
 - [ ] T050 The full gate command passes green.
 - [ ] T051 The operator sequence in `plan.md` § "Verification the operator will
       run" is executed end to end. **Step 1's "without changing anything else in
