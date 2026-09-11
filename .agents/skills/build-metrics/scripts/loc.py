@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """Lines of code by language and by module, over git-tracked files only.
 
-Bootstraps cloc if it is not on PATH. sudo does not work in this environment,
-so the standalone Perl script is fetched instead - from raw master, NOT from
-the releases URL, which 404s and whose HTML body then gets executed as Perl
-("Can't locate object method \"Not\" via package \"Found\"" is a failed
-download wearing a Perl error's clothes).
+Requires a declared, stable local `cloc` executable. It is never downloaded.
 
 usage: loc.py [repo_path]
 """
+import argparse
 import collections
 import csv
 import os
@@ -16,27 +13,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.request
-
-CLOC_URL = "https://raw.githubusercontent.com/AlDanial/cloc/master/cloc"
 
 
-def cloc_cmd():
+def loc_tool(declared=None):
+    if declared:
+        path = os.path.abspath(declared)
+        if not os.path.isfile(path) or not os.access(path, os.X_OK):
+            sys.exit(f"declared LOC tool is not executable: {declared}")
+        return [path]
     found = shutil.which("cloc")
-    if found:
-        return [found]
-    if not shutil.which("perl"):
-        sys.exit("neither cloc nor perl is available; cannot count")
-    cache = os.path.join(tempfile.gettempdir(), "cloc-bootstrap.pl")
-    if not os.path.exists(cache) or os.path.getsize(cache) < 100_000:
-        sys.stderr.write("bootstrapping cloc ...\n")
-        with urllib.request.urlopen(CLOC_URL, timeout=120) as r:
-            body = r.read()
-        if b"Count Lines of Code" not in body[:4000]:
-            sys.exit("downloaded file is not cloc - check the URL")
-        with open(cache, "wb") as fh:
-            fh.write(body)
-    return ["perl", cache]
+    if not found:
+        sys.exit("LOC tool unavailable; install cloc and pass --cloc PATH")
+    return [found]
 
 
 def module(p):
@@ -68,24 +56,24 @@ def module(p):
     return "repo root", p
 
 
-def main(repo):
+def main(repo, tool=None):
     os.chdir(repo)
-    out = os.path.join(tempfile.gettempdir(), "cloc-byfile.csv")
-    if os.path.exists(out):
-        os.remove(out)
-    subprocess.run(
-        cloc_cmd() + ["--vcs=git", "--by-file", "--csv", "--quiet", f"--out={out}"],
-        check=True, capture_output=True,
-    )
+    with tempfile.TemporaryDirectory(prefix=".cloc-", dir=repo) as scratch:
+        out = os.path.join(scratch, "byfile.csv")
+        subprocess.run(
+            loc_tool(tool) + ["--vcs=git", "--by-file", "--csv", "--quiet", f"--out={out}"],
+            check=True, capture_output=True,
+        )
 
-    rows = []
-    with open(out) as fh:
-        for r in csv.DictReader(fh):
-            if not r.get("filename"):
-                continue
-            p = r["filename"]
-            rows.append((p[2:] if p.startswith("./") else p, r["language"],
-                         int(r["blank"]), int(r["comment"]), int(r["code"])))
+        rows = []
+        with open(out) as fh:
+            for r in csv.DictReader(fh):
+                if not r.get("filename"):
+                    continue
+                p = r["filename"]
+                rows.append((p[2:] if p.startswith("./") else p, r["language"],
+                             int(r["blank"]), int(r["comment"]), int(r["code"])))
+
 
     by_lang = collections.defaultdict(lambda: [0, 0, 0, 0])
     by_mod = collections.defaultdict(lambda: [0, 0, 0, 0])
@@ -139,4 +127,8 @@ def main(repo):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else ".")
+    parser = argparse.ArgumentParser(description="git-tracked lines of code")
+    parser.add_argument("repo", nargs="?", default=".")
+    parser.add_argument("--cloc")
+    arguments = parser.parse_args()
+    main(arguments.repo, tool=arguments.cloc)

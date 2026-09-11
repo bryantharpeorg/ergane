@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import sqlite3
+import importlib.util
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -22,6 +23,8 @@ from factory.verify.store import connect as connect_verification
 
 
 REWORK = Path(".agents/skills/build-metrics/scripts/rework.py")
+LOC = Path(".agents/skills/build-metrics/scripts/loc.py")
+REPO_ROOT = Path(__file__).parents[1]
 
 
 def _old_verification_store(path: Path) -> sqlite3.Connection:
@@ -154,6 +157,89 @@ def _run_rework(repo: Path) -> str:
     )
     assert result.returncode == 0, result.stderr
     return result.stdout
+
+
+@pytest.fixture
+def loc_module() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "ergane_build_metrics_loc", REPO_ROOT / LOC
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _fake_cloc(tmp_path: Path) -> Path:
+    executable = tmp_path / "cloc"
+    executable.write_text(
+        "#!/bin/sh\n"
+        'out=""\n'
+        'for value do\n'
+        '  case "$value" in --out=*) out="${value#--out=}" ;; esac\n'
+        "done\n"
+        'cat > "$out" <<\'CSV\'\n'
+        "filename,language,blank,comment,code\n"
+        "./example.py,Python,1,2,10\n"
+        "CSV\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable
+
+
+def test_declared_local_loc_tool_does_not_download(
+    tmp_path: Path, loc_module: Any, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    def deny_network(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("network access was attempted")
+
+    monkeypatch.setattr("socket.socket", deny_network)
+    tool = _fake_cloc(tmp_path)
+    loc_module.main(str(tmp_path), tool=str(tool))
+
+    output = capsys.readouterr().out
+    assert "BY LANGUAGE" in output
+    assert "Python" in output
+
+
+def test_loc_scratch_outputs_are_run_unique(
+    tmp_path: Path, loc_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outputs: list[Path] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        path = Path(command[-1].removeprefix("--out="))
+        outputs.append(path)
+        path.write_text(
+            "filename,language,blank,comment,code\n./example.py,Python,1,2,10\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    tool = _fake_cloc(tmp_path)
+    monkeypatch.setattr(loc_module.subprocess, "run", fake_run)
+    loc_module.main(str(tmp_path), tool=str(tool))
+    loc_module.main(str(tmp_path), tool=str(tool))
+
+    assert outputs[0] != outputs[1]
+    assert all(path.parent.is_relative_to(tmp_path) for path in outputs)
+
+
+def test_loc_reports_unavailable_without_local_tool(
+    tmp_path: Path, loc_module: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(loc_module.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit, match="LOC tool unavailable"):
+        loc_module.main(str(tmp_path))
+
+
+def test_loc_source_has_no_remote_executable_boundary() -> None:
+    source = (REPO_ROOT / LOC).read_text(encoding="utf-8")
+    assert "urllib" not in source
+    assert "https://raw.githubusercontent.com" not in source
+    assert "CLOC_URL" not in source
+    assert "master" not in source
 
 
 def test_two_dispatches_sharing_old_key_fields_stay_separate(
