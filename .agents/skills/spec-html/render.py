@@ -26,6 +26,8 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
+from factory.spec import SpecValidation, validate_spec
+
 ANCHOR_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|md|ya?ml|toml|sql|sh)):(\d+)(?:-(\d+))?`")
 BARE_RE = re.compile(r"`:(\d+)(?:-(\d+))?`")
 FILE_RE = re.compile(r"`([A-Za-z0-9_./-]+\.(?:py|md|ya?ml|toml|sql|sh))`")
@@ -62,6 +64,7 @@ class Spec:
     anchors: list[Anchor] = field(default_factory=list)
     landed: dict[str, str] = field(default_factory=dict)
     sections: dict[str, str] = field(default_factory=dict)
+    validation: SpecValidation | None = None
 
 
 def split_frontmatter(text: str) -> tuple[list[str], str, int]:
@@ -166,7 +169,13 @@ def landed_map(spec_dir: pathlib.Path, branch: str) -> dict[str, str]:
     return dict(re.findall(r"^(US\d+) landed at ([0-9a-f]+)", r.stdout, re.M))
 
 
-def load(spec_dir: pathlib.Path, tree: pathlib.Path, branch: str | None) -> Spec:
+def load(
+    spec_dir: pathlib.Path,
+    tree: pathlib.Path,
+    branch: str | None,
+    *,
+    specs_root: pathlib.Path,
+) -> Spec:
     s = Spec(slug=spec_dir.name)
     docs: dict[str, tuple[str, int]] = {}
     bodies: dict[str, str] = {}
@@ -198,6 +207,7 @@ def load(spec_dir: pathlib.Path, tree: pathlib.Path, branch: str | None) -> Spec
                for mark, tid, txt in TASK_RE.findall(bodies.get("tasks.md", ""))]
     s.anchors = resolve_anchors(docs, tree)
     s.sections = bodies
+    s.validation = validate_spec(spec_dir, target_repo=str(tree), specs_root=str(specs_root))
     if branch:
         s.landed = landed_map(spec_dir, branch)
     return s
@@ -489,7 +499,37 @@ details[open] summary{border-bottom:1px solid var(--hairline)}
 """
 
 
-def build(s: Spec, tree_label: str) -> str:
+def validation_html(report: SpecValidation) -> str:
+    """Render the library report in run order, preserving severity and reasons."""
+    finding_rows = []
+    for finding in report.findings:
+        cls = {"refusal": "bad", "advisory": "warn"}.get(finding.severity, "neutral")
+        finding_rows.append(
+            f'<tr><td>{html.escape(finding.severity, quote=False)}</td>'
+            f'<td>{html.escape(finding.layer, quote=False)}</td>'
+            f'<td>{html.escape(finding.message, quote=False)}</td></tr>'
+        )
+    skipped_rows = []
+    for skipped in report.skipped:
+        skipped_rows.append(
+            f'<tr><td>{html.escape(skipped["layer"], quote=False)}</td>'
+            f'<td>{html.escape(skipped["reason"], quote=False)}</td></tr>'
+        )
+    checked = ", ".join(report.checked) or "—"
+    summary = (f"refusals={len(report.refusals)}, advisories={len(report.advisories)}, "
+               f"skipped={len(report.skipped)}")
+    return f"""<table><tr><th>verdict</th><th>layer</th><th>message</th></tr>
+<tr><td>{html.escape(report.verdict, quote=False)}</td><td colspan="2">{html.escape(summary)}</td></tr>
+{"".join(finding_rows)}
+</table>
+<h3>Skipped layers</h3>
+<table><tr><th>layer</th><th>reason</th></tr>
+{"".join(skipped_rows)}
+</table>
+<p><b>Checked:</b> {html.escape(checked)}</p>"""
+
+
+def build(s: Spec, tree_label: str, validation: SpecValidation | None = None) -> str:
     broken = [a for a in s.anchors if a.status != "ok"]
     story_ids = {sid for sid, _, _ in s.stories}
     covered_fr = set(re.findall(r"FR-\d+", "\n".join(t[1] for t in s.tasks)))
@@ -538,6 +578,11 @@ def build(s: Spec, tree_label: str) -> str:
                    ("traps", "Traps"), ("spec", "Specification"), ("plan", "Plan"), ("tasks", "Tasks")])
 
     done = sum(1 for _, _, st in s.tasks if st == "done")
+    validation_section = validation_html(validation or SpecValidation())
+    validation_chip = chip(
+        "ok" if (validation or SpecValidation()).verdict == "pass" else "bad",
+        (validation or SpecValidation()).verdict,
+    )
     return f"""<meta charset="utf-8">
 <title>{html.escape(s.slug)}</title>
 <style>{CSS}</style>
@@ -548,6 +593,7 @@ def build(s: Spec, tree_label: str) -> str:
     <div><span>state</span>{chip(state_cls, s.state)}</div>
     <div><span>anchors</span>{anchor_chip}</div>
     <div><span>requirements</span>{fr_chip}</div>
+    <div><span>validation</span>{validation_chip}</div>
     <div><span>stories</span>{chip("neutral", f"{len(s.landed)}/{len(s.stories)} landed")}</div>
     <div><span>tasks</span>{chip("neutral", f"{done}/{len(s.tasks)} done")}</div>
   </div>
@@ -570,6 +616,9 @@ def build(s: Spec, tree_label: str) -> str:
 
   <h2 id="anchors">Anchor health</h2>
   {anchor_tbl}
+
+  <h2 id="validation">Validation: {(validation or SpecValidation()).verdict}</h2>
+  {validation_section}
 
   <h2 id="traps">Traps</h2>
   {traps}
@@ -600,8 +649,8 @@ def main() -> int:
         print(f"no spec.md in {spec_dir}", file=sys.stderr)
         return 2
     tree = pathlib.Path(args.tree).resolve()
-    s = load(spec_dir, tree, args.landed_branch)
-    page = build(s, str(tree))
+    s = load(spec_dir, tree, args.landed_branch, specs_root=spec_dir.parent)
+    page = build(s, str(tree), validation=s.validation)
     out = pathlib.Path(args.output) if args.output else spec_dir / f"{spec_dir.name}.html"
     out.write_text(page, encoding="utf-8")
     broken = sum(1 for a in s.anchors if a.status != "ok")
