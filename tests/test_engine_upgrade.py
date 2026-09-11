@@ -138,6 +138,71 @@ def test_retention_removes_only_exact_repository_older_releases() -> None:
     assert decision.keep == (target, previous, unrelated, prefix_lookalike)
 
 
+def test_retention_unknown_previous_removes_nothing() -> None:
+    """T002 / US1-S2 / FR-002: unknown rollback identity disables cleanup."""
+    images = [
+        image_reference("0.4.0"),
+        image_reference("0.3.0"),
+        image_reference("0.2.0"),
+    ]
+
+    decision = upgrade_module._retention_decision(
+        images,
+        target_image=image_reference("0.4.0"),
+        previous_image=None,
+    )
+
+    assert decision.remove == ()
+    assert decision.keep == tuple(images)
+    assert any("keeping every local image" in note for note in decision.notes)
+
+
+def test_retention_keeps_unrecognized_and_ambiguous_inventory() -> None:
+    """T002 / US1-S2 / FR-002: only exact numeric release tags may be eligible."""
+    target = image_reference("0.4.0")
+    malformed_previous = f"{IMAGE_REPOSITORY}::malformed"
+    inventory = [
+        target,
+        malformed_previous,
+        f"{IMAGE_REPOSITORY}sha256:0123456789abcdef",
+        "<dangling>:",
+        f"{IMAGE_REPOSITORY}:latest",
+        f"{IMAGE_REPOSITORY}:0.4.1-rc.1",
+        f"{IMAGE_REPOSITORY}:0.5.0",
+        f"{IMAGE_REPOSITORY}:0.10.0",
+    ]
+
+    decision = upgrade_module._retention_decision(
+        inventory,
+        target_image=target,
+        previous_image=malformed_previous,
+    )
+
+    assert decision.remove == ()
+    assert decision.keep == tuple(inventory)
+
+
+def test_retention_orders_numeric_versions_not_tag_strings() -> None:
+    """T002 / US1-S2 / FR-002: 0.10.0 is newer than 0.9.0 and stays eligible to keep."""
+    target = image_reference("0.11.0")
+    previous = image_reference("0.9.0")
+    inventory = [
+        target,
+        previous,
+        image_reference("0.8.0"),
+        image_reference("0.10.0"),
+    ]
+
+    decision = upgrade_module._retention_decision(
+        inventory,
+        target_image=target,
+        previous_image=previous,
+    )
+
+    assert decision.remove == (image_reference("0.8.0"),)
+    assert decision.keep == (target, previous, image_reference("0.10.0"))
+
+
 # ---------------------------------------------------------------------------
 # T033: refuse while work is in flight
 # ---------------------------------------------------------------------------
