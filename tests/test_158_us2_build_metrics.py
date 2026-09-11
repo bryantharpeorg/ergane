@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import sqlite3
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
+
+import pytest
 
 from factory.usage.ledger import connect as connect_ledger, upsert_record
 from factory.usage.models import Termination, UsageRecord
@@ -21,31 +24,90 @@ from factory.verify.store import connect as connect_verification
 REWORK = Path(".agents/skills/build-metrics/scripts/rework.py")
 
 
+def _old_verification_store(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE verification_results (
+            id INTEGER PRIMARY KEY,
+            epic_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            attempt INTEGER NOT NULL,
+            form TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            dispatch TEXT NOT NULL
+        )
+        """
+    )
+    return conn
+
+
+def _old_ledger_store(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE usage_records (
+            id INTEGER PRIMARY KEY,
+            epic_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            attempt INTEGER NOT NULL,
+            persona TEXT NOT NULL,
+            spec_ref TEXT NOT NULL,
+            key_alias TEXT NOT NULL UNIQUE,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            cache_read_tokens INTEGER,
+            cache_write_tokens INTEGER,
+            request_count INTEGER,
+            spend_usd REAL,
+            final_usage_confirmed INTEGER NOT NULL,
+            termination TEXT NOT NULL,
+            issued_at TEXT NOT NULL,
+            torn_down_at TEXT NOT NULL
+        )
+        """
+    )
+    return conn
+
+
 def _stores(runtime_root: Path):
     verification = connect_verification(runtime_root / "verification.db")
     ledger = connect_ledger(runtime_root / "ledger.db")
     return verification, ledger
 
 
-def _ledger_record(*, key_alias: str) -> UsageRecord:
-    return UsageRecord(
-        epic_id="158-operator-skills",
-        node_id="us1",
-        attempt=1,
-        persona="implementer",
-        spec_ref="158/US1",
-        key_alias=key_alias,
-        prompt_tokens=100,
-        completion_tokens=10,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
-        request_count=1,
-        spend_usd=0.10,
-        final_usage_confirmed=True,
-        termination=Termination.COMPLETED,
-        issued_at="2026-09-10T10:00:00Z",
-        torn_down_at="2026-09-10T10:03:00Z",
+def _ledger_record(*, key_alias: str, **overrides: Any) -> UsageRecord:
+    fields: dict[str, Any] = {
+        "epic_id": "158-operator-skills",
+        "node_id": "us1",
+        "attempt": 1,
+        "persona": "implementer",
+        "spec_ref": "158/US1",
+        "key_alias": key_alias,
+        "prompt_tokens": 100,
+        "completion_tokens": 10,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "request_count": 1,
+        "spend_usd": 0.10,
+        "final_usage_confirmed": True,
+        "termination": Termination.COMPLETED,
+        "issued_at": "2026-09-10T10:00:00Z",
+        "torn_down_at": "2026-09-10T10:03:00Z",
+    }
+    fields.update(overrides)
+    return UsageRecord(**fields)
+
+
+def _insert_old_verification(conn: sqlite3.Connection, dispatch: str = "<unknown>") -> None:
+    conn.execute(
+        "INSERT INTO verification_results (epic_id, node_id, attempt, form, verdict, "
+        "finished_at, dispatch) VALUES (?, ?, 1, 'PHASE', 'PASS', "
+        "'2026-09-10T10:03:00Z', ?)",
+        ("158-operator-skills", "us1", dispatch),
     )
+    conn.commit()
 
 
 def _without_runtime_env(monkeypatch: MonkeyPatch) -> None:
@@ -124,4 +186,122 @@ def test_two_dispatches_sharing_old_key_fields_stay_separate(
     assert output.count("dispatch second") == 1
     assert "codex-primary" in output and "subscription" in output
     assert "glm-5.3" in output and "ollama-cloud" in output
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["empty", "legacy-dimensions", "unknown-usage"],
+)
+def test_missing_and_unmeasured_quantities_are_not_zero(
+    tmp_path: Path, scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_runtime_env(monkeypatch)
+    runtime = tmp_path / ".ergane"
+    runtime.mkdir()
+    if scenario == "legacy-dimensions":
+        store = _old_verification_store(runtime / "verification.db")
+        _insert_old_verification(store)
+        ledger = _old_ledger_store(runtime / "ledger.db")
+        ledger.execute(
+            "INSERT INTO usage_records (epic_id, node_id, attempt, persona, spec_ref, "
+            "key_alias, prompt_tokens, completion_tokens, final_usage_confirmed, "
+            "termination, issued_at, torn_down_at) "
+            "VALUES ('158-operator-skills', 'us1', 1, 'implementer', '158/US1', "
+            "'legacy-row', 1000, 100, 1, 'completed', '2026-09-10T10:00:00Z', "
+            "'2026-09-10T10:03:00Z')"
+        )
+        ledger.commit()
+    elif scenario == "unknown-usage":
+        store, ledger = _stores(runtime)
+        fields = _verification_fields(dispatch="<unknown>")
+        columns = ", ".join(fields)
+        marks = ", ".join(f":{column}" for column in fields)
+        store.execute(f"INSERT INTO verification_results ({columns}) VALUES ({marks})", fields)
+        store.execute(
+            "UPDATE verification_results SET persona = NULL, model_alias = NULL, route = NULL"
+        )
+        store.commit()
+        upsert_record(
+            ledger,
+            _ledger_record(
+                key_alias="subscription-complete",
+                usage_source="subscription",
+                usage_status="complete",
+                cost_basis="unknown",
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                request_count=None,
+                spend_usd=None,
+            ),
+        )
+        upsert_record(
+            ledger,
+            _ledger_record(
+                key_alias="subscription-unknown",
+                usage_source="subscription",
+                usage_status="unknown",
+                cost_basis="unknown",
+                prompt_tokens=None,
+                completion_tokens=None,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                request_count=None,
+                spend_usd=None,
+            ),
+        )
+        upsert_record(
+            ledger,
+            _ledger_record(
+                key_alias="gateway-partial",
+                usage_source="gateway",
+                usage_status="partial",
+                cost_basis="proxy_estimate",
+                prompt_tokens=50,
+                completion_tokens=None,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                request_count=1,
+                spend_usd=0.25,
+            ),
+        )
+        upsert_record(
+            ledger,
+            _ledger_record(
+                key_alias="legacy-row",
+                prompt_tokens=500,
+                completion_tokens=None,
+                request_count=None,
+                usage_source="legacy",
+                usage_status="legacy",
+                cost_basis="unknown",
+                spend_usd=0.30,
+            ),
+        )
+    else:
+        store, ledger = _stores(runtime)
+        store.close()
+        ledger.close()
+
+    output = _run_rework(tmp_path)
+    if scenario != "empty":
+        store.close()
+        ledger.close()
+
+    if scenario == "empty":
+        assert "verification rows 0" in output
+        assert "usage rows 0" in output
+    if scenario == "legacy-dimensions":
+        assert "runner unknown" in output
+        assert "route=unknown" in output
+        assert "model=unknown" in output
+        assert "prompt tokens measured 1000" in output
+        assert "completion tokens measured 100" in output
+    if scenario == "unknown-usage":
+        assert "prompt tokens measured 650" in output
+        assert "completion tokens measured 10" in output
+        assert "requests measured 1" in output
+        normalized = " ".join(output.split())
+        assert "usage sources gateway legacy subscription" in normalized
+        assert "usage statuses complete legacy partial unknown" in normalized
+        assert "cost bases proxy_estimate unknown" in normalized
 from pytest import MonkeyPatch
