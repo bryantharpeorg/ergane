@@ -499,17 +499,32 @@ def test_the_counterexample_contract_reaches_the_assembled_system_message() -> N
     assert "must not return PASS" in system
 
 
-def test_the_parked_completion_fixture_omission_is_safe_as_written() -> None:
-    """The negative control executes the fixture's claimed crash path."""
-    fixture_globals: dict[str, Any] = {
-        "crash_when_omitted": lambda target, option: f"{target}:explicit"
-    }
+def test_the_parked_completion_fixture_omission_control_records_the_callee() -> None:
+    """True omission succeeds while explicit null reaches the omitted branch."""
+    captured_options: list[str] = []
+
+    class OmittedOptionError(ValueError):
+        pass
+
+    def crash_when_omitted(target: str, option: str) -> str:
+        captured_options.append(option)
+        if option == "omitted":
+            raise OmittedOptionError("option is required when omitted")
+        return f"{target}:{option}"
+
+    fixture_globals: dict[str, Any] = {"crash_when_omitted": crash_when_omitted}
     exec("\n".join(added_lines(PARKED_COMPLETION_DIFF, path="src/completion.py")), fixture_globals)
     complete = fixture_globals["complete"]
 
-    result = complete("target", option=None)
+    result = complete("target")
 
     assert result == "target:explicit"
+    assert tuple(captured_options) == ("explicit",)
+
+    with pytest.raises(OmittedOptionError, match="option is required when omitted"):
+        complete("target", option=None)
+
+    assert tuple(captured_options) == ("explicit", "omitted")
 
 
 def test_the_repaired_completion_after_source_separates_omission_from_explicit() -> None:
