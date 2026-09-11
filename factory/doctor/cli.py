@@ -18,11 +18,19 @@ from pathlib import Path
 
 import yaml
 
-from factory.doctor.models import Finding, Severity, Status, parse_findings_batch
+from factory.doctor.models import (
+    Finding,
+    HistoricalObservation,
+    Severity,
+    Status,
+    parse_findings_batch,
+    parse_historical_findings_batch,
+)
 from factory.doctor.probes import REGISTRY, FindingReport, Probe, ServiceNotAnswering
 from factory.doctor.scaffold import scaffold_spec
 from factory.doctor.store import (
     connect,
+    apply_historical_observation,
     get_finding,
     list_findings,
     promote,
@@ -108,13 +116,24 @@ def _sanitize_finding(finding: Finding) -> Finding:
         summary=_sanitize_text(finding.summary),
         refs=[_sanitize_text(ref) or "" for ref in finding.refs],
         notes=_sanitize_text(finding.notes),
-        source=finding.source,
+        source=_sanitize_text(finding.source),
         occurrences=finding.occurrences,
         first_seen=finding.first_seen,
         last_seen=finding.last_seen,
         promoted_spec=finding.promoted_spec,
         resolved_at=finding.resolved_at,
         resolution=finding.resolution,
+    )
+
+
+def _sanitize_historical_observation(
+    observation: HistoricalObservation,
+) -> HistoricalObservation:
+    return HistoricalObservation(
+        observation=_sanitize_finding(observation.observation),
+        observation_id=observation.observation_id,
+        observed_at=observation.observed_at,
+        ingested_at=observation.ingested_at,
     )
 
 
@@ -172,6 +191,57 @@ def _report_command(args: argparse.Namespace, conn: sqlite3.Connection) -> int:
         resolution=None,
     )
     report(conn, finding, seen_at=seen_at)
+    return EXIT_OK
+
+
+def _historical_ingest_command(args: argparse.Namespace) -> int:
+    """Rehearse a historical batch, or apply it only when explicitly asked."""
+    batch_path = Path(args.batch)
+    try:
+        observations = parse_historical_findings_batch(
+            batch_path.read_text(encoding="utf-8"), ingested_at=_utcnow()
+        )
+    except (ValueError, OSError) as exc:
+        raise _UserError(f"batch refused: {exc}") from exc
+
+    sanitized = [_sanitize_historical_observation(obs) for obs in observations]
+
+    if not args.apply:
+        rehearsal_value = getattr(args, "rehearsal_db", None)
+        if rehearsal_value is not None:
+            rehearsal_path = Path(rehearsal_value)
+            if rehearsal_path.exists():
+                raise _UserError(
+                    f"rehearsal store already exists: {rehearsal_path}"
+                )
+        else:
+            handle, rehearsal_value = tempfile.mkstemp(
+                prefix="findings-rehearsal-", suffix=".db"
+            )
+            Path(handle).unlink()
+            rehearsal_path = Path(rehearsal_value)
+
+        rehearsal_path.parent.mkdir(parents=True, exist_ok=True)
+        rehearsal_conn = connect(rehearsal_path)
+        try:
+            for observation in sanitized:
+                apply_historical_observation(
+                    rehearsal_conn,
+                    observation,
+                    ingested_at=observation.ingested_at,
+                )
+        finally:
+            rehearsal_conn.close()
+        print(rehearsal_path)
+        return EXIT_OK
+
+    with connect(_store_path(args)) as conn:
+        for observation in sanitized:
+            apply_historical_observation(
+                conn,
+                observation,
+                ingested_at=observation.ingested_at,
+            )
     return EXIT_OK
 
 
