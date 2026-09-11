@@ -16,7 +16,12 @@ from factory.cli.errors import EXIT_USER, OperatorError
 from factory.controlplane.verify import verify_controlplane
 from factory.mergequeue.models import Finding
 from factory.registry import resolve_state_home
-from factory.supervision.engine_identity import cli_version, image_reference, read_identity
+from factory.supervision.engine_identity import (
+    IMAGE_REPOSITORY,
+    cli_version,
+    image_reference,
+    read_identity,
+)
 from factory.supervision.units import CommandResult, supervision_home
 from factory.versioning import OpenEpic
 
@@ -182,6 +187,19 @@ def _drain_refusal(open_epics: Sequence[OpenEpic]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _numeric_release_tag(image: str) -> tuple[int, int, int] | None:
+    """Parse an exact-repository numeric major.minor.patch release tag."""
+    prefix = f"{IMAGE_REPOSITORY}:"
+    if not image.startswith(prefix):
+        return None
+
+    tag = image.rsplit(":", 1)[-1]
+    components = tag.split(".")
+    if len(components) != 3 or not all(component.isdigit() for component in components):
+        return None
+    return tuple(int(component) for component in components)
+
+
 def _retention_decision(
     images: Sequence[str],
     *,
@@ -204,15 +222,31 @@ def _retention_decision(
             ),
         )
 
-    protected = {target_image, previous_image}
+    target_release = _numeric_release_tag(target_image)
+    previous_release = _numeric_release_tag(previous_image)
+    if target_release is None or previous_release is None:
+        return _RetentionDecision(
+            remove=(),
+            keep=tuple(images),
+            notes=(
+                "target or previous image is not a recognized numeric release; "
+                "keeping every local image",
+            ),
+        )
 
     remove: list[str] = []
     keep: list[str] = []
     for image in images:
-        if image in protected:
+        if image in {target_image, previous_image}:
             keep.append(image)
-        else:
-            remove.append(image)
+            continue
+
+        release = _numeric_release_tag(image)
+        if release is None or release >= previous_release:
+            keep.append(image)
+            continue
+
+        remove.append(image)
 
     notes: list[str] = [
         f"keeping target image {target_image}",
