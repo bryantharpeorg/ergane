@@ -88,6 +88,11 @@ def main(repo, tool=None):
         mix[m][lang] += code
     total = sum(v[3] for v in by_mod.values())
 
+    if not rows:
+        print("=== LOC ===")
+        print("  no tracked files measured")
+        return
+
     print("=== BY LANGUAGE (git-tracked files) ===")
     print(f"  {'language':<16}{'files':>7}{'code':>10}{'blank':>9}{'comment':>10}")
     for k, v in sorted(by_lang.items(), key=lambda kv: -kv[1][3]):

@@ -70,6 +70,7 @@ def dispatch_executions(ver):
     ).fetchall()
     executions = collections.defaultdict(list)
     for epic, node, attempt, verdict, persona, model, route, dispatch in rows:
+        dispatch = dispatch if dispatch not in (None, "") else "<unknown>"
         executions[(epic, node, dispatch)].append(
             (
                 attempt,
@@ -127,7 +128,7 @@ def print_usage_metrics(led):
     ))
     print(f"  unmeasured quantities  {unmeasured}")
     rule("ACCOUNTING PROVENANCE")
-    runner_unknown = sum(row["usage_source"] in ("legacy", "") for row in rows)
+    runner_unknown = sum(row["usage_source"] in ("legacy", "", None) for row in rows)
     print(f"  runner unknown {runner_unknown}")
     print(f"  usage sources          {' '.join(sorted({row['usage_source'] for row in rows}))}")
     print(f"  usage statuses         {' '.join(sorted({row['usage_status'] for row in rows}))}")
@@ -161,11 +162,10 @@ def rule(title):
     print(f"\n=== {title} ===")
 
 
-def main(repo):
-    os.chdir(repo)
-    parsed = parse_args()
-    repo = parsed.repo
-    root = runtime_root(parsed.repo, parsed.runtime_root)
+def main(argv=None):
+    parsed = parse_args(argv)
+    repo = os.path.abspath(parsed.repo)
+    root = runtime_root(repo, parsed.runtime_root)
     ver = ro(os.path.join(root, "verification.db"))
     led = ro(os.path.join(root, "ledger.db"))
 
@@ -184,6 +184,7 @@ def main(repo):
     forms = {r[5] for r in rows}
     attempts = collections.defaultdict(dict)
     for epic, node, att, verdict, fin, _form, dispatch in rows:
+        dispatch = dispatch if dispatch not in (None, "") else "<unknown>"
         # keep the worst verdict if a story somehow has both forms at one attempt
         prev = attempts[(epic, node, dispatch)].get(att)
         if prev is None or (prev["v"] == "PASS" and verdict == "FAIL"):
@@ -297,7 +298,7 @@ def main(repo):
     # ---- coverage -----------------------------------------------------------
     rule("COVERAGE (state this in the report - the stores are not a census)")
     subj = subprocess.run(
-        ["git", "log", "--no-merges", "--format=%s"], capture_output=True, text=True
+        ["git", "log", "--no-merges", "--format=%s"], capture_output=True, text=True, cwd=repo
     ).stdout.splitlines()
     node_re = re.compile(r"^(\d{3}-[a-z0-9-]+)/(us\d+)")
     landed = {f"{m.group(1)}/{m.group(2)}" for s in subj if (m := node_re.match(s))}
@@ -320,4 +321,4 @@ def main(repo):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else ".")
+    main(None)

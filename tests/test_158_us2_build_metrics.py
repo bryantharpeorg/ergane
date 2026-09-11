@@ -234,6 +234,21 @@ def test_loc_reports_unavailable_without_local_tool(
         loc_module.main(str(tmp_path))
 
 
+def test_loc_reports_an_empty_repository_without_dividing_by_zero(
+    tmp_path: Path, loc_module: Any, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        path = Path(command[-1].removeprefix("--out="))
+        path.write_text("filename,language,blank,comment,code\n", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(loc_module.subprocess, "run", fake_run)
+    tool = _fake_cloc(tmp_path)
+    loc_module.main(str(tmp_path), tool=str(tool))
+
+    assert "no tracked files measured" in capsys.readouterr().out
+
+
 def test_loc_source_has_no_remote_executable_boundary() -> None:
     source = (REPO_ROOT / LOC).read_text(encoding="utf-8")
     assert "urllib" not in source
@@ -284,6 +299,61 @@ def test_two_dispatches_sharing_old_key_fields_stay_separate(
     assert output.count("dispatch second") == 1
     assert "codex-primary" in output and "subscription" in output
     assert "glm-5.3" in output and "ollama-cloud" in output
+
+
+def test_runtime_root_override_is_parsed_without_a_repo_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_runtime_env(monkeypatch)
+    runtime = tmp_path / ".ergane"
+    runtime.mkdir()
+    store, ledger = _stores(runtime)
+    store.close()
+    ledger.close()
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / REWORK), "--runtime-root", str(runtime)],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).parents[2],
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "verification rows 0" in result.stdout
+    assert "usage rows 0" in result.stdout
+
+
+def test_old_verification_rows_without_dispatch_are_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _without_runtime_env(monkeypatch)
+    runtime = tmp_path / ".factory"
+    runtime.mkdir()
+    conn = sqlite3.connect(runtime / "verification.db")
+    conn.execute(
+        """
+        CREATE TABLE verification_results (
+            id INTEGER PRIMARY KEY,
+            epic_id TEXT NOT NULL,
+            node_id TEXT NOT NULL,
+            attempt INTEGER NOT NULL,
+            form TEXT NOT NULL,
+            verdict TEXT NOT NULL,
+            finished_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO verification_results (epic_id, node_id, attempt, form, verdict, "
+        "finished_at) VALUES ('158-operator-skills', 'us1', 1, 'PHASE', 'PASS', "
+        "'2026-09-10T10:03:00Z')"
+    )
+    conn.commit()
+    ledger = _old_ledger_store(runtime / "ledger.db")
+    ledger.close()
+    output = _run_rework(tmp_path)
+    conn.close()
+
+    assert "dispatch <unknown>" in output
 
 
 @pytest.mark.parametrize(
@@ -390,14 +460,20 @@ def test_missing_and_unmeasured_quantities_are_not_zero(
         assert "usage rows 0" in output
     if scenario == "legacy-dimensions":
         assert "runner unknown" in output
+        assert "dispatch <unknown>" in output
         assert "route=unknown" in output
         assert "model=unknown" in output
         assert "prompt tokens measured 1000" in output
         assert "completion tokens measured 100" in output
     if scenario == "unknown-usage":
         assert "prompt tokens measured 650" in output
+        assert "prompt tokens measured 650 (3/4 measured)" in output
         assert "completion tokens measured 10" in output
+        assert "completion tokens measured 10 (1/4 measured)" in output
+        assert "cache-read tokens measured 0 (1/4 measured)" in output
+        assert "dollars measured 0.55 (2/4 measured)" in output
         assert "requests measured 1" in output
+        assert "requests measured 1 (1/4 measured)" in output
         normalized = " ".join(output.split())
         assert "usage sources gateway legacy subscription" in normalized
         assert "usage statuses complete legacy partial unknown" in normalized
