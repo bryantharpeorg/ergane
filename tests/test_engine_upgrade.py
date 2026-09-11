@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -21,7 +22,14 @@ import factory.supervision.engine_upgrade as upgrade_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.controlplane.verify import render_findings
 from factory.mergequeue.models import Finding
-from factory.supervision.engine_identity import EngineIdentity, cli_version, identity_path, image_reference
+from factory.supervision.engine_upgrade import COMPOSE_NAME
+from factory.supervision.engine_identity import (
+    EngineIdentity,
+    IMAGE_REPOSITORY,
+    cli_version,
+    identity_path,
+    image_reference,
+)
 from factory.supervision.units import CommandResult, supervision_home
 from factory.versioning import OpenEpic
 
@@ -112,6 +120,163 @@ def _write_identity(state_home: Path, version: str, *, image_reference_value: st
             image_digest=None,
         ),
     )
+
+
+def test_retention_removes_only_exact_repository_older_releases() -> None:
+    """T001 / US1-S1 / FR-001: exact repository equality bounds cleanup."""
+    target = image_reference("0.4.0")
+    previous = image_reference("0.3.0")
+    older = [image_reference("0.1.0"), image_reference("0.2.0")]
+    unrelated = "example.com/operator/another-service:0.1.0"
+    prefix_lookalike = f"{IMAGE_REPOSITORY}-operator/another-service:0.1.0"
+
+    decision = upgrade_module._retention_decision(
+        [target, previous, *older, unrelated, prefix_lookalike],
+        target_image=target,
+        previous_image=previous,
+    )
+
+    assert decision.remove == tuple(older)
+    assert decision.keep == (target, previous, unrelated, prefix_lookalike)
+
+
+def test_retention_unknown_previous_removes_nothing() -> None:
+    """T002 / US1-S2 / FR-002: unknown rollback identity disables cleanup."""
+    images = [
+        image_reference("0.4.0"),
+        image_reference("0.3.0"),
+        image_reference("0.2.0"),
+    ]
+
+    decision = upgrade_module._retention_decision(
+        images,
+        target_image=image_reference("0.4.0"),
+        previous_image=None,
+    )
+
+    assert decision.remove == ()
+    assert decision.keep == tuple(images)
+    assert any("keeping every local image" in note for note in decision.notes)
+
+
+def test_retention_keeps_unrecognized_and_ambiguous_inventory() -> None:
+    """T002 / US1-S2 / FR-002: only exact numeric release tags may be eligible."""
+    target = image_reference("0.4.0")
+    malformed_previous = f"{IMAGE_REPOSITORY}::malformed"
+    inventory = [
+        target,
+        malformed_previous,
+        f"{IMAGE_REPOSITORY}sha256:0123456789abcdef",
+        "<dangling>:",
+        f"{IMAGE_REPOSITORY}:latest",
+        f"{IMAGE_REPOSITORY}:0.4.1-rc.1",
+        f"{IMAGE_REPOSITORY}:0.5.0",
+        f"{IMAGE_REPOSITORY}:0.10.0",
+    ]
+
+    decision = upgrade_module._retention_decision(
+        inventory,
+        target_image=target,
+        previous_image=malformed_previous,
+    )
+
+    assert decision.remove == ()
+    assert decision.keep == tuple(inventory)
+
+
+def test_retention_orders_numeric_versions_not_tag_strings() -> None:
+    """T002 / US1-S2 / FR-002: 0.10.0 is newer than 0.9.0 and stays eligible to keep."""
+    target = image_reference("0.11.0")
+    previous = image_reference("0.9.0")
+    inventory = [
+        target,
+        previous,
+        image_reference("0.8.0"),
+        image_reference("0.10.0"),
+    ]
+
+    decision = upgrade_module._retention_decision(
+        inventory,
+        target_image=target,
+        previous_image=previous,
+    )
+
+    assert decision.remove == (image_reference("0.8.0"),)
+    assert decision.keep == (target, previous, image_reference("0.10.0"))
+
+
+def test_default_inventory_failure_prevents_image_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T004 / US1-S3 / FR-003: a failed inventory read disables all cleanup."""
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+
+    def run_subprocess(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((tuple(argv), kwargs))
+        return subprocess.CompletedProcess(argv, 1, "", "connection refused")
+
+    monkeypatch.setattr(upgrade_module.subprocess, "run", run_subprocess)
+    seam = upgrade_module._ComposeDockerSeam(tmp_path / "engine-project")
+
+    with pytest.raises(OperatorError, match=r"docker images.*\nconnection refused"):
+        seam.list_images()
+
+    assert [argv for argv, _kwargs in calls] == [(
+        "docker", "images", "--format", "{{.Repository}}:{{.Tag}}",
+    )]
+
+
+def test_default_runner_routes_inventory_through_retention_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T004 / US1-S3 / FR-003: captured subprocess calls stay explicit and narrow."""
+    project = tmp_path / "container"
+    project.mkdir()
+    (project / COMPOSE_NAME).write_text("services: {}\n", encoding="utf-8")
+    state = tmp_path / "state"
+    _write_identity(state, "0.3.0")
+    monkeypatch.setenv("ERGANE_COMPOSE_PROJECT", str(project))
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+
+    target = image_reference("0.4.0")
+    previous = image_reference("0.3.0")
+    older = [image_reference("0.1.0"), image_reference("0.2.0")]
+    unrelated = "example.com/operator/another-service:0.1.0"
+    prefix_lookalike = f"{IMAGE_REPOSITORY}-operator/another-service:0.1.0"
+    inventory = [target, previous, *older, unrelated, prefix_lookalike]
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+    inventory_text = "\n".join(inventory)
+
+    def run_subprocess(argv: list[str], **kwargs: Any) -> Any:
+        calls.append((tuple(argv), kwargs))
+        if argv[:2] == ["docker", "images"]:
+            return subprocess.CompletedProcess(argv, 0, inventory_text, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def verify_engine() -> tuple[list[Finding], int]:
+        finding = Finding(check="engine", passed=True, detail="0.4.0 matches")
+        return ([finding], EXIT_OK)
+
+    monkeypatch.setattr(upgrade_module.subprocess, "run", run_subprocess)
+    monkeypatch.setattr(upgrade_module, "verify_controlplane", verify_engine)
+    report = upgrade_module.upgrade(
+        open_epics=lambda: (),
+        docker=None,
+        _state_home=state,
+    )
+
+    assert report.degraded is False
+    assert [(name, args) for name, args in
+            [(argv[1], argv[2:]) for argv, _kwargs in calls]] == [
+        ("compose", ("-f", str(project / COMPOSE_NAME), "down")),
+        ("compose", ("-f", str(project / COMPOSE_NAME), "up", "-d", "--no-build")),
+        ("images", ("--format", "{{.Repository}}:{{.Tag}}")),
+        ("rmi", (image_reference("0.1.0"),)),
+        ("rmi", (image_reference("0.2.0"),)),
+    ]
+    assert all("--force" not in argv and "prune" not in argv for argv, _kwargs in calls)
 
 
 # ---------------------------------------------------------------------------
