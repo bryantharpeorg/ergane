@@ -338,6 +338,51 @@ def test_findings_ingest_defaults_to_analysis_only(
     assert args.apply is False
 
 
+def test_analysis_only_ingest_defaults_to_a_readable_rehearsal_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    operational = tmp_path / "operational.db"
+    operational.write_bytes(b"placeholder-ledger")
+    operational_bytes = operational.read_bytes()
+    batch = tmp_path / "batch.json"
+    batch.write_text(_historical_batch())
+
+    parser = argparse.ArgumentParser()
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    add_findings_parser(verbs)
+    args = parser.parse_args(["findings", "ingest", "--batch", str(batch)])
+
+    real_connect = connect
+
+    def forbidden(path: Path) -> sqlite3.Connection:
+        if path == operational:
+            raise AssertionError("analysis-only ingestion opened the operational store")
+        return real_connect(path)
+
+    monkeypatch.setattr("factory.doctor.cli.connect", forbidden)
+    exit_code = args.run(args)
+
+    assert exit_code == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    printed_paths = output.out.splitlines()
+    assert len(printed_paths) == 1
+    rehearsal_path = Path(printed_paths[0])
+    assert rehearsal_path.is_file()
+    assert rehearsal_path.resolve().is_relative_to(tmp_path)
+    with connect(rehearsal_path) as rehearsal_conn:
+        stored = get_finding(rehearsal_conn, "ops/historical")
+        events = list_events(rehearsal_conn, "ops/historical")
+    assert stored is not None
+    assert stored.last_seen == OBSERVED_AT
+    assert len(events) == 1
+    assert events[0].observed_at == OBSERVED_AT
+    assert events[0].ingested_at != OBSERVED_AT
+    assert operational.read_bytes() == operational_bytes
+
+
 def test_findings_ingest_skill_keeps_analysis_and_apply_distinct() -> None:
     skill = Path(".agents/skills/findings-ingest/SKILL.md").read_text()
 
