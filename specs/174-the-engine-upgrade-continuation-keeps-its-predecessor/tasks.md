@@ -14,7 +14,7 @@ No Docker daemon, worker, provider, credential store or live Temporal service.
 - [x] T002 [US1] (US1-S2, FR-003) Cover absent, malformed and image-less initial
       identities separately.  A later readable target identity authorizes no
       removal.  Do not patch the reader to return a constant object.
-- [ ] T003 [US1] (US1-S1, US1-S2, FR-002, FR-003) Capture pre-stop identity once
+- [x] T003 [US1] (US1-S1, US1-S2, FR-002, FR-003) Capture pre-stop identity once
       and carry that immutable value to retention.  Keep uncertainty sticky.
 - [ ] T004 [US1] (US1-S3, FR-004) Prove failed stop, failed start and failing
       engine verification cause no inventory or removal.  Preserve unrelated

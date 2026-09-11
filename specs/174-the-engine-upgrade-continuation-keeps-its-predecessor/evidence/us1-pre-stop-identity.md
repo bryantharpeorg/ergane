@@ -39,3 +39,7 @@ uv run pytest -q tests/test_engine_upgrade.py::test_upgrade_unknown_pre_stop_ide
 ```
 
 `absent`, `malformed`, and `image-less` each read once before stop, retained uncertainty after start wrote `0.4.0`, and removed no image.
+
+## T003 snapshot control
+
+The production read is moved above `docker.stop`; `test_upgrade_reads_old_identity_before_stop` records exactly one `read_identity`, before stop/start, and retention keeps the read `0.3.0` image. The T002 matrix proves `None` uncertainty remains `None` when `0.4.0` is written later.
