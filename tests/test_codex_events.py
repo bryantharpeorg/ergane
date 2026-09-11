@@ -36,6 +36,16 @@ DIAGNOSTIC_AND_FATAL_STREAM = "\n".join(
     ]
 )
 
+UNKNOWN_FUTURE_STREAM = "\n".join(
+    [
+        '{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}',
+        '{"type":"turn.started"}',
+        '{"type":"protocol.update","schema_version":"future"}',
+        '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"known evidence"}}',
+        '{"type":"turn.completed"}',
+    ]
+)
+
 
 def decode(data: str, raw: io.BytesIO | None = None):
     return decode_chunks([data], raw)
@@ -102,6 +112,90 @@ def test_normal_items_without_repeated_thread_id_are_accepted() -> None:
 
     assert evidence.status is EvidenceStatus.COMPLETE
     assert not any("thread" in reason for reason in evidence.reasons)
+
+
+@pytest.mark.parametrize(
+    ("raw_lines", "reason", "expected_status"),
+    [
+        ('{"type":"thread.started"', "malformed-json", EvidenceStatus.INVALID),
+            ('{"type":"turn.started"}', "missing-thread-start", EvidenceStatus.INVALID),
+    ],
+)
+def test_degraded_streams_report_stable_reasons_without_fabricating_turns(
+    raw_lines: str,
+    reason: str,
+    expected_status: EvidenceStatus,
+) -> None:
+    evidence = decode(raw_lines)
+
+    assert reason in evidence.reasons
+    assert evidence.status is expected_status
+    assert evidence.turn_outcome is TurnOutcome.PENDING
+    assert evidence.agent_messages == ()
+    assert evidence.final_message is None
+    assert evidence.usage is None
+
+
+def test_duplicate_terminal_is_invalid_and_retains_the_first_terminal() -> None:
+    raw = io.BytesIO()
+    first = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"thread-a"}',
+            '{"type":"turn.started"}',
+            '{"type":"turn.completed","usage":{"output_tokens":7}}',
+        ]
+    ) + "\n"
+    duplicate = '{"type":"turn.completed","usage":{"output_tokens":99}}\n'
+
+    evidence = decode_chunks([first, duplicate], raw=raw)
+
+    assert "duplicate-terminal-event" in evidence.reasons
+    assert evidence.status is EvidenceStatus.INVALID
+    assert evidence.turn_outcome is TurnOutcome.COMPLETED
+    assert evidence.usage is not None
+    assert evidence.usage.output_tokens == 7
+
+
+def test_event_for_a_different_thread_is_invalid_and_keeps_current_evidence() -> None:
+    raw = io.BytesIO()
+    current = (
+        '{"type":"thread.started","thread_id":"thread-a"}\n'
+        '{"type":"turn.started"}\n'
+        '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"before"}}\n'
+    )
+    other = '{"type":"thread.started","thread_id":"thread-b"}\n'
+
+    evidence = decode_chunks([current, other], raw=raw)
+
+    assert evidence.thread_id == "thread-a"
+    assert [message.text for message in evidence.agent_messages] == ["before"]
+    assert "conflicting-thread-id:thread-b" in evidence.reasons
+    assert evidence.status is EvidenceStatus.INVALID
+
+
+def test_unknown_future_event_is_archived_and_keeps_known_evidence_incomplete() -> None:
+    raw = io.BytesIO()
+
+    evidence = decode(UNKNOWN_FUTURE_STREAM, raw=raw)
+
+    assert raw.getvalue().decode() == UNKNOWN_FUTURE_STREAM
+    assert "unknown-event:protocol.update" in evidence.reasons
+    assert evidence.turn_outcome is TurnOutcome.COMPLETED
+    assert [message.text for message in evidence.agent_messages] == ["known evidence"]
+    assert evidence.final_message == "known evidence"
+    assert evidence.status is EvidenceStatus.INCOMPLETE
+
+
+def test_truncated_final_line_is_archived_and_marked_incomplete() -> None:
+    raw = io.BytesIO()
+
+    evidence = decode('{"type":"turn.started"}\n{"type":"turn', raw=raw)
+
+    assert raw.getvalue().decode() == '{"type":"turn.started"}\n{"type":"turn'
+    assert "truncated-line" in evidence.reasons
+    assert evidence.current_turn_started is True
+    assert evidence.turn_outcome is TurnOutcome.PENDING
+    assert evidence.agent_messages == ()
 
 
 def test_partial_jsonl_chunk_is_archived_and_reassembled() -> None:

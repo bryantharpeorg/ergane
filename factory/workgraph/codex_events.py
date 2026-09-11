@@ -76,6 +76,8 @@ class CodexEventDecoder:
         self._fatal_events: list[CodexFatalEvent] = []
         self._fatal_types: dict[str, list[str]] = {}
         self._usage: CodexUsage | None = None
+        self._terminal_seen = False
+        self._incomplete_reasons: list[str] = []
         self._reasons: list[str] = []
 
     def feed(self, data: bytes | str) -> None:
@@ -92,11 +94,24 @@ class CodexEventDecoder:
         if self._pending:
             pending = bytes(self._pending)
             self._pending.clear()
+            try:
+                json.loads(pending)
+            except json.JSONDecodeError:
+                self._add_incomplete_reason("truncated-line")
             self._decode_line(pending.decode("utf-8", errors="replace"))
+        if self._thread_id is None:
+            self._add_invalid_reason("missing-thread-start")
+        if not self._terminal_seen:
+            self._add_incomplete_reason("missing-terminal-event")
         complete = self._turn_outcome is not TurnOutcome.PENDING
-        status = EvidenceStatus.INVALID if self._reasons else (
-            EvidenceStatus.COMPLETE if complete else EvidenceStatus.INCOMPLETE
+        status = (
+            EvidenceStatus.INVALID
+            if self._reasons
+            else EvidenceStatus.COMPLETE
+            if complete and not self._incomplete_reasons
+            else EvidenceStatus.INCOMPLETE
         )
+        reasons = (*self._reasons, *self._incomplete_reasons)
         return CodexExecutionEvidence(
             thread_id=self._thread_id,
             current_turn_started=self._turn_started,
@@ -115,26 +130,49 @@ class CodexEventDecoder:
                 self._agent_messages[-1].text if self._agent_messages else None
             ),
             status=status,
-            reasons=tuple(self._reasons),
+            reasons=reasons,
         )
 
     def _decode_line(self, line: str) -> None:
         try:
             event = json.loads(line)
         except json.JSONDecodeError:
+            self._add_invalid_reason("malformed-json")
+            return
+        if not isinstance(event, dict):
+            self._add_invalid_reason("malformed-event")
             return
         event_type = event.get("type")
+        if not isinstance(event_type, str) or not event_type:
+            self._add_invalid_reason("malformed-event")
+            return
+        explicit_thread_id = event.get("thread_id")
+        if isinstance(explicit_thread_id, str) and explicit_thread_id:
+            if self._thread_id is None:
+                self._thread_id = explicit_thread_id
+            elif explicit_thread_id != self._thread_id:
+                self._add_invalid_reason(
+                    f"conflicting-thread-id:{explicit_thread_id}"
+                )
+                return
         if event_type == "thread.started":
-            self._thread_id = event.get("thread_id")
             return
         if event_type == "turn.started":
             self._turn_started = True
             return
         if event_type == "turn.completed":
+            if self._terminal_seen:
+                self._add_invalid_reason("duplicate-terminal-event")
+                return
+            self._terminal_seen = True
             self._turn_outcome = TurnOutcome.COMPLETED
             self._read_usage(event.get("usage"))
             return
         if event_type == "turn.failed":
+            if self._terminal_seen:
+                self._add_invalid_reason("duplicate-terminal-event")
+                return
+            self._terminal_seen = True
             self._turn_outcome = TurnOutcome.FAILED
             self._read_fatal(event.get("error"), "turn.failed")
             return
@@ -145,6 +183,16 @@ class CodexEventDecoder:
             item = event.get("item")
             if isinstance(item, dict):
                 self._read_item(item)
+            return
+        self._add_incomplete_reason(f"unknown-event:{event_type}")
+
+    def _add_invalid_reason(self, reason: str) -> None:
+        if reason not in self._reasons:
+            self._reasons.append(reason)
+
+    def _add_incomplete_reason(self, reason: str) -> None:
+        if reason not in self._incomplete_reasons:
+            self._incomplete_reasons.append(reason)
 
     def _read_usage(self, usage: object) -> None:
         if not isinstance(usage, dict):
