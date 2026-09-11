@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import re
 import json
+import tempfile
 from pathlib import Path
 from typing import Iterator
 from dataclasses import replace
@@ -354,6 +356,16 @@ def test_analysis_only_ingest_defaults_to_a_readable_rehearsal_store(
     add_findings_parser(verbs)
     args = parser.parse_args(["findings", "ingest", "--batch", str(batch)])
 
+    created_fds: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def tracked_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        handle, path = real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+        created_fds.append(handle)
+        return handle, path
+
+    monkeypatch.setattr("factory.doctor.cli.tempfile.mkstemp", tracked_mkstemp)
+
     real_connect = connect
 
     def forbidden(path: Path) -> sqlite3.Connection:
@@ -381,6 +393,44 @@ def test_analysis_only_ingest_defaults_to_a_readable_rehearsal_store(
     assert events[0].observed_at == OBSERVED_AT
     assert events[0].ingested_at != OBSERVED_AT
     assert operational.read_bytes() == operational_bytes
+    assert len(created_fds) == 1
+    with pytest.raises(OSError):
+        os.fstat(created_fds[0])
+
+
+def test_analysis_only_ingest_closes_the_descriptor_when_writing_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = tmp_path / "batch.json"
+    batch.write_text(_historical_batch())
+    parser = argparse.ArgumentParser()
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    add_findings_parser(verbs)
+    args = parser.parse_args(["findings", "ingest", "--batch", str(batch)])
+
+    created_fds: list[int] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def tracked_mkstemp(*args: object, **kwargs: object) -> tuple[int, str]:
+        handle, path = real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+        created_fds.append(handle)
+        return handle, path
+
+    def failing_write(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("historical write failed")
+
+    monkeypatch.setattr("factory.doctor.cli.tempfile.mkstemp", tracked_mkstemp)
+    monkeypatch.setattr(
+        "factory.doctor.cli.apply_historical_observation", failing_write
+    )
+
+    with pytest.raises(RuntimeError, match="historical write failed"):
+        args.run(args)
+
+    assert len(created_fds) == 1
+    with pytest.raises(OSError):
+        os.fstat(created_fds[0])
 
 
 def test_findings_ingest_skill_keeps_analysis_and_apply_distinct() -> None:
