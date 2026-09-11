@@ -29,6 +29,8 @@ from factory.supervision.engine_identity import (
     cli_version,
     identity_path,
     image_reference,
+    read_identity,
+    write_identity,
 )
 from factory.supervision.units import CommandResult, supervision_home
 from factory.versioning import OpenEpic
@@ -122,6 +124,42 @@ def _write_identity(state_home: Path, version: str, *, image_reference_value: st
     )
 
 
+class _IdentityLifecycleSeam(_FakeDockerSeam):
+    """Moves the real identity file on the two disruptive lifecycle calls."""
+
+    def __init__(
+        self,
+        state_home: Path,
+        *,
+        target_version: str,
+        lifecycle_calls: list[tuple[str, tuple[Any, ...]]],
+    ) -> None:
+        super().__init__()
+        self._state_home = state_home
+        self._target_version = target_version
+        self._lifecycle_calls = lifecycle_calls
+
+    def stop(self) -> None:
+        self._lifecycle_calls.append(("stop", ()))
+        self.calls.append(("stop", ()))
+        from factory.supervision.engine_identity import remove_identity
+
+        remove_identity(self._state_home)
+
+    def start(self, image_reference: str, *, env: dict[str, str] | None = None) -> None:
+        self._lifecycle_calls.append(("start", (image_reference,)))
+        super().start(image_reference, env=env)
+        write_identity(
+            self._state_home,
+            EngineIdentity(
+                version=self._target_version,
+                started_at="2026-08-25T12:00:00+00:00",
+                image_reference=image_reference,
+                image_digest=None,
+            ),
+        )
+
+
 def test_retention_removes_only_exact_repository_older_releases() -> None:
     """T001 / US1-S1 / FR-001: exact repository equality bounds cleanup."""
     target = image_reference("0.4.0")
@@ -203,6 +241,56 @@ def test_retention_orders_numeric_versions_not_tag_strings() -> None:
 
     assert decision.remove == (image_reference("0.8.0"),)
     assert decision.keep == (target, previous, image_reference("0.10.0"))
+
+
+def test_upgrade_reads_old_identity_before_stop(
+    isolated_state_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T001 / US1-S1 / FR-002: shutdown replaces the identity, not the rollback candidate."""
+    state = isolated_state_home
+    _make_project(state)
+    old_version = "0.3.0"
+    target_version = "0.4.0"
+    _write_identity(state, old_version)
+    lifecycle_calls: list[tuple[str, tuple[Any, ...]]] = []
+    seam = _IdentityLifecycleSeam(
+        state,
+        target_version=target_version,
+        lifecycle_calls=lifecycle_calls,
+    )
+    real_read_identity = upgrade_module.read_identity
+
+    def read_pre_stop_identity(home: Path | str) -> EngineIdentity | None:
+        lifecycle_calls.append(("read_identity", (str(identity_path(home)),)))
+        return real_read_identity(home)
+
+    monkeypatch.setattr(upgrade_module, "read_identity", read_pre_stop_identity)
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: target_version)
+    older = image_reference("0.2.0")
+    seam.images = [image_reference(target_version), image_reference(old_version), older]
+
+    report = upgrade_module.upgrade(
+        open_epics=lambda: (),
+        docker=seam,
+        _state_home=state,
+    )
+
+    assert [name for name, _arguments in lifecycle_calls] == ["read_identity", "stop", "start"]
+    assert [name for name, _arguments in seam.calls] == [
+        "stop",
+        "start",
+        "verify",
+        "list_images",
+        "remove_image",
+    ]
+    assert lifecycle_calls[0][1][0] == str(identity_path(state))
+    assert seam.removed == [older]
+    assert report.notes == (
+        f"keeping target image {image_reference(target_version)}",
+        f"keeping previous image {image_reference(old_version)}",
+        f"removing 1 older image(s): {older}",
+    )
 
 
 def test_default_inventory_failure_prevents_image_removal(
