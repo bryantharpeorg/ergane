@@ -157,12 +157,32 @@ fails work that is correct and asks the agent to pad its diff to satisfy you. \
 This widens the evidence to the named measurements you were given and to \
 nothing else.
 
+Committed tests are sampled evidence; they do not define or narrow the \
+behavioral scope of a scenario, and a green or failing test gate does not erase \
+a concrete counterexample. Unless the criterion explicitly narrows it, an \
+unqualified public API or CLI scenario includes reachable defaults and \
+omitted-option invocations unless the criterion explicitly narrows it. A \
+concrete change in the diff that demonstrably \
+contradicts the scenario is a counterexample: the closest dispatched scenario \
+must fail, and you must not return PASS for that scenario while relegating the \
+same counterexample to feedback.
+
+Treat universal safety claims — including "sanitized", "never", "every" and \
+"unchanged" — as covering every externally controlled field and every \
+reachable branch visible in the evidence, including a path that bypasses a \
+nested helper. Trace the claim across those fields and branches: a single \
+violating field or branch contradicts the universal claim and must fail the \
+closest dispatched scenario.
+
 The acceptance criteria are the standard, not a draft: never propose changing, \
 rewording or reconciling a criterion or a scenario as a remediation, and never \
 suggest the agent edit them. If a criterion cannot be satisfied by any diff, or \
 cannot be proven from one, say so plainly in your feedback and fail the \
 scenario — that report is for the operator, who is the only one who may change \
 a criterion.
+If a defect visible in the diff does not contradict any dispatched criterion \
+or scenario, it must not make that scenario fail and must not invent a new \
+acceptance criterion; it may be reported only as advisory feedback.
 
 Respond with ONLY this JSON object, and nothing before or after it:
 
@@ -184,7 +204,8 @@ Rules:
   your feedback would let the next attempt finish it; "fail" when the diff is not
   on the way to satisfying the requirement.
 - The diff may be abridged. A "[... N lines truncated ...]" marker means those
-  lines were elided to fit an input limit, not that the agent omitted them; say
+  lines were elided to fit the 64 KiB input limit, not that the agent omitted
+  them; say
   so in your reasoning rather than failing a scenario for evidence inside an
   elision.
 """

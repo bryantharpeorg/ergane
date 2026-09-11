@@ -27,13 +27,29 @@ against each acceptance scenario **individually**; a scenario passes only if the
 diff demonstrably satisfies every Given/When/Then step; respond with ONLY the JSON
 object described below.
 
+The fixed system message also states that committed tests are sampled evidence and
+do not define or narrow behavioral scope; that a green or failing test gate does
+not erase a concrete counterexample; that an unqualified public API or CLI
+scenario includes reachable defaults and omitted-option invocations unless the
+criterion explicitly narrows them; and that a concrete contradiction must fail the
+closest dispatched scenario rather than be relegated only to PASS feedback.
+
+Universal safety claims — for example "sanitized", "never", "every" and
+"unchanged" — cover every externally controlled field and every reachable branch
+visible in the evidence, including a path that bypasses a nested helper. A single
+violating field or branch fails the closest dispatched scenario.
+
+A defect that does not contradict any dispatched criterion or scenario remains
+advisory feedback; it must not fail a scenario or invent a new acceptance
+criterion.
+
 **User message**, in order:
 
 1. Requirement key(s), title, and full requirement body (verbatim, never truncated).
 2. Every acceptance scenario with its steps, verbatim, each tagged with its exact
    `scenario_id` (`US<n>-S<k>`; the response must echo these ids).
 3. `prior_feedback` when this is a judge-initiated retry (verbatim, FR-006).
-4. The diff: unified format, capped at 60 KiB with proportional per-file head+tail
+4. The diff: unified format, capped at 64 KiB with proportional per-file head+tail
    truncation and explicit `[... N lines truncated ...]` markers (research R6);
    full file list + diffstat always included. Truncation is disclosed in the
    prompt and flagged `truncated_input` in the verdict.
@@ -75,9 +91,8 @@ Parsing rules (`factory/verify/judge.py`, pure):
   parser never reads. A reply carrying `finish_reason: "length"` is therefore
   `JUDGE_UNAVAILABLE` — our ceiling, not the judge's answer — and MUST NOT consume
   a judge attempt, whether `content` came back empty or as prose that stops
-  mid-sentence. Measured 2026-08-06: `ollama-cloud/glm-5.2` returned nothing at
-  2,000 and at 8,000 on a 17k-token prompt, and completed at 16,000 in 3,580
-  output tokens.
+  mid-sentence. The output allowance must leave room for reasoning on the model
+  selected by the persona registry.
 - The judge is NEVER invoked from CI or the merge queue (FR-009, D-008) — nothing
   in this contract is reachable from component 3's required checks.
 
