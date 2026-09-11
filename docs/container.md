@@ -133,17 +133,21 @@ same-path mounts from the interview answers.
 
 ## Upgrading the engine
 
-The intended `ergane engine upgrade` sequence is stop, start the CLI-matched
-image, verify and retain a rollback image. It refuses open epics unless forced;
-that refusal is not proof that its image-selection and cleanup paths are safe.
+The intended `ergane engine upgrade` sequence validates the generated project's
+ownership, retargets its persisted service image and version to the CLI-matched
+published image, then stops the engine, starts that image with the version in
+the Compose child's environment, verifies and retains a rollback image. It
+refuses open epics unless forced, and refuses changed, unclaimed, missing or
+unsupported project artifacts always; force does not bypass ownership.
 
 **Do not use automated container upgrade until its image lifecycle is
-qualified.** An isolated audit of the current implementation reproduced an
-unrelated-images cleanup selection, a requested version not reaching Compose,
-and loss of the previous image reference after identity replacement. No real
-Docker operation was needed to reproduce those boundaries. The native
-versioned-worker deployment path is separate and is not affected by these
-specific findings.
+qualified.** The repaired boundaries — the persisted project retargeting, the
+requested version reaching the Compose child, the pre-stop identity ordering
+and the cleanup selection — are covered by committed captured-runner
+regressions, and those captures are synthetic: no Docker daemon ran. A real
+drained-image upgrade and rollback remains operator qualification before
+release. The native versioned-worker deployment path is separate and is not
+affected by these specific findings.
 
 Before a container upgrade, preserve the resolved configuration and persona
 registry, workflow history, verification/usage stores and required attempt
