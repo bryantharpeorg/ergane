@@ -1,5 +1,57 @@
 # Implementation Plan: a gate declares the artifact it writes and the platform carries it
 
+## Sizing refinement — 2026-09-11
+
+The release additions grew US3 from nine to eleven scenarios, including the full
+link/special-file/race matrix and two-phase freshness observation. The older
+size comparison does not measure this expanded implementation. Re-measured
+landed diffs are 55,374 bytes for084US1, 52,117 for101US2, 38,197 for087US2 and
+38,067 for087US4, against the65,536-byte judge input bound. These are comparison
+measurements, not a fabricated size prediction for unbuilt code. Split at the
+source-reading boundary to give both implementation and behavioral evidence
+their own bounded review, retaining every existing requirement and scenario.
+
+Add **US6**, after US2 and before US3. Existing story numbers remain unchanged.
+US6 owns `factory/verify/artifact_capture.py`, its typed observation/capture
+results, and `tests/test_134_bounded_artifact_capture.py`. It takes an explicit
+worktree root, normalized relative path and byte limit. It performs bounded
+handle-based regular-file observation/capture with link/special-file refusal
+and pre/post metadata/digest comparison. It never resolves an operational root,
+writes durable artifacts, runs a gate, imports a workflow, or changes a verdict.
+Internal bounded bytes may be returned to the in-process collector; they must
+never become fields of a Temporal activity result.
+
+The source boundary also supplies the **pre-gate** observation. Do not substitute
+the existing git snapshot: ignored reports are absent from that snapshot, yet
+must still have honest freshness provenance. Limit pre-gate reads as well as
+post-gate reads. A refused or unavailable baseline stays unknown/refused, never
+becomes a claim that the report was newly produced. Caller-supplied observations
+and capture results must distinguish absent, permitted, oversized, unsafe and
+unstable outcomes without inferring a producer from presence.
+
+US3 keeps `GateArtifact`, the `GateResult.artifacts` field, destination plumbing,
+and integration in `_run_watched`. It calls the US6 boundary before and after
+the gate, applies the existing named stored-byte bound, and publishes only a
+stable permitted result. It does not add a second `Path.read_bytes`/copy path
+that bypasses US6. US3-S10/S11 remain integration requirements: reuse the real
+file fixtures and parameterized cases from US6 to prove the actual collector
+turns every refusal into artifact metadata without changing the gate verdict.
+No source-safety scenario is replaced by a mock that simply returns refusal.
+
+The full source matrix, its implementation and evidence now land in US6; US3's
+diff adds carriage and integration assertions against that existing boundary.
+Do not duplicate the matrix's fixture implementation or paste whole artifacts
+as evidence. Each story still receives all required tests; this split changes
+ownership and order, not coverage or acceptance. FR-020/FR-022 appear on both
+nodes because primitive correctness and actual collector use are both required.
+
+US5/US4 retain immutable capture persistence and explicit reader identity. Their
+release-refined scenario counts are seven and four. The current order is
+US1→US2→US6→US3→US5→US4. The older five-story sizing and file-map paragraphs
+below remain dated provenance, superseded by this section. Derive a fresh
+six-node graph and revalidate against the eventual dispatch base. Do not alter
+the user's stale untracked graph or the judge's diff budget.
+
 ## Release refinement — 2026-09-10
 
 Included in approved 0.6 packet scope; 167 consumes this carrier. Citation line

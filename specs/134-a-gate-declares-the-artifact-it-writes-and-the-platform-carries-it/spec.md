@@ -1,6 +1,8 @@
 ---
 state: ready
 # RELEASE REFINEMENT 2026-09-10: included in approved 0.6 audit-packet scope.
+# SIZING REFINEMENT 2026-09-11: new US6 owns bounded source observation;
+# US3 integrates that boundary and retains all existing acceptance scenarios.
 # IMPLEMENTATION APPROVED 2026-09-10: the user's packet approval readies this
 # prerequisite; normal pre-dispatch refinement and factory gates still apply.
 # The release section below supersedes historical storage identity/safety
@@ -414,12 +416,31 @@ route and read what the runner received.
    in its `worktree_writes`, because the exemption subtracts the declared path and
    never excuses the gate.
 
+### User Story 6 - Source observation is bounded and attributable (Priority: P2)
+
+As an operator, collecting a declared report uses one tested source-reading
+boundary before any gate integration can expose unrelated or unstable bytes.
+
+**Why this priority**: P2, after US2 and before US3. Source containment and
+freshness are separate from gate-result carriage. This slice keeps the complete
+safety matrix out of the integration story without deferring any requirement.
+
+**Independent Test**: Execute the source-reading boundary over real temporary
+files, with controlled substitutions and writes between observations; no live
+worker, operational store or artifact publication is involved.
+
+**Acceptance Scenarios**:
+
+1. **Given** a worktree-relative path naming an ordinary regular file, an escaping or substituted symlink, a hardlink alias, or a FIFO/special file, **When** the reusable source boundary opens it, **Then** committed real-file tests prove a bounded regular-file reading or an explicit refusal without opening unrelated bytes or blocking on the special file.
+2. **Given** observations before and after a fixture gate that leaves an existing file unchanged or writes a new report, and a file mutated during capture, **When** the source boundary compares and captures them, **Then** committed tests preserve the observed unchanged/new provenance and refuse the unstable snapshot without claiming that presence alone proves production by the gate.
+3. **Given** an absent file, a file within the supplied byte limit, an oversized file, and a file that grows during reading, **When** the source boundary observes them, **Then** committed tests prove explicit absence, exact bounded bytes for the stable permitted file, and a bounded oversize or unstable result with no truncated bytes eligible for publication.
+
 ### User Story 3 - The boundary collects what was declared (Priority: P2)
 
 As an operator, the artifact my gate wrote is attached to the attempt that wrote
 it.
 
-**Why this priority**: P2 and it depends on US2. It is the story the whole spec is
+**Why this priority**: P2 and it depends on US6, which follows US2. It is the story the whole spec is
 for, and it is second only because collecting an artifact that demotes its own
 gate would be worse than not collecting it.
 
@@ -638,9 +659,13 @@ US2:
   depends_on: []
   depends_on_merged: [US1]
   implements: [FR-004, FR-005, FR-014]
-US3:
+US6:
   depends_on: []
   depends_on_merged: [US2]
+  implements: [FR-020, FR-022]
+US3:
+  depends_on: []
+  depends_on_merged: [US6]
   implements: [FR-006, FR-007, FR-008, FR-009, FR-011, FR-015, FR-016, FR-018, FR-020, FR-022]
 US5:
   depends_on: []
@@ -653,6 +678,11 @@ US4:
 ```
 
 A chain, and each edge is declared rather than left inferred (069-US2 FR-007).
+The 2026-09-11 sizing refinement inserts US6 between US2 and US3: US6 owns the
+reusable bounded source-reading boundary and its full safety/freshness matrix;
+US3 consumes it and still proves the existing US3-S10/S11 gate integration.
+FR-020 and FR-022 are intentionally evidenced at both boundaries, not weakened
+or deferred. The remaining ordering explanation records the original split.
 US2 reads the declaration US1 parses and threads it to the runner; US3 would
 demote every artifact-emitting gate whose artifact is not git-ignored if it landed
 before US2, and it collects through the runner parameter US2 adds; US5 supplies
