@@ -15,6 +15,7 @@ from dataclasses import replace
 import pytest
 
 from factory.cli.doctor import add_findings_parser, findings_ingest_command
+from factory.doctor.cli import _UserError, _sanitize_historical_observation
 from factory.doctor.cli import _sanitize_historical_observation
 from factory.doctor.models import (
     HistoricalObservation,
@@ -324,6 +325,68 @@ def test_authorized_ingest_can_apply_to_an_explicit_store(
     with connect(operational) as conn:
         assert get_finding(conn, "ops/historical") is not None
     assert not rehearsal.exists()
+
+
+def test_explicit_existing_rehearsal_path_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rehearsal = tmp_path / "rehearsal.db"
+    rehearsal.write_bytes(b"pre-existing-rehearsal")
+    rehearsal_bytes = rehearsal.read_bytes()
+    batch = tmp_path / "batch.json"
+    batch.write_text(_historical_batch())
+    parser = argparse.ArgumentParser()
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    add_findings_parser(verbs)
+    args = parser.parse_args(
+        [
+            "findings",
+            "ingest",
+            "--batch",
+            str(batch),
+            "--rehearsal-db",
+            str(rehearsal),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "factory.doctor.cli.connect",
+        lambda _path: pytest.fail("refusal opened a store"),
+    )
+
+    with pytest.raises(_UserError, match="rehearsal store already exists"):
+        args.run(args)
+
+    assert rehearsal.read_bytes() == rehearsal_bytes
+
+
+def test_apply_without_an_explicit_store_refuses_before_store_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch = tmp_path / "batch.json"
+    batch.write_text(_historical_batch())
+    parser = argparse.ArgumentParser()
+    verbs = parser.add_subparsers(dest="verb", required=True)
+    add_findings_parser(verbs)
+    args = parser.parse_args(
+        ["findings", "ingest", "--batch", str(batch), "--apply"]
+    )
+    resolved_paths: list[object] = []
+
+    def forbidden_store_path(_args: argparse.Namespace) -> Path:
+        resolved_paths.append(_args)
+        raise AssertionError("ambient store resolution was attempted")
+
+    monkeypatch.setattr(
+        "factory.doctor.cli._store_path", forbidden_store_path
+    )
+
+    with pytest.raises(_UserError, match="explicit"):
+        args.run(args)
+
+    assert resolved_paths == []
 
 
 def test_findings_ingest_defaults_to_analysis_only(

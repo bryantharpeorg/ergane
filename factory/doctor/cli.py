@@ -214,6 +214,9 @@ def _historical_ingest_command(args: argparse.Namespace) -> int:
     except (ValueError, OSError) as exc:
         raise _UserError(f"batch refused: {exc}") from exc
 
+    if args.apply and getattr(args, "db", None) is None:
+        raise _UserError("historical application requires an explicit --db target")
+
     sanitized = [_sanitize_historical_observation(obs) for obs in observations]
 
     if not args.apply:
