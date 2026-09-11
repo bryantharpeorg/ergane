@@ -107,6 +107,13 @@ without it touch a region an earlier task in the same phase is already editing.
       refinement pass; task ids are labels, and renumbering the file would break the
       ids already cited elsewhere in the trio — T034 in plan.md § Sizing, T041 in
       spec.md's provenance.)
+- [ ] T066 [P] [US1] (spec US1-S9, FR-002, plan trap 16) Given three valid-YAML
+      artifact mappings that respectively omit `gate`, `path`, and `type`, assert
+      the library raises `FactoryConfigError` under the `artifacts` rule naming
+      the whole entry and missing field. Drive at least one through the parser CLI
+      too: it must exit `PARSE_CLI_REJECTED` with the refusal on stderr and no
+      traceback or raw `KeyError`. This is the concrete counterexample PR #523's
+      otherwise-green test set missed.
 
 ### Implementation for this story
 
@@ -132,7 +139,11 @@ without it touch a region an earlier task in the same phase is already editing.
 - [ ] T010 [US1] (FR-001, FR-002, FR-012) Write the reader modelled on
       `_read_caches` (`factory/verify/factory_yaml.py:761` — `_read_caches`):
       entry-is-a-mapping, unknown-key-inside-an-entry, empty-list and path-bound
-      refusals, each naming the entry. **Invert that model's bound and keep yours
+      refusals, each naming the entry. Validate all three required keys before
+      indexing the mapping; `.get(...)` plus an explicit `FactoryConfigError` is
+      the existing reader shape, while `entry["gate"]`/`["path"]`/`["type"]`
+      turns an operator typo into an untyped traceback (plan trap 16). **Invert
+      that model's bound and keep yours
       lexical**: `_read_caches` refuses a *relative* path, expands it, calls
       `.resolve()` and requires the result under `Path.home()`, a filesystem touch
       its docstring calls a deliberate departure. FR-012 is the mirror image —
