@@ -1,5 +1,9 @@
 ---
 state: ready
+# COUNTEREXAMPLE REFINEMENT 2026-09-11: PR #523's otherwise-passing US1
+# candidate raised a raw KeyError for a valid-YAML artifact entry missing any
+# required field. US1-S9 and FR-002 make the parser's typed refusal contract
+# explicit before this story is permitted to land.
 # RELEASE REFINEMENT 2026-09-10: included in approved 0.6 audit-packet scope.
 # SIZING REFINEMENT 2026-09-11: new US6 owns bounded source observation;
 # US3 integrates that boundary and retains all existing acceptance scenarios.
@@ -372,6 +376,11 @@ configuration through the parser's own CLI and read the JSON.
    one `git diff-tree --name-only` itself prints — because the only consumer that
    compares this path compares it to git's output by string equality, and a path
    carried as declared would collect correctly and still demote its own gate.
+9. **Given** a syntactically valid artifact entry missing `gate`, `path`, or
+   `type`, **When** the manifest is loaded through either the library or the
+   parser CLI, **Then** it is refused as an `artifacts` configuration error that
+   names the entry and missing field, and the CLI exits with its declared
+   rejection code rather than leaking `KeyError` and a traceback.
 
 ### User Story 2 - A declared artifact reaches the runner and the gate's write exemption (Priority: P2)
 
@@ -573,8 +582,11 @@ call the exported reader for each.
   to an implementer because it is the most public identifier this spec creates:
   every target repository's manifest carries it forever, and spec 128 is adding
   its own v2 sibling key (`boundary_only_gates`) to the same tuple.
-- **FR-002**: An entry naming a type outside that set, or a gate the manifest does
-  not declare, MUST be refused with the entry named.
+- **FR-002**: An entry naming a type outside that set, a gate the manifest does
+  not declare, or omitting any required `gate`, `path`, or `type` field MUST be
+  refused with the entry and offending or missing field named. The parser CLI
+  MUST preserve its typed manifest-refusal exit rather than leak a raw mapping
+  exception.
 - **FR-003**: A manifest declaring no artifacts MUST parse and behave exactly as
   today, and `artifacts:` MUST be refused on a v1 manifest as an unknown top-level
   key.

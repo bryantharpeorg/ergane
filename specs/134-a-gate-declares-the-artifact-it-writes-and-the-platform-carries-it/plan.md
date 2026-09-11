@@ -562,13 +562,25 @@ carries no target-repository path to compare against, and a guard invented from
 one would refuse every gate run on this host — this spec's recurring hazard, a
 feature that adds evidence becoming one that breaks builds.
 
+**Trap 16 — A REQUIRED MAPPING KEY MUST REFUSE BEFORE IT IS INDEXED.** US1-S9,
+FR-002. `FactoryConfigError` (`factory/verify/factory_yaml.py:190`) is the
+manifest's data boundary: the parser CLI translates it to its declared rejection
+code. PR #523's first US1 candidate checked unknown keys and then read
+`entry["gate"]`, `entry["type"]`, and `entry["path"]` directly. A valid-YAML
+entry missing any one of those fields therefore escaped as raw `KeyError`, exit
+1 and a traceback even though every declared test passed. Follow `_read_caches`
+(`factory/verify/factory_yaml.py:761` — `_read_caches`): read a required field
+with `.get`, validate its presence/type, and raise the typed refusal naming the
+entry and field before any later gate, type or path check. T066 must exercise the
+library and CLI faces so catching the exception in only one caller cannot pass.
+
 ## Sizing
 
 **US1** — `factory/verify/factory_yaml.py` (`artifacts` in `_V2_TOP_LEVEL_KEYS`, a
 reader modelled on `_read_caches` with its bound inverted and its accepted path
 normalised to git's spelling, trap 3) and
 `factory/verify/models.py` (the `ArtifactType` `StrEnum`, the
-`ArtifactDeclaration` record and the `FactoryConfig` field). Eight scenarios, all
+`ArtifactDeclaration` record and the `FactoryConfig` field). Nine scenarios, all
 of them table-driven parse-or-refuse-or-normalise, so the test file is wide and
 shallow. Small.
 
