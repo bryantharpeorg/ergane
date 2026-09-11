@@ -180,6 +180,9 @@ suggest the agent edit them. If a criterion cannot be satisfied by any diff, or 
 cannot be proven from one, say so plainly in your feedback and fail the \
 scenario — that report is for the operator, who is the only one who may change \
 a criterion.
+If a defect visible in the diff does not contradict any dispatched criterion \
+or scenario, it must not make that scenario fail and must not invent a new \
+acceptance criterion; it may be reported only as advisory feedback.
 
 Respond with ONLY this JSON object, and nothing before or after it:
 
