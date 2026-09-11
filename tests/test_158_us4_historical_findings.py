@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import re
+import json
 from pathlib import Path
 from typing import Iterator
 from dataclasses import replace
@@ -83,6 +84,18 @@ def test_historical_batch_preserves_identity_and_observed_time() -> None:
     assert observation.observed_at == OBSERVED_AT
     assert observation.ingested_at == INGESTED_AT
     assert observation.observation.source == "audit-2026-09-01"
+
+
+def test_historical_batch_refuses_one_observation_id_for_two_entries() -> None:
+    batch = json.loads(_historical_batch())
+    duplicate = dict(batch["findings"][0])
+    duplicate["key"] = "ops/other"
+    batch["findings"].append(duplicate)
+
+    with pytest.raises(ValueError, match="observation_id"):
+        parse_historical_findings_batch(
+            json.dumps(batch), ingested_at=INGESTED_AT
+        )
 
 
 def test_historical_event_round_trip_keeps_all_times_distinct(

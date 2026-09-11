@@ -56,3 +56,6 @@ CREATE TABLE IF NOT EXISTS finding_events (
 
 CREATE INDEX IF NOT EXISTS idx_finding_events_key
     ON finding_events(finding_key, seen_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_events_observation_id
+    ON finding_events(observation_id);

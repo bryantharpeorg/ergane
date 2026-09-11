@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS finding_events (
 
 CREATE INDEX IF NOT EXISTS idx_finding_events_key
     ON finding_events(finding_key, seen_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_events_observation_id
+    ON finding_events(observation_id);
 """
 
 
@@ -142,6 +145,10 @@ def _bootstrap_schema(conn: sqlite3.Connection) -> None:
             )
 
     conn.executescript(_SCHEMA_DDL)
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_events_observation_id "
+        "ON finding_events(observation_id)"
+    )
     recorded = conn.execute(
         "SELECT MAX(version) FROM schema_version"
     ).fetchone()[0]
