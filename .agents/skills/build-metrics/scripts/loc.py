@@ -57,12 +57,11 @@ def module(p):
 
 
 def main(repo, tool=None):
-    os.chdir(repo)
     with tempfile.TemporaryDirectory(prefix=".cloc-", dir=repo) as scratch:
         out = os.path.join(scratch, "byfile.csv")
         subprocess.run(
             loc_tool(tool) + ["--vcs=git", "--by-file", "--csv", "--quiet", f"--out={out}"],
-            check=True, capture_output=True,
+            check=True, capture_output=True, cwd=repo,
         )
 
         rows = []
