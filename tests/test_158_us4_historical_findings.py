@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import hashlib
 import argparse
-import json
 import sqlite3
 from pathlib import Path
 from typing import Iterator
+from dataclasses import replace
 
 import pytest
 
-from factory.cli.doctor import add_findings_parser
+from factory.cli.doctor import add_findings_parser, findings_ingest_command
 from factory.doctor.models import (
     HistoricalObservation,
-    Severity,
     Status,
     parse_historical_findings_batch,
 )
@@ -31,7 +29,7 @@ from factory.doctor.store import (
 
 
 INGESTED_AT = "2026-09-11T12:00:00Z"
-OBSERVED_AT = "2026-08-01T00:00:00Z"
+OBSERVED_AT = "2026-09-01T00:00:00Z"
 OBSERVATION_ID = "audit-2026-09-01:ops/historical"
 
 
@@ -132,22 +130,43 @@ def test_duplicate_historical_observation_is_idempotent(
 def test_historical_observation_does_not_change_a_current_row(
     store: sqlite3.Connection,
 ) -> None:
-    current = get_finding(store, "ops/historical")
-    assert current is None
-
-    apply_historical_observation(store, _observation(), ingested_at=INGESTED_AT)
-    current = get_finding(store, "ops/historical")
-    resolve(
-        store,
-        "ops/historical",
-        reason="current implementation evidence",
-        resolved_at="2026-09-10T00:00:00Z",
-    )
+    observation = _observation()
+    report(store, observation.observation, seen_at="2026-09-01T00:00:00Z")
     before = get_finding(store, "ops/historical")
     assert before is not None
 
     assert apply_historical_observation(
-        store, _observation(), ingested_at=INGESTED_AT
+        store,
+        replace(
+            observation,
+            observation_id="audit-2026-09-02:ops/historical",
+            ingested_at=INGESTED_AT,
+        ),
+        ingested_at=INGESTED_AT,
+    )
+
+    stored = get_finding(store, "ops/historical")
+    assert stored == before
+    assert len(list_events(store, "ops/historical")) == 2
+
+
+def test_historical_fix_prose_does_not_resolve_a_current_row(
+    store: sqlite3.Connection,
+) -> None:
+    observation = _observation()
+    assert "fixed" in (observation.observation.notes or "")
+    report(store, observation.observation, seen_at="2026-09-01T00:00:00Z")
+    before = get_finding(store, "ops/historical")
+    assert before is not None
+
+    assert apply_historical_observation(
+        store,
+        replace(
+            observation,
+            observation_id="audit-2026-09-02:ops/historical",
+            ingested_at=INGESTED_AT,
+        ),
+        ingested_at=INGESTED_AT,
     )
 
     stored = get_finding(store, "ops/historical")
@@ -206,8 +225,11 @@ def test_connect_migrates_a_v1_store(
             kind TEXT NOT NULL CHECK (kind IN ('reported','promoted','resolved','regressed'))
         );
         INSERT INTO schema_version (version) VALUES (1);
-        INSERT INTO findings (key, category, severity, summary, refs, source)
-        VALUES ('ops/migrated', 'ops', 'warning', 'old', '[]', 'probe');
+        INSERT INTO findings (
+            key, category, severity, summary, refs, source, first_seen, last_seen
+        )
+        VALUES ('ops/migrated', 'ops', 'warning', 'old', '[]', 'probe',
+                '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z');
         INSERT INTO finding_events (finding_key, seen_at, source, severity, kind)
         VALUES ('ops/migrated', '2026-09-01T00:00:00Z', 'probe', 'warning', 'reported');
         """
@@ -242,20 +264,27 @@ def test_analysis_only_ingest_rehearses_and_never_opens_the_operational_store(
         rehearsal_db=str(rehearsal),
     )
 
+    real_connect = connect
+
     def forbidden(path: Path) -> sqlite3.Connection:
-        raise AssertionError("analysis-only ingestion opened the operational store")
+        if path == operational:
+            raise AssertionError("analysis-only ingestion opened the operational store")
+        return real_connect(path)
 
     monkeypatch.setattr("factory.doctor.cli.connect", forbidden)
     (tmp_path / "batch.json").write_text(_historical_batch())
 
-    exit_code = historical_ingest_command(args)
+    exit_code = findings_ingest_command(args)
 
     assert exit_code == 0
     assert rehearsal.is_file()
-    with connect(rehearsal) as conn:
-        stored = get_finding(conn, "ops/historical")
+    rehearsal_conn = connect(rehearsal)
+    try:
+        stored = get_finding(rehearsal_conn, "ops/historical")
         assert stored is not None
         assert stored.last_seen == OBSERVED_AT
+    finally:
+        rehearsal_conn.close()
     assert operational.read_bytes() == b""
     assert str(rehearsal) in capsys.readouterr().out
 
@@ -273,7 +302,7 @@ def test_authorized_ingest_can_apply_to_an_explicit_store(
         apply=True,
         db=str(operational),
     )
-    historical_ingest_command(args)
+    findings_ingest_command(args)
 
     with connect(operational) as conn:
         assert get_finding(conn, "ops/historical") is not None
@@ -288,6 +317,8 @@ def test_findings_ingest_defaults_to_analysis_only(
     parser = argparse.ArgumentParser()
     verbs = parser.add_subparsers(dest="verb", required=True)
     add_findings_parser(verbs)
-    args = parser.parse_args(["ingest", "--batch", str(tmp_path / "batch.json")])
+    args = parser.parse_args(
+        ["findings", "ingest", "--batch", str(tmp_path / "batch.json")]
+    )
 
     assert args.apply is False

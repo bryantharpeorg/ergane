@@ -54,6 +54,9 @@ from factory.workgraph.worktree import resolve_factory_root
 import factory.doctor.cli as _doctor_cli
 
 
+_findings_ingest_command = _doctor_cli._historical_ingest_command
+
+
 #: Credential-like values must never reach findings or output.
 _CREDENTIAL_RE = re.compile(r"sk-[A-Za-z0-9_\-]{8,}")
 
@@ -259,7 +262,7 @@ def add_findings_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     parser = subparsers.add_parser(
         "findings",
         help="manage the findings ledger",
-        description="Report, list, resolve, or promote findings.",
+    description="Report, list, resolve, or promote findings.",
     )
     verbs = parser.add_subparsers(dest="verb", required=True)
 
@@ -347,7 +350,34 @@ def add_findings_parser(subparsers: argparse._SubParsersAction) -> argparse.Argu
     # invisible, because the write is correct behaviour for a different verb.
     triage_parser.set_defaults(run=findings_triage_command)
 
+    ingest_parser = verbs.add_parser(
+        "ingest",
+        help="rehearse historical findings; use --apply to record them",
+        parents=[db_parent],
+    )
+    ingest_parser.add_argument(
+        "--batch",
+        metavar="FILE",
+        required=True,
+        help="historical findings JSON batch file",
+    )
+    ingest_parser.add_argument(
+        "--rehearsal-db",
+        metavar="FILE",
+        help="destination for the sanitized analysis-only rehearsal",
+    )
+    ingest_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="record historical observations in the declared findings store",
+    )
+    ingest_parser.set_defaults(run=findings_ingest_command)
+
     return parser
+
+
+def findings_ingest_command(args: argparse.Namespace) -> int:
+    return _findings_ingest_command(args)
 
 
 def _with_store(command: Any) -> Any:

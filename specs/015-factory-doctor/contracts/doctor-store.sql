@@ -48,7 +48,10 @@ CREATE TABLE IF NOT EXISTS finding_events (
     severity    TEXT NOT NULL
         CHECK (severity IN ('critical', 'warning', 'info')),
     kind        TEXT NOT NULL
-        CHECK (kind IN ('reported', 'promoted', 'resolved', 'regressed'))
+        CHECK (kind IN ('reported', 'promoted', 'resolved', 'regressed')),
+    observation_id TEXT,                      -- historical identity, absent on live
+    observed_at   TEXT,                       -- historical observation time
+    ingested_at   TEXT                       -- historical ingestion time
 );
 
 CREATE INDEX IF NOT EXISTS idx_finding_events_key
