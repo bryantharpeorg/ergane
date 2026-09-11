@@ -22,6 +22,7 @@ import factory.supervision.engine_upgrade as upgrade_module
 from factory.cli.errors import EXIT_OK, EXIT_USER, OperatorError
 from factory.controlplane.verify import render_findings
 from factory.mergequeue.models import Finding
+from factory.supervision.engine_upgrade import COMPOSE_NAME
 from factory.supervision.engine_identity import (
     EngineIdentity,
     IMAGE_REPOSITORY,
@@ -218,12 +219,64 @@ def test_default_inventory_failure_prevents_image_removal(
     monkeypatch.setattr(upgrade_module.subprocess, "run", run_subprocess)
     seam = upgrade_module._ComposeDockerSeam(tmp_path / "engine-project")
 
-    with pytest.raises(OperatorError, match="docker images.*connection refused"):
+    with pytest.raises(OperatorError, match=r"docker images.*\nconnection refused"):
         seam.list_images()
 
     assert [argv for argv, _kwargs in calls] == [(
         "docker", "images", "--format", "{{.Repository}}:{{.Tag}}",
     )]
+
+
+def test_default_runner_routes_inventory_through_retention_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T004 / US1-S3 / FR-003: captured subprocess calls stay explicit and narrow."""
+    project = tmp_path / "container"
+    project.mkdir()
+    (project / COMPOSE_NAME).write_text("services: {}\n", encoding="utf-8")
+    state = tmp_path / "state"
+    _write_identity(state, "0.3.0")
+    monkeypatch.setenv("ERGANE_COMPOSE_PROJECT", str(project))
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+
+    target = image_reference("0.4.0")
+    previous = image_reference("0.3.0")
+    older = [image_reference("0.1.0"), image_reference("0.2.0")]
+    unrelated = "example.com/operator/another-service:0.1.0"
+    prefix_lookalike = f"{IMAGE_REPOSITORY}-operator/another-service:0.1.0"
+    inventory = [target, previous, *older, unrelated, prefix_lookalike]
+    calls: list[tuple[tuple[str, ...], dict[str, Any]]] = []
+    inventory_text = "\n".join(inventory)
+
+    def run_subprocess(argv: list[str], **kwargs: Any) -> Any:
+        calls.append((tuple(argv), kwargs))
+        if argv[:2] == ["docker", "images"]:
+            return subprocess.CompletedProcess(argv, 0, inventory_text, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def verify_engine() -> tuple[list[Finding], int]:
+        finding = Finding(check="engine", passed=True, detail="0.4.0 matches")
+        return ([finding], EXIT_OK)
+
+    monkeypatch.setattr(upgrade_module.subprocess, "run", run_subprocess)
+    monkeypatch.setattr(upgrade_module, "verify_controlplane", verify_engine)
+    report = upgrade_module.upgrade(
+        open_epics=lambda: (),
+        docker=None,
+        _state_home=state,
+    )
+
+    assert report.degraded is False
+    assert [(name, args) for name, args in
+            [(argv[1], argv[2:]) for argv, _kwargs in calls]] == [
+        ("compose", ("-f", str(project / COMPOSE_NAME), "down")),
+        ("compose", ("-f", str(project / COMPOSE_NAME), "up", "-d", "--no-build")),
+        ("images", ("--format", "{{.Repository}}:{{.Tag}}")),
+        ("rmi", (image_reference("0.1.0"),)),
+        ("rmi", (image_reference("0.2.0"),)),
+    ]
+    assert all("--force" not in argv and "prune" not in argv for argv, _kwargs in calls)
 
 
 # ---------------------------------------------------------------------------

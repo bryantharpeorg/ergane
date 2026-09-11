@@ -117,6 +117,11 @@ class _ComposeDockerSeam:
             text=True,
             check=False,
         )
+        if result.returncode != 0:
+            raise OperatorError(
+                f"`docker images` failed (exit {result.returncode}). Docker said:\n"
+                f"{result.stdout.strip()}{result.stderr.strip()}"
+            )
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     def remove_image(self, ref: str) -> None:
@@ -126,10 +131,10 @@ class _ComposeDockerSeam:
             text=True,
             check=False,
         )
-        if result.code != 0:
+        if result.returncode != 0:
             raise OperatorError(
-                f"`docker rmi {ref}` failed (exit {result.code}). Docker said:\n"
-                f"{result.out.strip()}"
+                f"`docker rmi {ref}` failed (exit {result.returncode}). Docker said:\n"
+                f"{result.stdout.strip()}{result.stderr.strip()}"
             )
 
 
