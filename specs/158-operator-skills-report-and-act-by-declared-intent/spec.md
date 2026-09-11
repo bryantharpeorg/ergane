@@ -1,5 +1,10 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-11. US1 1cee726baa44, US2 e4fba1927753,
+# US3 4083f3476f71, and US4 6c953da2d2f1 (#520) were observed on
+# ergane-buildout. The US4 continuation workflow recorded MERGED and COMPLETED;
+# an independent clean-tree qualification passed all 21 focused tests, both
+# concrete boundary probes, and left the operational findings store unchanged.
 depends_on_landed:
   - 087-the-operators-skills-arrive-with-the-cli
   - 157-one-operator-contract-serves-both-clients
