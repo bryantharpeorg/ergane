@@ -16,7 +16,7 @@ No Docker daemon, worker, provider, credential store or live Temporal service.
       removal.  Do not patch the reader to return a constant object.
 - [x] T003 [US1] (US1-S1, US1-S2, FR-002, FR-003) Capture pre-stop identity once
       and carry that immutable value to retention.  Keep uncertainty sticky.
-- [ ] T004 [US1] (US1-S3, FR-004) Prove failed stop, failed start and failing
+- [x] T004 [US1] (US1-S3, FR-004) Prove failed stop, failed start and failing
       engine verification cause no inventory or removal.  Preserve unrelated
       finding visibility and the engine-specific degraded verdict.
 - [ ] T005 [US1] (US1-S4, FR-001, FR-009) Re-run landed exact-repository,

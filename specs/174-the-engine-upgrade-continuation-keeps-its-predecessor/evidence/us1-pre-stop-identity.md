@@ -43,3 +43,19 @@ uv run pytest -q tests/test_engine_upgrade.py::test_upgrade_unknown_pre_stop_ide
 ## T003 snapshot control
 
 The production read is moved above `docker.stop`; `test_upgrade_reads_old_identity_before_stop` records exactly one `read_identity`, before stop/start, and retention keeps the read `0.3.0` image. The T002 matrix proves `None` uncertainty remains `None` when `0.4.0` is written later.
+
+## T004 failure gates
+
+```text
+FAILED tests/test_engine_upgrade.py::test_upgrade_degraded_when_engine_finding_mismatches
+    assert ('list_images', ()) not in seam.calls
+```
+
+Green:
+
+```text
+uv run pytest -q tests/test_engine_upgrade.py
+23 passed in 0.13s
+```
+
+Failed stop and failed start stop at their seam call; a failed engine finding is visible and degraded, but inventory/removal do not run. With a passing engine finding, unrelated failed findings remain in the report and degraded stays false.

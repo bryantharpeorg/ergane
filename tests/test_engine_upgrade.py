@@ -59,7 +59,10 @@ class _FakeDockerSeam:
         *,
         stop_ok: bool = True,
         start_ok: bool = True,
-        verify_result: tuple[list[Finding], int] = ([], EXIT_OK),
+        verify_result: tuple[list[Finding], int] = (
+            [Finding(check="engine", passed=True, detail="engine verified")],
+            EXIT_OK,
+        ),
         images: list[str] | None = None,
         remove_ok: bool = True,
     ) -> None:
@@ -75,6 +78,8 @@ class _FakeDockerSeam:
 
     def stop(self) -> None:
         self.calls.append(("stop", ()))
+        if not self.stop_ok:
+            raise OperatorError("stop failed")
 
     def start(self, image_reference: str, *, env: dict[str, str] | None = None) -> None:
         self.calls.append(("start", (image_reference,)))
@@ -348,6 +353,32 @@ def test_upgrade_unknown_pre_stop_identity_removes_nothing(
     assert any("keeping every local image" in note for note in report.notes)
 
 
+@pytest.mark.parametrize("failure", ["stop", "start"])
+def test_upgrade_lifecycle_failure_prevents_inventory_and_removal(
+    isolated_state_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """T004 / US1-S3 / FR-004: lifecycle failure ends before image work."""
+    _make_project(isolated_state_home)
+    monkeypatch.setattr(upgrade_module, "cli_version", lambda: "0.4.0")
+    seam = _FakeDockerSeam(
+        stop_ok=failure != "stop",
+        start_ok=failure != "start",
+        images=[image_reference("0.2.0")],
+    )
+
+    with pytest.raises(OperatorError, match=f"{failure} failed"):
+        upgrade_module.upgrade(
+            open_epics=lambda: (),
+            docker=seam,
+        )
+
+    assert [name for name, _args in seam.calls] == ["stop", "start"][: 1 if failure == "stop" else 2]
+    assert ("list_images", ()) not in seam.calls
+    assert seam.removed == []
+
+
 def test_default_inventory_failure_prevents_image_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -589,7 +620,11 @@ def test_upgrade_degraded_when_engine_finding_mismatches(
     findings = [
         Finding(check="engine", passed=False, detail="engine mismatch"),
     ]
-    seam = _FakeDockerSeam(verify_result=(findings, EXIT_USER))
+    older = image_reference("0.2.0")
+    seam = _FakeDockerSeam(
+        verify_result=(findings, EXIT_USER),
+        images=[image_reference("0.4.0"), older],
+    )
 
     report = upgrade_module.upgrade(
         open_epics=lambda: (),
@@ -598,6 +633,8 @@ def test_upgrade_degraded_when_engine_finding_mismatches(
 
     assert report.degraded is True
     assert any(f.check == "engine" and not f.passed for f in report.findings)
+    assert ("list_images", ()) not in seam.calls
+    assert seam.removed == []
 
 
 def test_upgrade_success_when_only_unrelated_probe_fails(

@@ -324,8 +324,9 @@ def upgrade(
     # `degraded` is keyed on the engine finding alone (FR-019).
     engine_finding = next((f for f in findings if f.check == "engine"), None)
     degraded = False if engine_finding is None else not engine_finding.passed
+    engine_verified = engine_finding is not None and engine_finding.passed
 
-    local_images = docker.list_images()
+    local_images = docker.list_images() if engine_verified else ()
     retention = _retention_decision(
         local_images,
         target_image=target_image,
