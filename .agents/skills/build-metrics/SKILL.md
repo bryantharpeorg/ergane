@@ -1,9 +1,9 @@
 ---
 name: "build-metrics"
 description: "Measure what the factory has actually produced: lines of code by language and module, commit-size distribution with outliers trimmed, and the story rework rate with its trend over time. Use when asked how big the codebase is, how large a typical change is, how often stories need a second attempt, or whether the factory is getting better."
-compatibility: "Requires a checkout of this repository, python3, git, and perl (for the bootstrapped cloc). Reads .factory/*.db read-only; does not need the worker or Temporal running."
+compatibility: "Requires a checkout of this repository, python3, git, and a stable local cloc executable. Reads .ergane/*.db read-only; honors ERGANE_ROOT (with FACTORY_ROOT as the legacy alias); does not need the worker or Temporal running."
 metadata:
-  author: "operator session, 2026-08-19"
+  author: "operator session"
 user-invocable: true
 disable-model-invocation: false
 ---
@@ -23,7 +23,7 @@ nobody wants a LOC table when they asked about attempt counts.
 All three take an optional repo path and default to the current directory:
 
 ```bash
-python3 .claude/skills/build-metrics/scripts/rework.py
+python3 .agents/skills/build-metrics/scripts/rework.py
 ```
 
 `ergane` is **not on PATH** — anything shelling out to the CLI needs
@@ -35,117 +35,107 @@ work with the worker down.
 
 Every one of these produced a wrong number first.
 
-### Three commits carry half the churn
+### Outliers can carry the churn
 
-The initial 350-file import, the 2.3 MB replay-history capture, and one
-spec-drop commit total 179,577 lines — 48% of all churn ever. Raw mean commit
-size is 928; trimmed it is 359. **Report both and say which you mean.** A raw
-mean here is not a summary, it is a description of three commits.
+Raw commit-size means are summaries of the tail as well as the typical change.
+**Report both and say which you mean.** The script's Tukey fences and trimmed
+rows are the comparison; do not quote an unqualified mean as "typical."
 
-Note that the Tukey lower fence comes out negative, so **nothing trims from the
-low end** — the "outliers on either side" framing doesn't apply. The low tail is
-5 zero-churn commits and a run of 2–6 line fixes, all real work. The symmetric
-10% trim lands in the same place, which is how you know the low end wasn't
-distorting anything.
+### Machine-generated recordings can dominate LOC
 
-### 30% of the repo is a machine-generated recording
-
-`tests/fixtures/replay-032/` is ten Temporal replay histories at 5,963 lines
-each — 59,630 lines, all JSON, none of it authored. Any "how big is the
-codebase" answer that includes it is off by a third. `scripts/loc.py` reports it
-as its own row for exactly this reason.
+Machine-generated fixtures are measured by `scripts/loc.py` as their own rows.
+Keep that row visible in the answer; do not fold it into an authored-code total.
 
 ### The insertion:deletion ratio measures youth, not discipline
 
-Repo-wide it reads ~19:1, which looks alarming and means nothing: 116 Python
-files were written once and never revisited, and you cannot delete from a file
-nobody came back to. The growth-adjusted version buckets files by how many
-commits touched them, and the ratio falls monotonically — 50:1 at 2–3 touches,
-11.9:1 at 13+. **Quote the 13+ bucket.** `scripts/commit_sizes.py` prints it.
+Repo-wide insertion:deletion measures youth, not discipline. The
+growth-adjusted buckets by commits touching a file are the comparison. **Quote
+the most-revisited bucket.** `scripts/commit_sizes.py` prints it.
 
-### Rework has two honest definitions, 13 points apart
+### Rework has two honest definitions
 
 - **Verification rework** — the story's first attempt was verified `FAIL`.
-  Reads 23.3%.
 - **Dispatch rework** — the story was dispatched more than once, for any reason.
-  Reads 36.8%.
 
-The gap is 16 stories whose first attempt died before verification could judge
-it: `agent_error`, `timeout`, `killed`, `question`. Those absolutely are rework
-— the story was built twice — and the verification store cannot see them because
-nothing was ever verified. **Lead with the dispatch number.** Give the
-verification number as the narrower "the gates rejected it" figure.
+The second definition includes stories whose first attempt died before
+verification could judge it: `agent_error`, `timeout`, `killed`, `question`.
+Those absolutely are rework — the story was built twice — and the verification
+store cannot see them because nothing was ever verified. **Lead with the
+dispatch number.** Give the verification number as the narrower "the gates
+rejected it" figure.
+
+### Two dispatches can share every old key field
+
+Group verification attempts by the recorded dispatch before collapsing to a
+story. Dispatch identity comes only from recorded evidence that carries it; an
+old `(epic, node, attempt, persona)` key and a timestamp window do not make a
+second dispatch.
+
+### Unknown is not zero
+
+Missing tokens, dollars, runner, route, model, or landing data stay unknown.
+Keep measured subtotals beside the rows that make them partial, legacy, or
+unknown, and preserve accounting provenance even when one field happens to be
+complete. Optional cache and request counters can remain unknown even when token
+totals are complete.
+
+### Empty input is valid
+
+An empty ledger produces an empty report, not an exception. Percentages and
+coverage have explicit no-denominator paths.
 
 ### `usage_records` has ~2 rows per attempt, not 1
 
 One row per persona: `implementer`, `judge`, and `debugger` when the ladder
-climbs. 363 rows over 117 stories is *not* 3.1 attempts per story — it is 1.69.
-Always count `distinct attempt` per `(epic_id, node_id)`. Dividing row counts by
-story counts overstates rework by roughly 2×.
+climbs. Always count `distinct attempt` per `(epic_id, node_id)`. Dividing row
+counts by story counts overstates rework by roughly 2×.
 
 ### The stores do not cover everything that landed
 
-The ledger holds 117 stories. Git shows 148 distinct story landings. The 45
-missing ones cluster on `033-ergane-install`, `034-ergane-init`,
-`040-manifest-rename` and `041-escalation-workflow` — the specs in flight when
-an agent ran `rm -rf .factory` on 2026-08-14. The restic restore came from that
-day's 03:06Z snapshot, so everything after it is gone.
-
 `scripts/rework.py` re-runs this cross-check every time and prints the coverage
-percentage. **Say it out loud in the report.** The missing slice is not random,
-and it does not bias in a knowable direction: `040` and `033/us1` landed
-first-attempt (which would drag the measured rate down), while the same era
-burned twelve attempts overnight on other stories (which would push it up).
-Report the estimate and refuse to call it a census.
+percentage or names the absence as unknown. **Say the coverage out loud in the
+report.** Report the estimate and refuse to call it a census.
 
 ### Daily buckets are noise at this volume
 
-116 stories over 14 days means single-digit denominators — you will get 100%
-rework days off one story. Use **weekly** buckets and a **rolling 20-story
-window** ordered chronologically, which is what the script emits. A rolling
-window over stories rather than days is the one that shows a learning curve if
-there is one, because it holds the denominator fixed.
+Small periods have small denominators — one story can make a day look like
+100% rework. Use **weekly** buckets and a **rolling 20-story window** ordered
+chronologically, which is what the script emits. A rolling window over stories
+rather than days is the one that shows a learning curve if there is one,
+because it holds the denominator fixed.
 
 ### Read the stores read-only, always
 
-`sqlite3.connect("file:.factory/verification.db?mode=ro", uri=True)`. This is
-the live store. A skill that reports on the factory must not be a skill that
-writes to it, and the one time a test asserted something about that store it
-ended in `rm -rf`.
+The helpers resolve `.ergane/` first and honor the legacy `.factory/` name. Use
+`--runtime-root` for a temporary store. This is the live store in normal use. A
+skill that reports on the factory must not be a skill that writes to it.
 
-### cloc is not installed and sudo does not work here
+### LOC has no network bootstrap
 
-`scripts/loc.py` bootstraps it: fetch the standalone Perl script from
-`raw.githubusercontent.com/AlDanial/cloc/master/cloc` into the scratchpad and
-run it with the system perl. **The GitHub releases URL 404s** and the 404 body
-gets executed as Perl, producing `Can't locate object method "Not" via package
-"Found"` — which looks like a Perl problem and is actually a download problem.
+`scripts/loc.py` uses a stable local `cloc` executable or reports the
+capability unavailable. It does not fetch executable code from a remote branch.
+Its scratch output lives in a run-unique temporary directory.
 
 ## What to conclude, not just what to print
 
 **Pair the rework trend with the findings ledger.** Rework rate is the outcome
 metric for the whole detect-and-promote loop; `ergane findings list` is the
-input side. As of 2026-08-19 the input side is working (204 open findings, real
-defects, correctly identified) and the output side is flat (rework 34.4% →
-40.5% → 34.9% across three weeks). Two promotions out of 242 findings is the
-mechanism connecting them, and it is not running fast enough to move the
-number. That pairing is the report's actual finding; the tables are supporting
-evidence.
+input side. Report the current rework trend beside the current findings trend.
+That pairing is the report's actual finding; the tables are supporting evidence.
 
-**Separate growth-phase artifacts from structural ones.** In a four-week-old
-greenfield, an additive commit ratio and a findings backlog that outruns
-resolution are what health looks like — they correct themselves as the tree
-matures. What does not correct itself is anything that compounds with dispatch
-volume: tests authored by the same process that wrote the code (2.19:1 and
-growing monotonically), and gate count as Goodhart surface. If asked to
-editorialise, sort the criticisms by that axis rather than by severity.
+**Separate growth-phase artifacts from structural ones.** Additive commit
+ratio and a findings backlog that outruns resolution can be artifacts of a
+young repository. What does not correct itself is anything that compounds with
+dispatch volume: test-code authorship, gate count as Goodhart surface, and
+unknown quantities silently collapsed to zero. If asked to editorialise, sort
+the criticisms by that axis rather than by severity.
 
-**A flat trend is a finding, not a null result.** "No improvement over three
-weeks and 116 stories" is a stronger, more actionable claim than any single
-rate. Say it plainly when it is true.
+**A flat trend is a finding, not a null result.** Name the period and the
+denominator, then say plainly when there is no improvement.
 
 ## Baseline
 
 `reference/baseline-2026-08-19.md` holds the full numbers as measured on
-2026-08-19, so a later run has something to diff against. Re-measure rather
-than quoting it — but do report which way a number moved, and by how much.
+2026-08-19. It is a historical snapshot, not the default report. Re-measure
+rather than quoting it — but do report which way a number moved, and by how
+much.

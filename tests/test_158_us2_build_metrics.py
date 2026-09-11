@@ -242,6 +242,18 @@ def test_loc_source_has_no_remote_executable_boundary() -> None:
     assert "master" not in source
 
 
+def test_default_skill_report_does_not_quote_dated_baseline_figures() -> None:
+    source = (REPO_ROOT / ".agents/skills/build-metrics/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Reads 23.3%" not in source
+    assert "Reads 36.8%" not in source
+    assert "raw.githubusercontent.com" not in source
+    assert "master" not in source
+    assert ".claude/skills/build-metrics" not in source
+
+
 def test_two_dispatches_sharing_old_key_fields_stay_separate(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
