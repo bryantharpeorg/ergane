@@ -290,6 +290,49 @@ GREEN_TEST_GATE = GateResult(
     output_tail="1 passed in 0.01s\n",
 )
 
+SAFETY_CRITERIA = CriteriaSet(
+    feature="counterexample-demo",
+    spec_ref="counterexample-demo/universal-safety",
+    requirements=[
+        Requirement(
+            key="US1",
+            kind=RequirementKind.STORY,
+            title="Persist sanitized records",
+            priority="P1",
+            body="Every persisted record remains sanitized and unchanged.",
+            scenarios=[
+                Scenario(
+                    scenario_id="US1-S1",
+                    steps=[
+                        "**Given** externally controlled record fields",
+                        "**When** a record is persisted",
+                        "**Then** its persisted fields remain sanitized and unchanged",
+                    ],
+                    raw_text=(
+                        "1. **Given** externally controlled record fields, "
+                        "**When** a record is persisted, **Then** its persisted "
+                        "fields remain sanitized and unchanged."
+                    ),
+                )
+            ],
+        )
+    ],
+    source_path="specs/counterexample-demo/spec.md",
+    source_sha256="c0ffee" + "0" * 58,
+    snapshotted_at="2026-09-11T00:00:00Z",
+)
+
+UNIVERSAL_SAFETY_DIFF = (
+    "diff --git a/src/records.py b/src/records.py\n"
+    "index 1111111..2222222 100644\n"
+    "--- a/src/records.py\n"
+    "+++ b/src/records.py\n"
+    "@@ -1,5 +1,9 @@ def save_record(record):\n"
+    "+    record.name = sanitize_nested(record.name)\n"
+    "+    record.slug = record.name\n"
+    "+    persist(record)\n"
+)
+
 
 def content_lines(section: str) -> list[str]:
     """The `+`/`-` lines of a diff section — its content, minus its headers."""
@@ -380,6 +423,17 @@ def test_the_counterexample_contract_reaches_the_assembled_system_message() -> N
     assert "unless the criterion explicitly narrows it" in system
     assert "the closest dispatched scenario must fail" in system
     assert "must not return PASS" in system
+
+
+def test_the_universal_safety_fixture_carries_the_bypassing_branch_and_field() -> None:
+    """A universal claim must be testable against the evidence that violates it."""
+    prompt = build_prompt(SAFETY_CRITERIA, UNIVERSAL_SAFETY_DIFF, gate_results=[GREEN_TEST_GATE])
+    user = prompt.messages[1]["content"]
+
+    assert SAFETY_CRITERIA.requirements[0].scenarios[0].raw_text in user
+    assert "sanitize_nested" in user
+    assert "record.slug" in user
+    assert "persist(record)" in user
 
 
 @pytest.fixture
