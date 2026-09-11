@@ -52,6 +52,17 @@ class FindingEvent:
     source: str
     severity: Severity
     kind: str
+    observation_id: str | None = None
+    observed_at: str | None = None
+    ingested_at: str | None = None
+
+
+@dataclass(frozen=True)
+class HistoricalObservation:
+    observation: Finding
+    observation_id: str
+    observed_at: str
+    ingested_at: str
 
 
 class _Rejections:
@@ -76,6 +87,7 @@ _REQUIRED_ENTRY_FIELDS = (
     "refs",
     "notes",
 )
+_HISTORICAL_ENTRY_FIELDS = ("observation_id", "observed_at")
 
 
 def parse_findings_batch(text: str) -> list[Finding]:
@@ -163,3 +175,54 @@ def parse_findings_batch(text: str) -> list[Finding]:
         )
 
     return results
+
+
+def parse_historical_findings_batch(
+    text: str, *, ingested_at: str
+) -> list[HistoricalObservation]:
+    """Parse a findings batch that carries historical observation metadata.
+
+    Every entry names its own stable observation id and observation time. The
+    id, not the batch filename or position, is the idempotency key; ingestion
+    time is supplied by the caller because parsing must not invent a clock.
+    """
+    findings = parse_findings_batch(text)
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"batch is not valid JSON: {exc}") from exc
+
+    assert isinstance(data, dict)
+    entries = data["findings"]
+    rejections = _Rejections()
+    seen_observation_ids: set[str] = set()
+    for idx, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            continue
+        label = entry.get("key") if isinstance(entry.get("key"), str) else f"findings[{idx}]"
+        for field in _HISTORICAL_ENTRY_FIELDS:
+            value = entry.get(field)
+            if not isinstance(value, str) or not value:
+                rejections.add("missing_field", label, f"missing '{field}'")
+        raw_observation_id = entry.get("observation_id")
+        if isinstance(raw_observation_id, str):
+            if raw_observation_id in seen_observation_ids:
+                rejections.add(
+                    "duplicate_observation_id",
+                    raw_observation_id,
+                    "observation_id appears more than once in batch",
+                )
+            seen_observation_ids.add(raw_observation_id)
+
+    rejections.raise_if_any()
+
+    return [
+        HistoricalObservation(
+            observation=finding,
+            observation_id=entry["observation_id"],
+            observed_at=entry["observed_at"],
+            ingested_at=ingested_at,
+        )
+        for finding, entry in zip(findings, entries)
+    ]

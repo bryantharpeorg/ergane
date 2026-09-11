@@ -13,11 +13,11 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Sequence
 
-from factory.doctor.models import Finding, FindingEvent, Severity, Status
+from factory.doctor.models import Finding, FindingEvent, HistoricalObservation, Severity, Status
 
 #: Bumping this means the DDL below changed shape and existing stores need a
 #: migration path. Recorded in the database so a reader can tell.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: How long a writer waits out another writer's lock before giving up.
 BUSY_TIMEOUT_MS = 5000
@@ -75,11 +75,17 @@ CREATE TABLE IF NOT EXISTS finding_events (
     severity    TEXT NOT NULL
         CHECK (severity IN ('critical', 'warning', 'info')),
     kind        TEXT NOT NULL
-        CHECK (kind IN ('reported', 'promoted', 'resolved', 'regressed'))
+        CHECK (kind IN ('reported', 'promoted', 'resolved', 'regressed')),
+    observation_id TEXT,                      -- historical identity, absent on live
+    observed_at   TEXT,                       -- historical observation time
+    ingested_at   TEXT                       -- historical ingestion time
 );
 
 CREATE INDEX IF NOT EXISTS idx_finding_events_key
     ON finding_events(finding_key, seen_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_events_observation_id
+    ON finding_events(observation_id);
 """
 
 
@@ -121,13 +127,37 @@ def connect_readonly(path: str | Path) -> sqlite3.Connection:
 
 
 def _bootstrap_schema(conn: sqlite3.Connection) -> None:
-    """Apply the DDL and stamp the version — idempotent across reconnects."""
+    """Apply the DDL and migrate a v1 store — idempotent across reconnects."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    if "finding_events" in tables:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(finding_events)")}
+        missing = {"observation_id", "observed_at", "ingested_at"} - columns
+        for column in sorted(missing):
+            conn.execute(f"ALTER TABLE finding_events ADD COLUMN {column} TEXT")
+        if missing:
+            conn.execute(
+                "UPDATE finding_events SET observed_at = seen_at, ingested_at = seen_at"
+            )
+
     conn.executescript(_SCHEMA_DDL)
-    recorded = conn.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0]
-    if recorded == 0:
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_finding_events_observation_id "
+        "ON finding_events(observation_id)"
+    )
+    recorded = conn.execute(
+        "SELECT MAX(version) FROM schema_version"
+    ).fetchone()[0]
+    if recorded is None:
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
         )
+    elif recorded < SCHEMA_VERSION:
+        conn.execute("UPDATE schema_version SET version = ?", (SCHEMA_VERSION,))
     conn.commit()
 
 
@@ -202,7 +232,76 @@ def report(conn: sqlite3.Connection, finding: Finding, *, seen_at: str) -> None:
             (finding.key,),
         ).fetchone()[0]
         kind = "regressed" if resolved_count > regressed_count else "reported"
-        _insert_event(conn, finding.key, seen_at, finding.source, finding.severity, kind)
+        _insert_event(
+            conn,
+            finding.key,
+            seen_at,
+            finding.source,
+            finding.severity,
+            kind,
+            observed_at=seen_at,
+            ingested_at=seen_at,
+        )
+
+
+def apply_historical_observation(
+    conn: sqlite3.Connection,
+    observation: HistoricalObservation,
+    *,
+    ingested_at: str,
+) -> bool:
+    """Apply one historical observation exactly once, without recurrence.
+
+    The stable observation id is the idempotency key. A new identity inserts the
+    finding and its event at observation time. A known identity changes neither
+    the current finding row nor the event trail, even when the current finding
+    is resolved.
+    """
+    with conn:
+        duplicate = conn.execute(
+            "SELECT 1 FROM finding_events WHERE observation_id = ?",
+            (observation.observation_id,),
+        ).fetchone()
+        if duplicate is not None:
+            return False
+
+        conn.execute(
+            """
+            INSERT INTO findings (
+                key, category, severity, status, summary, refs, notes, source,
+                occurrences, first_seen, last_seen, promoted_spec, resolved_at, resolution
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (key) DO NOTHING
+            """,
+            (
+                observation.observation.key,
+                observation.observation.category,
+                observation.observation.severity.value,
+                observation.observation.status.value,
+                observation.observation.summary,
+                json.dumps(observation.observation.refs),
+                observation.observation.notes,
+                observation.observation.source,
+                1,
+                observation.observed_at,
+                observation.observed_at,
+                observation.observation.promoted_spec,
+                observation.observation.resolved_at,
+                observation.observation.resolution,
+            ),
+        )
+        _insert_event(
+            conn,
+            observation.observation.key,
+            observation.observed_at,
+            observation.observation.source,
+            observation.observation.severity,
+            "reported",
+            observation_id=observation.observation_id,
+            observed_at=observation.observed_at,
+            ingested_at=ingested_at,
+        )
+    return True
 
 
 def _insert_finding(
@@ -241,13 +340,29 @@ def _insert_event(
     source: str,
     severity: Severity,
     kind: str,
+    *,
+    observation_id: str | None = None,
+    observed_at: str | None = None,
+    ingested_at: str | None = None,
 ) -> None:
     conn.execute(
         """
-        INSERT INTO finding_events (finding_key, seen_at, source, severity, kind)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO finding_events (
+            finding_key, seen_at, source, severity, kind,
+            observation_id, observed_at, ingested_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (key, seen_at, source, severity.value, kind),
+        (
+            key,
+            seen_at,
+            source,
+            severity.value,
+            kind,
+            observation_id,
+            observed_at,
+            ingested_at,
+        ),
     )
 
 
@@ -494,7 +609,8 @@ def list_events(conn: sqlite3.Connection, key: str) -> list[FindingEvent]:
     """The event history for one finding, oldest first."""
     rows = conn.execute(
         """
-        SELECT id, finding_key, seen_at, source, severity, kind
+        SELECT id, finding_key, seen_at, source, severity, kind,
+               observation_id, observed_at, ingested_at
         FROM finding_events
         WHERE finding_key = ?
         ORDER BY id
@@ -509,6 +625,9 @@ def list_events(conn: sqlite3.Connection, key: str) -> list[FindingEvent]:
             source=row[3],
             severity=Severity(row[4]),
             kind=row[5],
+            observation_id=row[6],
+            observed_at=row[7],
+            ingested_at=row[8],
         )
         for row in rows
     ]

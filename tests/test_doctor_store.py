@@ -62,10 +62,14 @@ EXPECTED_EVENTS_COLUMNS: list[tuple[str, str, int, int]] = [
     ("source", "TEXT", 1, 0),
     ("severity", "TEXT", 1, 0),
     ("kind", "TEXT", 1, 0),
+    ("observation_id", "TEXT", 0, 0),
+    ("observed_at", "TEXT", 0, 0),
+    ("ingested_at", "TEXT", 0, 0),
 ]
 
 EXPECTED_INDEXES = {
     "idx_finding_events_key",
+    "idx_finding_events_observation_id",
 }
 
 
