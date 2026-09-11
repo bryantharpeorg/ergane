@@ -35,12 +35,12 @@ no image deleted/pulled, and no production file changed for diagnosis.
 
 ## Existing seams to reuse
 
-- `factory/supervision/engine_upgrade.py:185` — `_retention_decision`: pure policy;
+- `factory/supervision/engine_upgrade.py:208` — `_retention_decision`: pure policy;
   currently protects only two strings and selects every other supplied image.
-- `factory/supervision/engine_upgrade.py:66` — `_ComposeDockerSeam`: its image
+- `factory/supervision/engine_upgrade.py:71` — `_ComposeDockerSeam`: its image
   listing is unfiltered; start computes an environment dictionary but `_compose`
   never forwards it. Capture the real subprocess arguments in regression tests.
-- `factory/supervision/engine_upgrade.py:236` — `upgrade`: currently stops,
+- `factory/supervision/engine_upgrade.py:275` — `upgrade`: currently stops,
   starts and verifies before reading rollback identity. Keep the injected Docker
   seam and existing thin CLI; extend only the needed preparation boundary.
 - `factory/supervision/engine_identity.py:29` — `EngineIdentity`, with actual

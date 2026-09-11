@@ -1,17 +1,21 @@
 ---
-state: ready
+state: deferred
 depends_on_landed:
   - 105-the-cli-and-the-image-share-one-version
   - 104-install-brings-the-container-up-configured
-fixes:
-  - container/engine-upgrade-can-delete-unrelated-images
-  - container/engine-upgrade-drops-the-requested-version-before-compose
-  - container/engine-upgrade-reads-the-rollback-identity-after-replacement
 ---
 
 # Feature Specification: an engine upgrade keeps its rollback image
 
 **Created**: 2026-09-10
+
+> **Partial execution record (2026-09-11):** US1 landed through PR 511 as
+> `2649bf6a96506fb41588aca84f60713d0e089dba`.  During its landing poll, a brief
+> GitHub API outage exhausted the activity retry budget and terminalized the
+> workflow with US2 and US3 still pending.  Do not redispatch this graph: the
+> remaining work, the landed US1 regression controls and all three finding keys
+> move to spec 174 under new story identities.  The mechanism is recorded as
+> `landing/transient-github-api-outage-kills-the-epic`.
 
 ## Why this repair exists
 
