@@ -8,6 +8,8 @@ import pytest
 
 from factory.workgraph.codex_events import (
     CodexEventDecoder,
+    EVIDENCE_JSON_LIMIT,
+    ORCHESTRATION_TEXT_LIMIT,
     EvidenceStatus,
     TurnOutcome,
 )
@@ -23,6 +25,19 @@ VALID_STREAM = "\n".join(
         '{"type":"item.completed","item":{"id":"item_3","type":"file_change","path":"README.md","status":"completed"}}',
         '{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"The repository is ready."}}',
         '{"type":"turn.completed","usage":{"input_tokens":24763,"cached_input_tokens":24448,"output_tokens":122,"reasoning_output_tokens":0}}',
+    ]
+)
+
+TOKEN_STREAM = "\n".join(
+    [
+        '{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}',
+        '{"type":"item.started","item":{"id":"item_1","type":"reasoning","text":"sk-proj-0123456789abcdef012345"}}',
+        '{"type":"item.completed","item":{"id":"item_2","type":"command_execution","text":"ghp_0123456789abcdefghij0123456789"}}',
+        '{"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dG9rZW4tYW5kLXNpZ25hdHVyZQ"}}',
+        '{"type":"item.completed","item":{"id":"item_4","type":"error","message":"AKIAIOSFODNN7EXAMPLE"}}',
+        '{"type":"turn.started"}',
+        '{"type":"error","message":"Bearer AKIAIOSFODNN7EXAMPLE-0123456789"}',
+        '{"type":"turn.failed","error":{"message":"Bearer AKIAIOSFODNN7EXAMPLE-0123456789"}}',
     ]
 )
 
@@ -196,6 +211,44 @@ def test_truncated_final_line_is_archived_and_marked_incomplete() -> None:
     assert evidence.current_turn_started is True
     assert evidence.turn_outcome is TurnOutcome.PENDING
     assert evidence.agent_messages == ()
+
+
+def test_orchestration_evidence_redacts_token_shapes_but_keeps_raw_archive() -> None:
+    raw = io.BytesIO()
+
+    evidence = decode(TOKEN_STREAM + "\n", raw=raw)
+    payload = evidence.redacted_json()
+
+    assert raw.getvalue().decode() == TOKEN_STREAM + "\n"
+    assert "sk-proj-0123456789abcdef012345" not in payload
+    assert "ghp_0123456789abcdefghij0123456789" not in payload
+    assert "eyJhbGciOiJIUzI1NiJ9" not in payload
+    assert "AKIAIOSFODNN7EXAMPLE" not in payload
+    assert "[REDACTED]" in payload
+    assert evidence.agent_messages[0].text == "Bearer [REDACTED]"
+    assert evidence.fatal_events[0].message == "Bearer [REDACTED]"
+    assert evidence.redacted_json() == payload
+
+
+def test_orchestration_fields_and_serialization_are_bounded() -> None:
+    decoder = CodexEventDecoder()
+    for index in range(64):
+        decoder.feed(
+            '{"type":"item.completed","item":{"id":"'
+            + f"item_{index}"
+            + '","type":"agent_message","text":"'
+            + "A" * (ORCHESTRATION_TEXT_LIMIT * 4)
+            + '"}}\n'
+        )
+    evidence = decoder.finish()
+    payload = evidence.redacted_json()
+
+    assert len(evidence.agent_messages) == 16
+    assert all(
+        len(message.text) <= ORCHESTRATION_TEXT_LIMIT
+        for message in evidence.agent_messages
+    )
+    assert len(payload) <= EVIDENCE_JSON_LIMIT
 
 
 def test_partial_jsonl_chunk_is_archived_and_reassembled() -> None:

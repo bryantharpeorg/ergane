@@ -3,9 +3,32 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import BinaryIO
+from collections import deque
+from dataclasses import asdict
+from typing import BinaryIO, Deque
+
+
+ORCHESTRATION_TEXT_LIMIT = 1_024
+EVIDENCE_JSON_LIMIT = 128 * 1_024
+MAX_AGENT_MESSAGES = 16
+MAX_ITEMS = 16
+MAX_FATAL_EVENTS = 8
+MAX_REASONS = 16
+REASON_TEXT_LIMIT = 512
+
+
+TOKEN_PATTERNS = (
+    re.compile(
+        r"(?i)\b((?:bearer|x-api-key)\s*[=:\s]?)[A-Za-z0-9._~+/-]{16,}"
+    ),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+)
 
 
 class TurnOutcome(StrEnum):
@@ -61,6 +84,13 @@ class CodexExecutionEvidence:
     status: EvidenceStatus = EvidenceStatus.INCOMPLETE
     reasons: tuple[str, ...] = ()
 
+    def redacted_json(self) -> str:
+        """Serialize evidence for orchestration, with no raw event material."""
+        payload = asdict(self)
+        payload["turn_outcome"] = self.turn_outcome.value
+        payload["status"] = self.status.value
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
 
 class CodexEventDecoder:
     """Incremental decoder for stdout emitted by ``codex exec --json``."""
@@ -71,14 +101,17 @@ class CodexEventDecoder:
         self._thread_id: str | None = None
         self._turn_started = False
         self._turn_outcome = TurnOutcome.PENDING
-        self._items: list[CodexItem] = []
-        self._agent_messages: list[CodexAgentMessage] = []
-        self._fatal_events: list[CodexFatalEvent] = []
+        self._items: Deque[CodexItem] = deque(maxlen=MAX_ITEMS)
+        self._agent_messages: Deque[CodexAgentMessage] = deque(
+            maxlen=MAX_AGENT_MESSAGES
+        )
+        self._fatal_events: Deque[CodexFatalEvent] = deque(maxlen=MAX_FATAL_EVENTS)
         self._fatal_types: dict[str, list[str]] = {}
         self._usage: CodexUsage | None = None
         self._terminal_seen = False
         self._incomplete_reasons: list[str] = []
-        self._reasons: list[str] = []
+        self._reasons: Deque[str] = deque(maxlen=MAX_REASONS)
+        self._incomplete_reasons: Deque[str] = deque(maxlen=MAX_REASONS)
 
     def feed(self, data: bytes | str) -> None:
         if isinstance(data, str):
@@ -148,11 +181,12 @@ class CodexEventDecoder:
             return
         explicit_thread_id = event.get("thread_id")
         if isinstance(explicit_thread_id, str) and explicit_thread_id:
+            safe_thread_id = _safe_text(explicit_thread_id)
             if self._thread_id is None:
-                self._thread_id = explicit_thread_id
+                self._thread_id = safe_thread_id
             elif explicit_thread_id != self._thread_id:
                 self._add_invalid_reason(
-                    f"conflicting-thread-id:{explicit_thread_id}"
+                    f"conflicting-thread-id:{safe_thread_id}"
                 )
                 return
         if event_type == "thread.started":
@@ -184,15 +218,19 @@ class CodexEventDecoder:
             if isinstance(item, dict):
                 self._read_item(item)
             return
-        self._add_incomplete_reason(f"unknown-event:{event_type}")
+        self._add_incomplete_reason(
+            f"unknown-event:{_safe_text(event_type, REASON_TEXT_LIMIT)}"
+        )
 
     def _add_invalid_reason(self, reason: str) -> None:
+        reason = _safe_text(reason, REASON_TEXT_LIMIT)
         if reason not in self._reasons:
             self._reasons.append(reason)
 
     def _add_incomplete_reason(self, reason: str) -> None:
         if reason not in self._incomplete_reasons:
             self._incomplete_reasons.append(reason)
+
 
     def _read_usage(self, usage: object) -> None:
         if not isinstance(usage, dict):
@@ -216,6 +254,7 @@ class CodexEventDecoder:
         error = event.get("error", event)
         message = error.get("message") if isinstance(error, dict) else None
         if isinstance(message, str):
+            message = _safe_text(message)
             for fatal in self._fatal_events:
                 if fatal.message == message:
                     if event_type not in fatal.event_types:
@@ -239,6 +278,30 @@ class CodexEventDecoder:
         if not isinstance(status, str):
             status = ""
         if item_type == "agent_message":
-            self._agent_messages.append(CodexAgentMessage(item_id, text))
+            self._agent_messages.append(
+                CodexAgentMessage(_safe_text(item_id), _safe_text(text))
+            )
             return
-        self._items.append(CodexItem(item_type, item_id, status, text))
+        self._items.append(
+            CodexItem(
+                _safe_text(item_type, REASON_TEXT_LIMIT),
+                _safe_text(item_id),
+                _safe_text(status, REASON_TEXT_LIMIT),
+                _safe_text(text),
+            )
+        )
+
+def _safe_text(value: str, limit: int = ORCHESTRATION_TEXT_LIMIT) -> str:
+    redacted = value
+    for pattern in TOKEN_PATTERNS:
+        redacted = pattern.sub(
+            lambda match: (
+                f"{match.group(1)}[REDACTED]"
+                if match.lastindex == 1
+                else "[REDACTED]"
+            ),
+            redacted,
+        )
+    if len(redacted) > limit:
+        return redacted[: limit - 1] + "…"
+    return redacted
