@@ -7,6 +7,8 @@ from pathlib import Path
 
 from factory.attestation.models import GitFileChange
 from factory.verify.models import GateResult
+from factory.verify.gates import scrubbed_env
+from factory.verify.worktree_snapshot import snapshot_tree
 
 LOG_TAIL_LIMIT = 8192
 
@@ -27,8 +29,14 @@ def capture_attempt_evidence(
     """Read exact refs and the attempted diff into report-safe data."""
     cwd = Path(worktree_path)
     base_commit = _rev_parse(cwd, base_ref)
-    attempted_commit = _rev_parse(cwd, attempted_ref)
-    verified_commit = _rev_parse(cwd, verified_ref)
+    if attempted_ref == "worktree":
+        attempted_commit = _worktree_tree(cwd)
+    else:
+        attempted_commit = _rev_parse(cwd, attempted_ref)
+    if verified_ref == "worktree":
+        verified_commit = attempted_commit
+    else:
+        verified_commit = _rev_parse(cwd, verified_ref)
     files = _file_manifest(cwd, base_commit, attempted_commit)
     gate_tail = "\n".join(f"{gate.name}: {gate.output_tail}" for gate in gate_results)
     log_truncated = any(gate.output_truncated for gate in gate_results)
@@ -55,10 +63,21 @@ def capture_attempt_evidence(
             gate.command for gate in gate_results if gate.name == "test"
         ),
         "coverage_status": "absent",
-    }
+}
+
+
+def _worktree_tree(cwd: Path) -> str:
+    """Hash uncommitted worktree content without touching its index."""
+    snapshot = snapshot_tree(cwd, env=scrubbed_env())
+    if snapshot.error or not snapshot.tree_id:
+        raise RuntimeError(f"attempt worktree could not be snapshotted: {snapshot.error}")
+    return snapshot.tree_id
 
 
 def _rev_parse(cwd: Path, ref: str) -> str:
+    """Resolve a commit ref, leaving tree ids untouched."""
+    if len(ref) == 40 and all(char in "0123456789abcdef" for char in ref.lower()):
+        return ref
     completed = subprocess.run(
         ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
         cwd=cwd,

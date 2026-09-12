@@ -73,6 +73,7 @@ from temporalio.exceptions import ApplicationError
 
 from factory.verify import diffcheck, gates, judge, store
 from factory.attestation import AttemptGitEvidence, GitFileChange, record_attempt_evidence
+from factory.attestation import record_scoring_evaluation
 from factory.verify.criteria import CriteriaParseError, load_criteria
 from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.judge import DEFAULT_MAX_JUDGE_RETRIES
@@ -478,6 +479,10 @@ class RunJudgeInput:
     prior_feedback: str | None = None
     max_judge_retries: int = DEFAULT_MAX_JUDGE_RETRIES
     gate_results: list[GateResult] = field(default_factory=list)
+    journal_path: str | None = None
+    scoring_job_id: str = "unattributed"
+    invocation_id: str = ""
+    tested_revision: str = ""
 
 
 @activity.defn
@@ -507,6 +512,14 @@ async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
             max_judge_retries=request.max_judge_retries,
             transport=judge_transport(),
             retry_backoff_s=JUDGE_RETRY_BACKOFF_S,
+            scoring_job_id=request.scoring_job_id,
+            invocation_id=request.invocation_id,
+            tested_revision=request.tested_revision,
+            evaluation_sink=(
+                lambda record: record_scoring_evaluation(request.journal_path, record)
+                if request.journal_path
+                else None
+            ),
         )
     except judge.JudgeUnavailableError as exc:
         # The library already scrubbed its own message; nothing is added here

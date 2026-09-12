@@ -182,6 +182,8 @@ from factory.activities.usage_activities import (
     key_alias_for,
 )
 from factory.activities.verify_activities import (
+    CaptureAttemptEvidenceInput,
+    capture_attempt_evidence,
     JUDGE_UNAVAILABLE,
     CheckOutputInput,
     DetectQuestionInput,
@@ -1505,6 +1507,14 @@ class ScriptedWorld:
             script.diff_requests.append(request)
             return DIFF_TEXT
 
+        @activity.defn(name="capture_attempt_evidence")
+        async def capture_attempt_evidence(
+            request: CaptureAttemptEvidenceInput,
+        ) -> None:
+            script._log(
+                "capture_attempt_evidence", _node_of_worktree(request.worktree_path)
+            )
+
         @activity.defn(name="run_judge")
         async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
             script._log("run_judge")
@@ -1812,6 +1822,7 @@ class ScriptedWorld:
             run_gates,
             check_output,
             read_worktree_diff,
+            capture_attempt_evidence,
             run_judge,
             record_verification,
             teardown_attempt,
@@ -2083,6 +2094,7 @@ async def test_one_nodes_lifecycle_composes_the_verification_contract(
         "detect_operator_question_activity",
         "run_gates",
         "check_output",
+        "capture_attempt_evidence",
         "record_verification",
         "teardown_attempt:implementer",
         "salvage_worktree",
@@ -3277,6 +3289,7 @@ async def test_pause_blocks_new_dispatch_while_the_in_flight_node_finishes(
             "detect_operator_question_activity",
             "run_gates",
             "check_output",
+            "capture_attempt_evidence",
             "record_verification",
             "teardown_attempt:implementer",
             "salvage_worktree",
@@ -4262,6 +4275,7 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
         f"issue_attempt_key:{JUDGE_PERSONA}",
         "run_judge",
         f"teardown_attempt:{JUDGE_PERSONA}",
+        "capture_attempt_evidence",
         "record_verification",
         "teardown_attempt:implementer",
         "salvage_worktree",
@@ -4672,6 +4686,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "detect_operator_question_activity",
         "run_gates",
         "check_output",
+        "capture_attempt_evidence",
         "record_verification",
         "teardown_attempt:implementer",
         "salvage_worktree",
@@ -4686,6 +4701,7 @@ async def test_checks_failed_syncs_reenqueues_and_increments_recovery(
         "run_agent_attempt",
         "run_gates",
         "check_output",
+        "capture_attempt_evidence",
         "record_verification",
         "teardown_attempt:implementer",
         "compare_trees",

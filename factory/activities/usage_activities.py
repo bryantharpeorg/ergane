@@ -371,6 +371,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             spec_ref=request.spec_ref,
             issued_at=_now_iso(),
             invocation_id=request.invocation_id,
+            scoring_job_id=request.scoring_job_id or "",
         )
 
     if _is_direct_mode():
@@ -388,6 +389,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             spec_ref=request.spec_ref,
             issued_at=_now_iso(),
             invocation_id=request.invocation_id,
+            scoring_job_id=request.scoring_job_id or "",
         )
 
     try:
@@ -419,6 +421,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
                     if request.invocation_id
                     else {}
                 ),
+                **({"scoring_job_id": request.scoring_job_id} if request.scoring_job_id else {}),
             },
             ttl=request.ttl,
         )
@@ -441,6 +444,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         spec_ref=request.spec_ref,
         issued_at=_now_iso(),
         invocation_id=request.invocation_id,
+        scoring_job_id=request.scoring_job_id or "",
     )
 
 

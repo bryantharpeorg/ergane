@@ -192,6 +192,8 @@ with workflow.unsafe.imports_passed_through():
         RecordExternalCompletionInput,
         RecordVerificationInput,
         RunGatesInput,
+        CaptureAttemptEvidenceInput,
+        capture_attempt_evidence,
         RunJudgeInput,
         SnapshotCriteriaInput,
         check_output,
@@ -2725,6 +2727,7 @@ class EpicWorkflow:
         *,
         provenance: str | None = None,
         routing: ResolvedPersona | None = None,
+        tested_revision: str = "",
     ) -> tuple[VerificationResult, JudgeVerdict | None]:
         """Gates, then output, then — only if it can still matter — the judge.
 
@@ -2808,6 +2811,7 @@ class EpicWorkflow:
                 # unscoreable — the judge was asked to guess an answer the
                 # factory had already written down.
                 gate_results,
+                tested_revision,
             )
 
         gate_names = tuple(r.name for r in gate_results)
@@ -2861,6 +2865,26 @@ class EpicWorkflow:
         if provenance is not None:
             result = replace(result, provenance=provenance)
 
+        # Patched: replay-032 histories were captured before exact Git evidence
+        # collection existed and must not acquire a new activity command.
+        if workflow.patched("attempt-git-evidence"):
+            await workflow.execute_activity(
+                capture_attempt_evidence,
+                CaptureAttemptEvidenceInput(
+                    evidence_id=f"{dispatch}:{node.id}:{attempt}:git",
+                    epic_id=request.graph.epic_id,
+                    node_id=node.id,
+                    attempt=attempt,
+                    dispatch=dispatch,
+                    worktree_path=prepared.path,
+                    base_ref=prepared.base_ref,
+                    attempted_ref="worktree",
+                    verified_ref="worktree",
+                    gate_results=list(gate_results),
+                ),
+                **_GIT,
+            )
+
         recorded = await workflow.execute_activity(
             record_verification,
             RecordVerificationInput(
@@ -2883,6 +2907,7 @@ class EpicWorkflow:
         judge: ResolvedPersona,
         prior_feedback: str | None,
         gate_results: Sequence[GateResult],
+        tested_revision: str,
     ) -> JudgeVerdict:
         """Score the diff, on one key minted and revoked for this scoring alone.
 
@@ -2958,6 +2983,7 @@ class EpicWorkflow:
                     judge_attempt,
                     prior_feedback,
                     gate_results,
+                    tested_revision,
                 )
                 if not judge_should_be_reasked(verdict, gate_results):
                     break
@@ -3089,6 +3115,7 @@ class EpicWorkflow:
         judge_attempt: int,
         prior_feedback: str | None,
         gate_results: Sequence[GateResult],
+        tested_revision: str,
     ) -> JudgeVerdict:
         """One judge completion, with an outage answered rather than raised.
 
@@ -3111,6 +3138,10 @@ class EpicWorkflow:
                     prior_feedback=prior_feedback,
                     max_judge_retries=request.config.max_judge_retries,
                     gate_results=list(gate_results),
+                    scoring_job_id=lease.scoring_job_id
+                    or f"{lease.epic_id}:{lease.node_id}:{lease.attempt}:score",
+                    invocation_id=lease.invocation_id,
+                    tested_revision=tested_revision,
                 ),
                 **_JUDGE,
             )

@@ -9,13 +9,14 @@ from typing import Any, Callable
 import pytest
 from temporalio.testing import ActivityEnvironment
 
-from factory.activities import usage_activities
+from factory.activities import usage_activities, verify_activities
 from factory.activities.usage_activities import (
     ERGANE_LEDGER_PATH_ENV,
     IssueKeyInput,
     issue_attempt_key,
     teardown_attempt,
 )
+from factory.activities.verify_activities import RunJudgeInput
 from factory.attestation import read_scoring_evaluations, read_usage_evidence
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import Termination
@@ -246,3 +247,105 @@ async def test_one_scoring_job_has_one_usage_total_and_unknown_request_metrics(
     assert evidence[0].metrics["request_count"].value is None
     assert evidence[0].metrics["request_count"].complete is False
     assert read_scoring_evaluations(journal) == ()
+
+
+async def test_run_judge_activity_persists_with_us1_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = FakeJudgeProxy()
+    proxy.reply("not a verdict object")
+    proxy.reply(
+        verdict_json_(
+            verdict="pass",
+            results=(
+                ("US2-S1", True, "yes"),
+                ("US2-S2", True, "yes"),
+            ),
+        )
+    )
+    journal = tmp_path / "attestation.db"
+    monkeypatch.setattr(verify_activities, "judge_transport", lambda: proxy.transport)
+    monkeypatch.setattr(verify_activities, "JUDGE_RETRY_BACKOFF_S", 0.0)
+
+    first = await ActivityEnvironment().run(
+        verify_activities.run_judge,
+        RunJudgeInput(
+            criteria=CRITERIA,
+            diff_text="diff",
+            virtual_key=proxy.virtual_key,
+            proxy_url=proxy.base_url,
+                model_alias="judge-model",
+                judge_attempt=1,
+                max_judge_retries=1,
+            journal_path=str(journal),
+            scoring_job_id="us2:1:score",
+            invocation_id="run-167:us2:judge:score:1",
+            tested_revision="attempt-tree-1",
+        ),
+    )
+
+    assert first.outcome.value == "RETRY"
+    second = await ActivityEnvironment().run(
+        verify_activities.run_judge,
+        RunJudgeInput(
+            criteria=CRITERIA,
+            diff_text="diff",
+            virtual_key=proxy.virtual_key,
+            proxy_url=proxy.base_url,
+            model_alias="judge-model",
+            judge_attempt=2,
+            prior_feedback=first.feedback,
+            max_judge_retries=1,
+            journal_path=str(journal),
+            scoring_job_id="us2:1:score",
+            invocation_id="run-167:us2:judge:score:1",
+            tested_revision="attempt-tree-1",
+        ),
+    )
+    assert second.outcome.value == "PASS"
+    records = read_scoring_evaluations(journal)
+    assert [(record.status, record.scoring_call_ordinal) for record in records] == [
+        ("parse_error", 1),
+        ("valid", 2),
+    ]
+    assert all(record.scoring_job_id == "us2:1:score" for record in records)
+    assert all(record.invocation_id == "run-167:us2:judge:score:1" for record in records)
+    assert all(record.tested_revision == "attempt-tree-1" for record in records)
+    assert records[0].parse_error
+
+
+async def test_run_judge_activity_persists_transport_redelivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proxy = FakeJudgeProxy()
+    proxy.fail_next(times=1)
+    proxy.reply(
+        verdict_json_(
+            verdict="pass",
+            results=(("US2-S1", True, "yes"), ("US2-S2", True, "yes")),
+        )
+    )
+    journal = tmp_path / "attestation.db"
+    monkeypatch.setattr(verify_activities, "judge_transport", lambda: proxy.transport)
+    monkeypatch.setattr(verify_activities, "JUDGE_RETRY_BACKOFF_S", 0.0)
+
+    await ActivityEnvironment().run(
+        verify_activities.run_judge,
+        RunJudgeInput(
+            criteria=CRITERIA,
+            diff_text="diff",
+            virtual_key=proxy.virtual_key,
+            proxy_url=proxy.base_url,
+            model_alias="judge-model",
+            max_judge_retries=0,
+            journal_path=str(journal),
+            scoring_job_id="us2:1:score",
+            invocation_id="run-167:us2:judge:score:1",
+            tested_revision="attempt-tree-1",
+        ),
+    )
+
+    record = read_scoring_evaluations(journal)[0]
+    assert len(record.deliveries) == 2
+    assert record.deliveries[0].status == "transport_error"
+    assert record.deliveries[1].status == "delivered"
