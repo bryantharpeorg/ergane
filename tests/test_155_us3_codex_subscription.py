@@ -73,12 +73,19 @@ SPEC_REF = "155-codex-runs-as-a-second-runner/us3"
 #: persona registry's (FR-010).
 GENEROUS_TIMEOUT_S = 60
 
-#: The measured `auth.json` shape (155 trap 3, 2026-09-08 on 0.153.4):
-#: `codex login` writes these fields for an API-key login, and a ChatGPT login
-#: adds token fields beside them. The adapter copies bytes and parses nothing —
-#: which login produced the file changes nothing it does — so the test plants
-#: the measured shape and asserts on the copy, never on a parse.
-FAKE_AUTH_JSON = {"auth_mode": "apikey", "OPENAI_API_KEY": "sk-fake-operator-key"}
+FAKE_AUTH_JSON = {
+    "auth_mode": "chatgpt",
+    "OPENAI_API_KEY": None,
+    "tokens": {
+        "id_token": (
+            "synthetic-id-token.eyJleHAiOjk5OTk5OTk5OTl9.synthetic-signature"
+        ),
+        "access_token": "synthetic-access-token",
+        "refresh_token": "synthetic-refresh-token",
+        "account_id": "synthetic-account-id",
+    },
+    "last_refresh": "2026-01-01T00:00:00+00:00",
+}
 
 
 # --- setup -------------------------------------------------------------------
@@ -288,7 +295,7 @@ async def test_a_subscription_child_env_carries_no_credential_at_all(
 # --- US3-S2: credential_source names the file it came from ----------------------
 
 
-async def test_the_recorded_credential_source_names_the_file_it_came_from(
+async def test_the_recorded_credential_source_is_redacted_provenance(
     adapter: Any,
     attempt: Callable[..., AttemptContext],
     worktree: Path,
@@ -296,18 +303,25 @@ async def test_the_recorded_credential_source_names_the_file_it_came_from(
     node_home: Path,
     operator_home: Path,
 ) -> None:
-    """US3-S2 / FR-006: the attempt records where its credential came from,
-    naming the discovered file — so a subscription run is distinguishable from
-    a gateway run in the evidence, and a relocated CODEX_HOME is legible in
-    the record rather than inferred."""
+    """US3-S2 / FR-006, narrowed by 159: the attempt records redacted
+    provenance, so a subscription run is distinguishable from a gateway run
+    without an operator home path in the workflow record."""
     credential_path = _write_auth_json(operator_home)
     write_control(node_home)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
     assert result.termination == Termination.COMPLETED
-    assert result.credential_source == str(credential_path)
-    assert "auth.json" in (result.credential_source or "")
+    assert result.credential_source is not None
+    provenance = json.loads(result.credential_source)
+    assert provenance == {
+        "credential_mode": "managed-chatgpt",
+        "generation": 1,
+        "owner_id": "codex-factory",
+        "path_identity": provenance["path_identity"],
+        "source_kind": "codex-file",
+    }
+    assert str(credential_path) not in result.credential_source
 
 
 async def test_a_gateway_run_records_no_credential_source(

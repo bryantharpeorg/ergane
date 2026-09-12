@@ -94,6 +94,11 @@ from factory.verify.toolchain import (
     system_tree_argv,
 )
 from factory.workgraph.detector import compare_and_report, capture_start
+from factory.workgraph.codex_credential import (
+    CredentialDeclaration,
+    credential_provenance_json,
+    validate_codex_credential,
+)
 from factory.workgraph.codex_events import INVALID_JSON, decode_codex_events
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
@@ -975,6 +980,7 @@ def discover_codex_credential(
     *,
     operator_home: Path | None = None,
     environ: Mapping[str, str] | None = None,
+    declaration: CredentialDeclaration | None = None,
 ) -> Path | None:
     """Find the operator's Codex subscription credential on this host.
 
@@ -988,6 +994,9 @@ def discover_codex_credential(
        so a worker host that declares it keeps its credential there
     2. ``~/.codex/auth.json`` — the default, the path the 2026-09-08 probe
        found the operator's ChatGPT sign-in at
+
+    An explicit declaration disables that fallback entirely: the declared path
+    is either returned or missing, never replaced by an interactive login.
 
     Returns ``None`` when neither exists; the caller owns the refusal, the way
     Claude's discovery's caller does.
@@ -1005,6 +1014,8 @@ def discover_codex_credential(
         operator_home = _operator_home()
     source = os.environ if environ is None else environ
 
+    if declaration is not None:
+        return declaration.source_path if declaration.source_path.is_file() else None
     candidates: list[Path] = []
     codex_home = source.get(CODEX_HOME_ENV)
     if codex_home:
@@ -2145,17 +2156,28 @@ class CodexAdapter:
                     "Run `codex login` on the worker host."
                 ),
             )
-        # 155-US3-S3: no expiry is read and no rotation is measured — auth.json
-        # carries no expiry field the CLI honours (measured shape, trap 3), and
-        # the rotation hazard is inherited, not solved. See the discovery's
-        # docstring for the hazard this stage carries unmeasured.
+        validation = validate_codex_credential(
+            CredentialDeclaration(
+                owner_id="codex-factory",
+                source_path=credential_path,
+                generation=1,
+            ),
+            now=datetime.now(timezone.utc),
+        )
+        if not validation.admitted:
+            return CredentialStage(
+                gateway=False,
+                path=None,
+                error=validation.refusal,
+            )
         return CredentialStage(
             gateway=False,
             path=credential_path,
-            # The source names the file it came from (US3-S2): a subscription
-            # run is distinguishable from a gateway run in the evidence, and a
-            # relocated CODEX_HOME is legible in the record.
-            source=str(credential_path),
+            source=(
+                credential_provenance_json(validation.provenance)
+                if validation.provenance is not None
+                else None
+            ),
         )
 
     def _seed_home(
