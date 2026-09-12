@@ -91,7 +91,8 @@ from factory.verify.question import (
     QUESTION_HEADING,  # noqa: F401  -- re-exported for the prompt contract (T008)
     QuestionMarker,
     TranscriptReadError,
-    detect_operator_question,
+    detect_operator_question_text,
+    final_message_from_archive,
 )
 
 #: The activity error type for a spec the grammar refuses (spec US1). The
@@ -384,9 +385,10 @@ async def detect_operator_question_activity(
     ladder's — spends it.
     """
     try:
-        marker = await asyncio.to_thread(
-            detect_operator_question, Path(request.transcript_path)
+        final_message = await asyncio.to_thread(
+            final_message_from_archive, request.transcript_path
         )
+        marker = detect_operator_question_text(final_message or "")
     except TranscriptReadError as exc:
         raise ApplicationError(str(exc), type=DETECT_FAILED) from exc
     return marker if marker is not None else QuestionMarker(is_question=False)

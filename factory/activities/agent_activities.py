@@ -66,7 +66,7 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Sequence
 
 from temporalio import activity
 from temporalio.exceptions import ApplicationError, CancelledError
@@ -84,6 +84,7 @@ from factory.verify.factory_yaml import (
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import (
     CODEX_STDERR_NAME,
+    CODEX_EVENTS_NAME,
     DEFAULT_HEARTBEAT_INTERVAL_S,
     SESSION_ID_REFUSAL_MARKER,
     STDOUT_LOG_NAME,
@@ -91,6 +92,7 @@ from factory.workgraph.adapter import (
     adapter_for,
     transcript_dir,
 )
+from factory.workgraph.codex_events import CodexExecutionEvidence, decode_codex_events
 from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
@@ -556,7 +558,9 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         # measured stderr 401); interpreting them is this activity's (FR-012).
         # The reclassification is what keeps a refused run from reading as a
         # silent diffless success — 070's lesson, second runner over.
-        result = _classify_auth_failure(adapter, result)
+        result = _classify_auth_failure(
+            adapter, result, evidence=_result_evidence(result)
+        )
         # 095-US1 FR-001: an attempt the adapter classified structurally as
         # pre-agent gets the dying process's own line attached to it, for the
         # operator and for nothing else. Enrichment, strictly after
@@ -596,7 +600,26 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
                                     context.epic_id, context.node_id, context.attempt)
 
 
-def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult:
+def _typed_auth_failure(
+    evidence: CodexExecutionEvidence | None, markers: Sequence[str]
+) -> bool:
+    """Whether current fatal evidence alone proves a pre-agent auth refusal."""
+    if evidence is None or evidence.agent_took_a_turn:
+        return False
+    sources = {event.source for event in evidence.fatal_events}
+    if not {"error", "turn.failed"}.issubset(sources):
+        return False
+    messages = {event.message.strip() for event in evidence.fatal_events}
+    return any(marker.strip() in messages for marker in markers)
+
+
+def _classify_auth_failure(
+    adapter: Any,
+    result: AdapterResult,
+    *,
+    evidence: CodexExecutionEvidence | None = None,
+    markers: Sequence[str] | None = None,
+) -> AdapterResult:
     """Reclassify an AGENT_ERROR whose log carries the CLI's refusal marker.
 
     The adapter itself classifies only by exit status (FR-012). The one
@@ -629,7 +652,9 @@ def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult
             log_text += log_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
-    markers = _declared_refusal_markers(adapter)
+    markers = tuple(markers) if markers is not None else _declared_refusal_markers(adapter)
+    if _typed_auth_failure(evidence, markers):
+        return replace(result, termination=Termination.PRE_AGENT_FAILURE)
     if not any(marker in log_text for marker in markers):
         return result
 
@@ -720,6 +745,15 @@ def _attach_pre_agent_detail(result: AdapterResult) -> AdapterResult:
     if not result.transcript_path:
         return result
 
+    evidence = _result_evidence(result)
+    if evidence is not None:
+        fatal = next(
+            (event.message for event in reversed(evidence.fatal_events) if event.message.strip()),
+            "",
+        )
+        if fatal:
+            return replace(result, detail=fatal[:PRE_AGENT_DETAIL_LIMIT])
+
     log_path = Path(result.transcript_path) / STDOUT_LOG_NAME
     try:
         log_text = log_path.read_text(encoding="utf-8", errors="replace")
@@ -730,6 +764,18 @@ def _attach_pre_agent_detail(result: AdapterResult) -> AdapterResult:
     if not lines:
         return result
     return replace(result, detail=lines[-1][:PRE_AGENT_DETAIL_LIMIT])
+
+
+def _result_evidence(result: AdapterResult) -> CodexExecutionEvidence | None:
+    """The current typed stream when the attempt archive carries one."""
+    if not result.transcript_path:
+        return None
+    raw_path = Path(result.transcript_path) / CODEX_EVENTS_NAME
+    try:
+        raw = raw_path.read_bytes()
+    except OSError:
+        return None
+    return decode_codex_events(raw.splitlines(keepends=True))
 
 
 # --- read_worktree_diff (what the judge scores) -------------------------------

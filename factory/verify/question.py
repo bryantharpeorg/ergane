@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Sequence
 
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
+from factory.workgraph.codex_events import decode_codex_events
 
 #: The fixed heading the agent writes in its final message (spec § US1). Exactly
 #: two hashes — a level-2 heading, not a mention, not a level-3 subsection. The
@@ -113,6 +114,20 @@ def detect_operator_question(transcript_path: Path) -> QuestionMarker | None:
     return QuestionMarker(is_question=True, text=body)
 
 
+def detect_operator_question_text(final_message: str) -> QuestionMarker | None:
+    """Detect a question in one current final message, without reading disk."""
+    lines = final_message.splitlines()
+    in_code = mask_fences(lines)
+    marker_index = _last_marker(lines, in_code)
+    if marker_index is None:
+        return None
+    end = section_end(lines, in_code, marker_index, level=_MARKER_LEVEL)
+    body = "\n".join(lines[marker_index + 1 : end]).strip()
+    if not body:
+        return None
+    return QuestionMarker(is_question=True, text=body)
+
+
 # --- the read ----------------------------------------------------------------
 
 
@@ -144,6 +159,28 @@ def _read_stdout(transcript_path: Path) -> str:
 #: path the adapter points at, and coupling the two would make the read depend on
 #: the writer's import graph.
 STDOUT_LOG_NAME = "stdout.log"
+CODEX_EVENTS_NAME = "codex-events.jsonl"
+
+
+def final_message_from_archive(transcript_path: Path | str) -> str | None:
+    """Read one current final message, from typed evidence or compatibility text."""
+    archive = Path(transcript_path)
+    if not archive.is_dir():
+        raise TranscriptReadError(f"transcript directory not found: {archive}")
+    events = archive / CODEX_EVENTS_NAME
+    if events.is_file():
+        try:
+            evidence = decode_codex_events(events.read_bytes().splitlines(keepends=True))
+        except OSError as exc:
+            raise TranscriptReadError(f"cannot read transcript {events}: {exc}") from exc
+        return evidence.final_message.text if evidence.final_message else None
+    stdout = archive / STDOUT_LOG_NAME
+    if not stdout.is_file():
+        raise TranscriptReadError(f"stdout.log not found in transcript: {stdout}")
+    try:
+        return stdout.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise TranscriptReadError(f"cannot read transcript {stdout}: {exc}") from exc
 
 
 # --- the scan ----------------------------------------------------------------
