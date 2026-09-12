@@ -1,0 +1,19 @@
+request identity: 134-a-gate-declares-the-artifact-it-writes-and-the-platform-carries-it us5 1 evidence-run-1
+destination: /tmp/us5-durable-mfdke6ek/runtime/artifacts/134-a-gate-declares-the-artifact-it-writes-and-the-platform-carries-it/us5/1
+absolute: True
+outside worktree: True
+gate status: PASS
+artifact: GateArtifact(gate='test', path='ignored-report.txt', type=<ArtifactType.COVERAGE: 'coverage'>, present=True, size=14, stored_path='/tmp/us5-durable-mfdke6ek/runtime/artifacts/134-a-gate-declares-the-artifact-it-writes-and-the-platform-carries-it/us5/1/captures/test/3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c/cfc018720d8e8623665f090bc72e82b1f6c8f6e8a04aa262cff93ae90d2d3e82', status='permitted', provenance='new', dispatch='evidence-run-1', capture_id='3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c', digest='cfc018720d8e8623665f090bc72e82b1f6c8f6e8a04aa262cff93ae90d2d3e82', reason=None)
+destination listing before worktree removal:
+  captures
+  captures/test
+  captures/test/3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c
+  captures/test/3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c/cfc018720d8e8623665f090bc72e82b1f6c8f6e8a04aa262cff93ae90d2d3e82
+  captures/test/3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c/manifest.json
+destination listing after worktree removal:
+  captures
+  captures/test
+  captures/test/3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c
+  captures/test/3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c/cfc018720d8e8623665f090bc72e82b1f6c8f6e8a04aa262cff93ae90d2d3e82
+  captures/test/3bcbb3482f1e14a1024d7bb5933935160c2288ecdd76ad29c057bdc270179f2c/manifest.json
+stored bytes: durable bytes

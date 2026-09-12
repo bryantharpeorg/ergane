@@ -311,6 +311,11 @@ class GateArtifact:
     stored_path: str | None
     status: str
     provenance: str
+    #: 134-US5. The dispatch that captured the bytes and the invocation-scoped
+    #: identity they can be fetched by after a later result replaces this row.
+    dispatch: str = ""
+    capture_id: str = ""
+    digest: str | None = None
     reason: str | None = None
 
 

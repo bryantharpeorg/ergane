@@ -97,12 +97,14 @@ from factory.env import (
 )
 from factory.mergequeue.models import CheckFailure
 from factory.verify.models import (
+    ArtifactType,
     DiffAbridgement,
     DiffFileSize,
     DiffSizeRefusal,
     EscalationChoice,
     EscalationRecord,
     GateContradiction,
+    GateArtifact,
     RefConflictInfo,
     GateResult,
     GateStatus,
@@ -1099,6 +1101,25 @@ def _gate_to_dict(gate: GateResult) -> dict[str, Any]:
         "concurrent_gates": gate.concurrent_gates,
         "worktree_writes": list(gate.worktree_writes),
         "writes_declared": gate.writes_declared,
+        "artifacts": [
+            {
+                "gate": artifact.gate,
+                "path": artifact.path,
+                "type": artifact.type.value
+                if isinstance(artifact.type, ArtifactType)
+                else artifact.type,
+                "present": artifact.present,
+                "size": artifact.size,
+                "stored_path": artifact.stored_path,
+                "status": artifact.status,
+                "provenance": artifact.provenance,
+                "dispatch": artifact.dispatch,
+                "capture_id": artifact.capture_id,
+                "digest": artifact.digest,
+                "reason": artifact.reason,
+            }
+            for artifact in gate.artifacts
+        ],
     }
 
 
@@ -1123,6 +1144,23 @@ def _gate_from_dict(data: dict[str, Any]) -> GateResult:
         # reading of any row written before the `writes:` key existed — and of
         # every row a manifest that declares nothing will ever produce.
         writes_declared=bool(data.get("writes_declared", False)),
+        artifacts=tuple(
+            GateArtifact(
+                gate=artifact["gate"],
+                path=artifact["path"],
+                type=ArtifactType(artifact["type"]),
+                present=artifact["present"],
+                size=artifact["size"],
+                stored_path=artifact["stored_path"],
+                status=artifact["status"],
+                provenance=artifact["provenance"],
+                dispatch=artifact.get("dispatch", ""),
+                capture_id=artifact.get("capture_id", ""),
+                digest=artifact.get("digest"),
+                reason=artifact.get("reason"),
+            )
+            for artifact in data.get("artifacts", ())
+        ),
     )
 
 
