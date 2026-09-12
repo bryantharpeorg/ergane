@@ -396,6 +396,10 @@ class RoadmapCarryOver:
     max_concurrent_epics: int = 1
     max_concurrent_nodes: int = 1
     idle_rescan_s: int | None = None
+    #: US1: the complete query reading at a quiescent continue-as-new boundary.
+    #: This is query-only state, not a scheduling input; a carry-over recorded
+    #: before this repair omits it and decodes as `None`.
+    previous_status: "RoadmapStatus | None" = None
 
     @classmethod
     def from_state(
@@ -408,6 +412,7 @@ class RoadmapCarryOver:
         max_concurrent_epics: int,
         max_concurrent_nodes: int,
         idle_rescan_s: int | None,
+        previous_status: "RoadmapStatus | None" = None,
     ) -> "RoadmapCarryOver":
         """Build a carry-over from the run's live (mutable) state.
 
@@ -423,6 +428,7 @@ class RoadmapCarryOver:
             max_concurrent_epics=max_concurrent_epics,
             max_concurrent_nodes=max_concurrent_nodes,
             idle_rescan_s=idle_rescan_s,
+            previous_status=previous_status,
         )
 
     def landed_map(self) -> dict[str, LandedStatus]:
@@ -658,6 +664,7 @@ class RoadmapWorkflow:
         self._paused = False
         self._promotions: dict[str, None] = {}
         self._rescan_requested = False
+        self._previous_status: RoadmapStatus | None = None
 
     # --- signals and query (FR-008) -------------------------------------------
 
@@ -738,6 +745,15 @@ class RoadmapWorkflow:
         """
         roadmap = self._roadmap
         if roadmap is None:
+            if self._previous_status is not None:
+                return RoadmapStatus(
+                    specs=list(self._previous_status.specs),
+                    running=[],
+                    parked=[self._parked[d] for d in sorted(self._parked)],
+                    max_concurrent_epics=self._max_concurrent_epics,
+                    max_concurrent_nodes=self._max_concurrent_nodes,
+                    paused=self._paused,
+                )
             # Before the first corpus read the roadmap has no specs to report,
             # but it does already know its bounds, so both are named here. The
             # record now defaults them, and leaning on that default instead
@@ -894,6 +910,7 @@ class RoadmapWorkflow:
             self._max_concurrent_epics = request.carry_over.max_concurrent_epics
             self._max_concurrent_nodes = request.carry_over.max_concurrent_nodes
             self._rescan_requested = False
+            self._previous_status = request.carry_over.previous_status
 
         # Whether any child concluded this run — the gate for continue-as-new.
         # CAN fires at quiescence only after a child has concluded, so a run
@@ -1082,6 +1099,7 @@ class RoadmapWorkflow:
             max_concurrent_epics=self._max_concurrent_epics,
             max_concurrent_nodes=self._max_concurrent_nodes,
             idle_rescan_s=request.idle_rescan_s,
+            previous_status=self.roadmap_status(),
         )
         return await workflow.continue_as_new(
             RoadmapInput(

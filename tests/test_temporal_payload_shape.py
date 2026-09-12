@@ -43,7 +43,14 @@ import temporalio.api.common.v1 as common
 import temporalio.workflow
 from temporalio.converter import default as default_data_converter
 
-from factory.roadmap.workflow import RoadmapStatus, RoadmapWorkflow
+from factory.roadmap.models import LandedKind, LandedStatus, SpecState
+from factory.roadmap.workflow import (
+    ParkedFinding,
+    RoadmapCarryOver,
+    RoadmapSpecStatus,
+    RoadmapStatus,
+    RoadmapWorkflow,
+)
 from factory.worker import ACTIVITIES, WORKFLOWS
 
 #: The seam the sweep measures against. It is the worker's own registration
@@ -137,6 +144,42 @@ def test_roadmap_status_reconstructs_from_a_payload_that_predates_either_bound()
 
     assert reconstructed.max_concurrent_epics == 1
     assert reconstructed.max_concurrent_nodes == 1
+
+
+def test_roadmap_carry_over_reconstructs_without_and_with_previous_status() -> None:
+    """The snapshot is optional, so old and new continue-as-new payloads decode.
+
+    Every existing carry-over payload predates `previous_status`; its absence
+    must mean "the boundary was recorded before this repair", never a decode
+    failure. The new shape must also round-trip the typed snapshot itself, so
+    the query fallback is not silently reduced to a dict or dropped.
+    """
+    snapshot = RoadmapStatus(
+        specs=[
+            RoadmapSpecStatus(
+                spec_dir="001-alpha",
+                state=SpecState.READY,
+                dispatchable=False,
+                blockers=[],
+                landed=True,
+                unlanded=[],
+            ),
+        ],
+        running=[],
+        parked=[ParkedFinding("002-bravo", "clone", "refusal text")],
+    )
+    current = RoadmapCarryOver(
+        landed=(("001-alpha", LandedStatus(True, LandedKind.OBSERVED)),),
+        previous_status=snapshot,
+    )
+
+    older = payload_missing(current, "previous_status")
+    reconstructed = decode_as(older, RoadmapCarryOver)
+    assert reconstructed.previous_status is None
+
+    round_tripped = decode_as(payload_of(current), RoadmapCarryOver)
+    assert round_tripped == current
+    assert round_tripped.previous_status == snapshot
 
 
 def test_the_zero_state_query_reports_the_bounds_in_force() -> None:
