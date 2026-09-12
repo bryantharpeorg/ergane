@@ -73,6 +73,7 @@ import shutil
 import signal
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
@@ -93,6 +94,7 @@ from factory.verify.toolchain import (
     system_tree_argv,
 )
 from factory.workgraph.detector import compare_and_report, capture_start
+from factory.workgraph.codex_events import INVALID_JSON, decode_codex_events
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 
@@ -100,6 +102,20 @@ from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 #: archive directory. Interleaved as the agent wrote it: two files would put the
 #: burden of reconstructing the order on whoever reads the evidence.
 STDOUT_LOG_NAME = "stdout.log"
+
+CODEX_EVENTS_NAME = "codex-events.jsonl"
+CODEX_STDERR_NAME = "codex-stderr.log"
+CODEX_RAW_STATUS_NAME = "codex-raw-status.json"
+
+CODEX_RAW_MAX_BYTES = 1_048_576
+CODEX_RAW_RETENTION_FILES = 1
+
+
+class InvocationOutputPolicy(StrEnum):
+    """How a backend routes the two process output streams."""
+
+    COMBINED = "combined"
+    SEPARATE = "separate"
 
 #: Environment variable names the agent inherits from the worker, on top of the
 #: two the attempt itself supplies. `PATH` is what finds the agent binary and the
@@ -313,6 +329,11 @@ class AgentInvocation:
     log: Any
     standards_path: str | None
     model_alias: str
+    #: The adapter's policy, not a backend's guess. Combined is the default so
+    #: every existing invocation keeps today's contract; a separate invocation
+    #: must also supply the second sink before it can launch.
+    output_policy: InvocationOutputPolicy = InvocationOutputPolicy.COMBINED
+    stderr_log: Any | None = None
 
 
 class AgentBackend(Protocol):
@@ -354,7 +375,16 @@ def _inside_system_tree(path: Path, system_root: Path) -> bool:
     return str(path).startswith(str(system_root / "usr") + "/")
 
 
-class HostAgentBackend:
+class AgentBackendBase:
+    def _stderr_sink(self, invocation: AgentInvocation) -> Any:
+        if invocation.output_policy is InvocationOutputPolicy.COMBINED:
+            return asyncio.subprocess.STDOUT
+        if invocation.stderr_log is None:
+            raise AdapterError("separate output policy requires an stderr sink")
+        return invocation.stderr_log
+
+
+class HostAgentBackend(AgentBackendBase):
     """Today's direct host launch, now one implementation behind the seam.
 
     Selectable only explicitly — the default path resolves the backend from the
@@ -369,11 +399,12 @@ class HostAgentBackend:
 
     async def launch(self, invocation: AgentInvocation) -> asyncio.subprocess.Process:
         try:
+            stderr = self._stderr_sink(invocation)
             return await asyncio.create_subprocess_exec(
                 *invocation.argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=invocation.log,
-                stderr=asyncio.subprocess.STDOUT,
+                stderr=stderr,
                 cwd=str(invocation.worktree),
                 env=invocation.env,
                 start_new_session=True,
@@ -384,8 +415,7 @@ class HostAgentBackend:
                 f"{invocation.argv}: {error}"
             ) from error
 
-
-class BwrapBackend:
+class BwrapBackend(AgentBackendBase):
     """Bubblewrap containment: the agent's filesystem is its worktree, not the host.
 
     The mount set is deliberately minimal (US3). `/usr` is read-only, and each
@@ -755,12 +785,13 @@ class BwrapBackend:
         except ToolchainError as error:
             raise AdapterError(str(error)) from error
 
+        stderr = self._stderr_sink(invocation)
         try:
             return await asyncio.create_subprocess_exec(
                 *argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=invocation.log,
-                stderr=asyncio.subprocess.STDOUT,
+                stderr=stderr,
                 # cwd is still the worktree on the host side; the real chdir is
                 # the `--chdir` inside the mount namespace.
                 cwd=str(invocation.worktree),
@@ -1284,17 +1315,10 @@ class SharedAttemptPolicy:
 
         _preserve_previous_stdout(archive, context)
 
-        with (archive / STDOUT_LOG_NAME).open("wb") as log:
+        with self._open_invocation(
+            context, worktree, target_repo, env, archive
+        ) as invocation:
             backend = self._resolve_backend(worktree, target_repo)
-            invocation = AgentInvocation(
-                argv=self._cli._argv(context),
-                prompt=context.prompt,
-                worktree=worktree,
-                env=env,
-                log=log,
-                standards_path=self._standards_path(worktree, target_repo),
-                model_alias=context.model_alias,
-            )
             process = await backend.launch(invocation)
             _write_pid_file(pids, process.pid)
             feeder = asyncio.ensure_future(
@@ -1312,11 +1336,8 @@ class SharedAttemptPolicy:
                     send_ferry_question=send_ferry_question,
                     read_ferry_answer=read_ferry_answer,
                     ferry_interval_s=ferry_interval_s,
-                    # 095-US1: the structural tell, as a probe rather than as a
-                    # path — the monitor asks "did a turn happen" and the answer
-                    # is read at the moment the process ends, from the one
-                    # definition of where a session transcript lives that the
-                    # archive step also uses.
+                    # The JSONL stream is the structural tell; startup bookkeeping
+                    # and diagnostic errors never become a model turn (US2).
                     agent_took_a_turn=lambda: self._cli._turn_happened(
                         context, worktree, env
                     ),
@@ -1329,6 +1350,8 @@ class SharedAttemptPolicy:
                 await self._reclaim(process)
                 self._archive_session(context, worktree, env, archive)
                 _clear_pid_file(pids)
+                self._archive_plain_final(env, archive)
+                self._finish_raw_files(context, archive)
                 if target_repo is not None:
                     compare_and_report(Path(factory_root), target_repo, context)
                 raise
@@ -1337,6 +1360,8 @@ class SharedAttemptPolicy:
 
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
+        self._archive_plain_final(env, archive)
+        self._finish_raw_files(context, archive)
         if target_repo is not None:
             compare_and_report(Path(factory_root), target_repo, context)
         return AdapterResult(
@@ -1380,6 +1405,117 @@ class SharedAttemptPolicy:
                 f"(known: {known})"
             )
         return backend_class(executable=self._cli.executable)
+
+    def _archive_plain_final(self, env: Mapping[str, str], archive: Path) -> None:
+        """Let per-CLI evidence provide the plain compatibility value."""
+        archive_final = getattr(self._cli, "_archive_final_message", None)
+        if archive_final is not None:
+            archive_final(env, archive)
+
+    def _finish_raw_files(self, context: AttemptContext, archive: Path) -> None:
+        """Apply declared raw-file bounds and record their provenance."""
+        if getattr(self._cli, "output_policy", None) is not InvocationOutputPolicy.SEPARATE:
+            return
+        status: dict[str, object] = {}
+        for name in (CODEX_EVENTS_NAME, CODEX_STDERR_NAME):
+            path = archive / name
+            original = path.stat().st_size if path.is_file() else 0
+            if original > CODEX_RAW_MAX_BYTES:
+                path.write_bytes(path.read_bytes()[:CODEX_RAW_MAX_BYTES])
+            retained = path.stat().st_size if path.is_file() else 0
+            truncated = original > CODEX_RAW_MAX_BYTES
+            status[name] = {
+                "original_bytes": original,
+                "retained_bytes": retained,
+                "limit_bytes": CODEX_RAW_MAX_BYTES,
+                "truncated": truncated,
+                "completeness": "incomplete" if truncated else "complete",
+            }
+            os.chmod(path, 0o600)
+        status_path = archive / CODEX_RAW_STATUS_NAME
+        status_path.write_text(json.dumps(status), encoding="utf-8")
+        os.chmod(status_path, 0o600)
+
+    def _rotate_raw_files(self, archive: Path, context: AttemptContext) -> None:
+        """Retain declared raw history for one archive without losing identity."""
+        for name in (CODEX_EVENTS_NAME, CODEX_STDERR_NAME):
+            path = archive / name
+            if path.is_file() and path.stat().st_size > 0:
+                preserved = archive / f"{Path(name).stem}-{context.session_id}{path.suffix}"
+                with contextlib.suppress(OSError):
+                    path.replace(preserved)
+        for prefix in ("codex-events-", "codex-stderr-"):
+            candidates = sorted(
+                archive.glob(f"{prefix}*"),
+                key=lambda path: path.stat().st_mtime_ns,
+                reverse=True,
+            )
+            for path in candidates[CODEX_RAW_RETENTION_FILES:]:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+
+    @contextlib.contextmanager
+    def _open_invocation(
+        self,
+        context: AttemptContext,
+        worktree: Path,
+        target_repo: Path | None,
+        env: dict[str, str],
+        archive: Path,
+    ):
+        """Open the sinks for one launch and close them after it is reaped."""
+        if getattr(self._cli, "output_policy", None) is InvocationOutputPolicy.SEPARATE:
+            self._rotate_raw_files(archive, context)
+        with (archive / STDOUT_LOG_NAME).open("wb") as log:
+            if getattr(self._cli, "output_policy", None) is InvocationOutputPolicy.SEPARATE:
+                with (archive / CODEX_EVENTS_NAME).open("wb") as event_log, (
+                    archive / CODEX_STDERR_NAME
+                ).open("wb") as stderr_log:
+                    os.chmod(archive / CODEX_EVENTS_NAME, 0o600)
+                    os.chmod(archive / CODEX_STDERR_NAME, 0o600)
+                    yield self._invocation(
+                        context, worktree, target_repo, env, log,
+                        event_log, stderr_log, InvocationOutputPolicy.SEPARATE,
+                    )
+                return
+            yield self._invocation(
+                context, worktree, target_repo, env, log,
+                None, None, InvocationOutputPolicy.COMBINED,
+            )
+
+    def _invocation(
+        self,
+        context: AttemptContext,
+        worktree: Path,
+        target_repo: Path | None,
+        env: dict[str, str],
+        log: Any,
+        event_log: Any,
+        stderr_log: Any,
+        output_policy: InvocationOutputPolicy,
+    ) -> AgentInvocation:
+        if output_policy is InvocationOutputPolicy.SEPARATE:
+            return AgentInvocation(
+                argv=self._cli._argv(context),
+                prompt=context.prompt,
+                worktree=worktree,
+                env=env,
+                log=event_log,
+                stderr_log=stderr_log,
+                output_policy=output_policy,
+                standards_path=self._standards_path(worktree, target_repo),
+                model_alias=context.model_alias,
+            )
+        return AgentInvocation(
+            argv=self._cli._argv(context),
+            prompt=context.prompt,
+            worktree=worktree,
+            env=env,
+            log=log,
+            output_policy=output_policy,
+            standards_path=self._standards_path(worktree, target_repo),
+            model_alias=context.model_alias,
+        )
 
     def _standards_path(
         self,
@@ -1893,6 +2029,8 @@ class CodexAdapter:
 
     name = "codex"
 
+    output_policy = InvocationOutputPolicy.SEPARATE
+
     def __init__(
         self,
         *,
@@ -1939,13 +2077,15 @@ class CodexAdapter:
     def _argv(self, context: AttemptContext) -> list[str]:
         """The invocation, as the child receives it (FR-004).
 
-        `exec` for non-interactive, `-` for the stdin prompt, `--model` for
+        `exec` for non-interactive, `--json` for the machine-readable stream,
+        `-` for the stdin prompt, `--model` for
         the persona's alias, the bypass flag because the factory's boundary is
         the confinement, `--skip-git-repo-check` because repository shape is
         not the factory's contract, and `--cd` for the node worktree."""
         return [
             self.executable,
             "exec",
+            "--json",
             "--model",
             context.model_alias,
             CODEX_BYPASS_FLAG,
@@ -2059,19 +2199,65 @@ class CodexAdapter:
         """The session files this CLI writes, as this CLI spells the location.
 
         Codex names its rollouts after ids it generated itself (trap 4,
-        measured), under a date-keyed tree in `CODEX_HOME`. The archive copies
-        every rollout beside the log; the turn probe asks whether any exists."""
-        return _codex_rollouts(env)
+        measured), under a date-keyed tree in `CODEX_HOME`. Only a rollout whose
+        decoded identity matches the current attempt's stream may be archived."""
+        current = self._current_thread(env)
+        if current is None:
+            return []
+        return [
+            path
+            for path in _codex_rollouts(env)
+            if self._rollout_thread(path) == current
+        ]
+
+    def _archive_final_message(
+        self, env: Mapping[str, str], archive: Path
+    ) -> None:
+        """Keep neutral consumers on plain text: the last agent message only.
+
+        A stream that never decoded as JSONL can still carry the legacy plain
+        CLI output; preserving that value keeps the older adapter contracts
+        readable without publishing a valid raw Codex event stream.
+        """
+        try:
+            evidence = self._current_evidence(env)
+            plain_log = archive / STDOUT_LOG_NAME
+            legacy_raw = (archive / CODEX_EVENTS_NAME).read_bytes()
+            if evidence.final_message is not None:
+                plain_log.write_text(f"{evidence.final_message.text}\n", encoding="utf-8")
+            elif any(reason.code == INVALID_JSON for reason in evidence.reasons) and (
+                evidence.thread_id is None and b'"type"' not in legacy_raw
+            ):
+                plain_log.write_bytes(legacy_raw)
+        except (AttributeError, OSError):
+            pass
 
     def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
         """The structural tell that a turn ran (095-US1), as Codex writes it.
 
-        The rollout file's existence is the tell — measured: even a refused run
-        writes one (with `task_complete` carrying the error), so this is "the
-        CLI got far enough to attempt a turn", the same token-existence
-        semantics Claude's probe has. Naming *why* it failed is the refusal
-        marker's job (FR-012)."""
-        return any(path.is_file() for path in self._transcripts(context, worktree, env))
+        The current JSONL stream, not the rollout tree, decides whether model-
+        authored activity occurred. Startup bookkeeping and diagnostic errors
+        do not become evidence of a turn (US2 FR-006)."""
+        return self._current_evidence(env).agent_took_a_turn
+
+    def _current_evidence(self, env: Mapping[str, str]):
+        archive = env.get(ATTEMPT_ARCHIVE_ENV)
+        if not archive:
+            return decode_codex_events(())
+        try:
+            raw = (Path(archive) / CODEX_EVENTS_NAME).read_bytes()
+        except OSError:
+            return decode_codex_events(())
+        return decode_codex_events(raw.splitlines(keepends=True))
+
+    def _current_thread(self, env: Mapping[str, str]) -> str | None:
+        return self._current_evidence(env).thread_id
+
+    def _rollout_thread(self, path: Path) -> str | None:
+        try:
+            return decode_codex_events(path.read_bytes().splitlines(keepends=True)).thread_id
+        except OSError:
+            return None
 
     def _refusal_markers(self) -> tuple[str, ...]:
         """Markers that mean this CLI refused rather than merely failed.

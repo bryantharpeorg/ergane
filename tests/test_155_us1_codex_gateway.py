@@ -29,6 +29,8 @@ import pytest
 from factory.usage.models import Termination
 from factory.workgraph.adapter import (
     ATTEMPT_ARCHIVE_ENV,
+    CODEX_EVENTS_NAME,
+    CODEX_STDERR_NAME,
     STDOUT_LOG_NAME,
     AdapterError,
     HostAgentBackend,
@@ -279,8 +281,7 @@ async def test_the_spend_is_read_on_the_attempts_virtual_key(
     node_home: Path,
 ) -> None:
     """US1-S2 / FR-002: spend rides the `read_usage` seam and the snapshot
-    rides home on the result. Token accounting is NOT a reason to add
-    `--json`."""
+    rides home on the result. JSONL is execution evidence, not token accounting."""
     write_control(node_home, sleep_s=0.4)
     keys_read: list[str | None] = []
 
@@ -298,10 +299,10 @@ async def test_the_spend_is_read_on_the_attempts_virtual_key(
 
     assert result.termination == Termination.COMPLETED
     assert keys_read, "the attempt never read spend on its own key"
-    # And the argv it launched carries no --json: accounting comes from the
-    # proxy on the key, never from the CLI's output stream.
+    # And the argv it launched carries --json for current execution evidence;
+    # spend still comes from the proxy on the key, never from CLI usage.
     launch = last_invocation(worktree)
-    assert "--json" not in launch["argv"]
+    assert "--json" in launch["argv"]
 
 
 async def test_the_spends_snapshot_rides_home_on_the_result(
@@ -380,7 +381,14 @@ async def test_the_seeded_config_is_per_node_and_survives_a_second_attempt(
     first = await adapter.run_attempt(attempt(attempt=1), factory_root=factory_root)
     assert first.termination == Termination.COMPLETED
 
-    write_control(node_home, exit_code=1)
+    write_control(
+        node_home,
+        exit_code=1,
+        stdout='{"type":"thread.started","thread_id":"thread-second"}\n'
+        '{"type":"turn.started"}\n'
+        '{"type":"item.completed","item":{"id":"message","type":"agent_message","text":"working"}}\n',
+        rollout_text='{"type":"thread.started","thread_id":"thread-second"}\n',
+    )
     second = await adapter.run_attempt(attempt(attempt=2), factory_root=factory_root)
 
     assert second.termination == Termination.AGENT_ERROR
@@ -429,7 +437,18 @@ async def test_cleartext_reasoning_near_the_output_does_not_misclassify(
         'The user just wants the word "ok". No tool calls needed. '
         'Final answer: "ok".'
     )
-    write_control(node_home, stdout=reasoning_line)
+    write_control(
+        node_home,
+        stdout=(
+            '{"type":"thread.started","thread_id":"thread-reasoning"}\n'
+            '{"type":"turn.started"}\n'
+            '{"type":"item.started","item":{"id":"reason","type":"reasoning","text":'
+            f'"{reasoning_line}"}}\n'
+            '{"type":"item.completed","item":{"id":"message","type":"agent_message","text":"ok"}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}\n'
+        ),
+        rollout_text='{"type":"thread.started","thread_id":"thread-reasoning"}\n',
+    )
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -449,8 +468,9 @@ async def test_a_refusal_is_never_read_from_reasoning_text(
     write_control(
         node_home,
         exit_code=1,
-        stdout='reasoning: the request failed with "unexpected status 401 '
-        'Unauthorized" — or did it? just reasoning here.',
+        rollout_text='{"type":"thread.started","thread_id":"thread-failure"}\n',
+        json_events=True,
+        stdout='{"type":"thread.started","thread_id":"thread-failure"}\n{"type":"turn.started"}\n{"type":"item.started","item":{"id":"reason","type":"reasoning","text":"the request failed with unexpected status 401 Unauthorized"}}\n{"type":"item.completed","item":{"id":"message","type":"agent_message","text":"working"}}\n',
     )
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -472,8 +492,15 @@ async def test_reasoning_on_a_completed_gateway_run_satisfies_no_refusal_marker(
     satisfies neither and defeats neither."""
     write_control(
         node_home,
-        stdout='The user asked for "ok". Reasoning about it: '
-        "tokens used 7,665; model metadata not found. Final: ok",
+        stdout=(
+            '{"type":"thread.started","thread_id":"thread-complete"}\n'
+            '{"type":"turn.started"}\n'
+            '{"type":"item.started","item":{"id":"reason","type":"reasoning","text":'
+            '"The user asked for ok. Reasoning about it: tokens used 7,665."}}\n'
+            '{"type":"item.completed","item":{"id":"message","type":"agent_message","text":"ok"}}\n'
+            '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}\n'
+        ),
+        rollout_text='{"type":"thread.started","thread_id":"thread-complete"}\n',
     )
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -481,7 +508,8 @@ async def test_reasoning_on_a_completed_gateway_run_satisfies_no_refusal_marker(
     assert result.termination == Termination.COMPLETED
     # The evidence beside the classification still carries the reasoning —
     # the guarantee is that it decided nothing.
-    assert "Reasoning about it" in stdout_log(factory_root)
+    events = (archive_dir(factory_root) / CODEX_EVENTS_NAME).read_text()
+    assert "Reasoning about it" in events
 
 
 async def test_the_turn_probe_reads_the_rollout_tree_never_the_output_text(
@@ -501,8 +529,7 @@ async def test_the_turn_probe_reads_the_rollout_tree_never_the_output_text(
         node_home,
         exit_code=1,
         write_rollout=False,
-        stdout="reasoning: I have completed the task successfully. "
-        "thread.started item.completed task_complete.",
+        stdout='{"type":"thread.started","thread_id":"thread-current"}\n',
     )
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -520,10 +547,24 @@ async def test_a_codex_run_that_wrote_its_rollout_took_a_turn(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """The turn probe as Codex writes it: a rollout file under the seeded
-    CODEX_HOME, found without the factory supplying an id (trap 4). A failed
-    run with a rollout behind it is AGENT_ERROR, not the environment's."""
-    write_control(node_home, exit_code=1, write_rollout=True)
+    """The rollout is identity corroboration, never the turn predicate: a
+    rollout alone stays pre-agent; model activity plus the matching rollout
+    turns a failed run into AGENT_ERROR."""
+    write_control(node_home, exit_code=1, write_rollout=True, json_events=False)
+    rollout_only = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    assert rollout_only.termination == Termination.PRE_AGENT_FAILURE
+
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=True,
+        stdout=(
+            '{"type":"thread.started","thread_id":"thread-model"}\n'
+            '{"type":"turn.started"}\n'
+            '{"type":"item.completed","item":{"id":"message","type":"agent_message","text":"working"}}\n'
+        ),
+        rollout_text='{"type":"thread.started","thread_id":"thread-model"}\n',
+    )
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -539,7 +580,7 @@ async def test_a_codex_run_that_wrote_no_rollout_is_pre_agent(
 ) -> None:
     """A non-zero exit with no rollout behind it produced no token — the
     pre-agent class (095-US1), now for Codex."""
-    write_control(node_home, exit_code=1, write_rollout=False)
+    write_control(node_home, exit_code=1, write_rollout=False, json_events=False)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
@@ -558,14 +599,16 @@ async def test_the_attempt_directory_holds_the_log_and_the_rollout(
 ) -> None:
     """Evidence survives the completed path for Codex as for Claude: the
     streamed log and the rollout file written under CODEX_HOME."""
-    write_control(node_home)
+    write_control(node_home, json_events=True)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
     assert result.termination == Termination.COMPLETED
     names = {p.name for p in archive_dir(factory_root).iterdir()}
     assert STDOUT_LOG_NAME in names
-    assert BANNER in stdout_log(factory_root)
+    assert BANNER in (archive_dir(factory_root) / CODEX_STDERR_NAME).read_text()
+    assert CODEX_EVENTS_NAME in names
+    assert CODEX_STDERR_NAME in names
     rollouts = list(archive_dir(factory_root).glob("rollout-*.jsonl"))
     assert rollouts, "the rollout file was not archived beside the log"
 
@@ -597,15 +640,15 @@ async def test_a_refused_codex_run_is_visible_in_the_archived_log(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """FR-004's plain-text promise for the second CLI: the measured refusal —
-    stderr, exit 1 (070's lesson inverted) — lands in the combined `stdout.log`
-    the scanner reads. No `--json` is passed (US1-S2's other half pins argv)."""
-    write_control(node_home, exit_code=1, stderr=REFUSAL_MARKER)
+    """FR-016's diagnostic sink for the second CLI: the measured refusal —
+    stderr, exit 1 (070's lesson inverted) — lands in `codex-stderr.log`, not
+    in the JSONL decoder. Error-only execution is still pre-agent."""
+    write_control(node_home, exit_code=1, stderr=REFUSAL_MARKER, json_events=False)
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
 
-    assert result.termination == Termination.AGENT_ERROR
-    assert REFUSAL_MARKER in stdout_log(factory_root)
+    assert result.termination == Termination.PRE_AGENT_FAILURE
+    assert REFUSAL_MARKER in (archive_dir(factory_root) / CODEX_STDERR_NAME).read_text()
 
 
 async def test_an_unresolvable_codex_agent_is_refused_at_the_seam() -> None:

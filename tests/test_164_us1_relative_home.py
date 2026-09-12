@@ -35,6 +35,8 @@ import pytest
 from factory.usage.models import Termination
 from factory.workgraph.adapter import (
     ATTEMPT_ARCHIVE_ENV,
+    CODEX_EVENTS_NAME,
+    CODEX_STDERR_NAME,
     HostAgentBackend,
     _ADAPTERS,
     adapter_for,
@@ -267,7 +269,7 @@ def test_the_production_seam_canonicalises_the_relative_home(
 # --- US1-S3: two nodes, two homes, each rollout found at home (FR-003) -----------
 
 
-async def test_two_nodes_each_find_their_own_rollout_and_their_homes_stay_distinct(
+async def test_two_nodes_keep_distinct_homes_and_current_evidence(
     adapter: Any,
     attempt: Callable[..., AttemptContext],
     worktree: Path,
@@ -277,11 +279,10 @@ async def test_two_nodes_each_find_their_own_rollout_and_their_homes_stay_distin
     node_home_b: Path,
 ) -> None:
     """US1-S3 / FR-003: relative and already-absolute homes for two separate
-    nodes. Each strict child emits a distinct synthetic rollout in its own
-    seeded home; production turn detection answers per node, the archive
-    carries each node's own file, the two homes stay distinct — and the
-    already-absolute case keeps its location untouched (FR-003's second
-    half, plan § Repair shape: "preserve already-absolute inputs").
+    nodes. Each strict child writes a distinct synthetic rollout in its own
+    seeded home; current-attempt evidence decides the turn, and the archive
+    does not promote a session-meta rollout. The two homes stay distinct, and
+    the already-absolute case keeps its location untouched.
 
     Observed through the child, classification and archived files, not by
     comparing helper strings."""
@@ -316,30 +317,31 @@ async def test_two_nodes_each_find_their_own_rollout_and_their_homes_stay_distin
     assert record_a["codex_home"] == str(codex_home_path(node_home.resolve()))
     assert record_b["codex_home"] == str(codex_home_path(node_home_b))
 
-    # Production turn detection answers per node, from each child's env.
+    # Production turn detection answers per node, from each child's current
+    # stream. The session-meta rollouts the strict child writes do not prove
+    # model-authored activity under the JSONL evidence contract.
     from factory.workgraph.adapter import CodexAdapter
 
     codex = CodexAdapter(executable="codex")
     env_a = {"HOME": str(node_home), CODEX_HOME_ENV: str(codex_home_path(node_home))}
     env_b = {"HOME": str(node_home_b), CODEX_HOME_ENV: str(codex_home_path(node_home_b))}
-    assert codex._turn_happened(relative, worktree, env_a)
-    assert codex._turn_happened(absolute, worktree_b, env_b)
-    # The control: a node whose own home holds no rollout tree answers no —
-    # the probe reads the env's own tree, never a sibling's (the env the
-    # launch built names this node's home; that is what record_a/b asserted).
+    assert not codex._turn_happened(relative, worktree, env_a)
+    assert not codex._turn_happened(absolute, worktree_b, env_b)
+    # The control: a stream with no current archive answers no, regardless of
+    # the rollout tree in either node home.
     fresh_home = home_path(node_home.parent.parent, EPIC, "us9")
     fresh_home.mkdir(parents=True, exist_ok=True)
     env_fresh = {"HOME": str(fresh_home), CODEX_HOME_ENV: str(codex_home_path(fresh_home))}
     assert not codex._turn_happened(relative, worktree, env_fresh)
 
-    # The archive carries each node's own rollout, and only that node's.
+    # The archive carries the current stream but no rollout that was not
+    # proven by a current thread id.
     for node, record in ((NODE_A, record_a), (NODE_B, record_b)):
         archived = archive_dir(worker_cwd, node)
         archived_rollouts = sorted(p.name for p in archived.glob("rollout-*.jsonl"))
-        assert archived_rollouts == [Path(str(record["rollout"])).name], (
-            f"node {node}: the archive did not carry exactly its own rollout "
-            f"(archived {archived_rollouts})"
-        )
+        assert archived_rollouts == [], f"node {node} archived an unproven rollout"
+        assert (archived / CODEX_EVENTS_NAME).is_file()
+        assert (archived / CODEX_STDERR_NAME).is_file()
     # And the two rollout files are distinct files in distinct homes.
     assert Path(record_a["rollout"]) != Path(record_b["rollout"])
     assert Path(record_a["rollout"]).is_relative_to(codex_home_path(node_home))
