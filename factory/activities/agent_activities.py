@@ -83,7 +83,6 @@ from factory.verify.factory_yaml import (
 )
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import (
-    CODEX_STDERR_NAME,
     CODEX_EVENTS_NAME,
     DEFAULT_HEARTBEAT_INTERVAL_S,
     SESSION_ID_REFUSAL_MARKER,
@@ -92,7 +91,11 @@ from factory.workgraph.adapter import (
     adapter_for,
     transcript_dir,
 )
-from factory.workgraph.codex_events import CodexExecutionEvidence, decode_codex_events
+from factory.workgraph.codex_events import (
+    CodexExecutionEvidence,
+    FatalSource,
+    decode_codex_events,
+)
 from factory.workgraph.models import (
     AdapterResult,
     AttemptContext,
@@ -606,11 +609,15 @@ def _typed_auth_failure(
     """Whether current fatal evidence alone proves a pre-agent auth refusal."""
     if evidence is None or evidence.agent_took_a_turn:
         return False
-    sources = {event.source for event in evidence.fatal_events}
-    if not {"error", "turn.failed"}.issubset(sources):
+    if len(evidence.fatal_events) != 2:
         return False
-    messages = {event.message.strip() for event in evidence.fatal_events}
-    return any(marker.strip() in messages for marker in markers)
+    error_event, failed_event = evidence.fatal_events
+    return (
+        error_event.source is FatalSource.ERROR_EVENT
+        and failed_event.source is FatalSource.TURN_FAILED
+        and error_event.message == failed_event.message
+        and error_event.message in {marker.strip() for marker in markers}
+    )
 
 
 def _classify_auth_failure(
@@ -620,49 +627,24 @@ def _classify_auth_failure(
     evidence: CodexExecutionEvidence | None = None,
     markers: Sequence[str] | None = None,
 ) -> AdapterResult:
-    """Reclassify an AGENT_ERROR whose log carries the CLI's refusal marker.
+    """Reclassify a typed current fatal-auth pair as a pre-agent failure.
 
-    The adapter itself classifies only by exit status (FR-012). The one
-    exception is the credential refusal: the CLI exits 1 and prints its refusal
-    — Claude Code on stdout (measured 2026-08-19), Codex on stderr (measured
-    2026-09-08, the inverse) — which a caller watching the other stream reads
-    as a silent success. Which strings read as a refusal is the adapter's
-    declaration (`_refusal_markers`, 154's per-CLI seam); interpreting them is
-    this activity's. Both CLIs write the combined `stdout.log`, so the scan
-    reads that stream whatever the CLI's own stream was.
+    Classification consumes typed current events, never substrings in combined
+    output or diagnostic spools. The adapter that ran declares which fatal
+    message forms are refusals (`_refusal_markers`, 154's per-CLI seam); a
+    measured 400 whose body quotes a historical 401 does not match that exact
+    message, and neither do item text or non-current archives.
 
-    No route gate: the refusal is a fact about the CLI's credential, and the
-    measured Codex marker appears on every route's 401 (plan trap 2). The
-    adapter that ran declared the markers — a CLI whose refusal shape differs
-    declares its own; nothing here knows a stream by name.
+    The matching error and `turn.failed` events describe one refusal. It is
+    stable pre-agent evidence because no model-authored item occurred, so the
+    ladder records no coding rung.
     """
     if result.termination not in (Termination.AGENT_ERROR, Termination.PRE_AGENT_FAILURE):
         return result
-    if not result.transcript_path:
-        return result
-
-    archive = Path(result.transcript_path)
-    log_paths = [archive / STDOUT_LOG_NAME]
-    separate_stderr = archive / CODEX_STDERR_NAME
-    if separate_stderr.is_file():
-        log_paths.append(separate_stderr)
-    log_text = ""
-    for log_path in log_paths:
-        try:
-            log_text += log_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
     markers = tuple(markers) if markers is not None else _declared_refusal_markers(adapter)
     if _typed_auth_failure(evidence, markers):
         return replace(result, termination=Termination.PRE_AGENT_FAILURE)
-    if not any(marker in log_text for marker in markers):
-        return result
-
-    return AdapterResult(
-        termination=Termination.AUTH_FAILURE,
-        transcript_path=result.transcript_path,
-        last_snapshot=result.last_snapshot,
-    )
+    return result
 
 
 def _declared_refusal_markers(adapter: Any) -> tuple[str, ...]:
