@@ -20,7 +20,14 @@ from factory.attestation.models import (
     JudgeDelivery,
     JudgeEvaluationRecord,
 )
-from factory.attestation.report import AttestationReport, Objection, ObjectionResolution, assemble_report
+from factory.attestation.report import (
+    AttestationReport,
+    JudgeUsageAttribution,
+    JudgeUsageReport,
+    Objection,
+    ObjectionResolution,
+    assemble_report,
+)
 from factory.attestation.usage import UsageEvidence, UsageObservation, read_usage_evidence
 
 __all__ = [
@@ -42,4 +49,6 @@ __all__ = [
     "AttestationReport",
     "Objection",
     "ObjectionResolution",
+    "JudgeUsageAttribution",
+    "JudgeUsageReport",
 ]

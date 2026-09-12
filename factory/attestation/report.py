@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING, Iterable, Sequence
 
-from factory.attestation.models import JudgeEvaluationRecord
+from factory.attestation.models import AttemptGitEvidence, JudgeEvaluationRecord
+from factory.attestation.usage import UsageObservation
+from factory.verify.models import GateResult
+
+if TYPE_CHECKING:
+    from factory.usage.models import AggregatedUsage
 
 
 @dataclass(frozen=True)
@@ -31,15 +36,91 @@ class ObjectionResolution:
 
 
 @dataclass(frozen=True)
+class JudgeUsageAttribution:
+    """Per-call metrics only when their authoritative request identity matches."""
+
+    evaluation_id: str
+    scoring_call_ordinal: int
+    request_id: str | None = None
+    serving_model: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    request_count: int | None = None
+    spend_usd: float | None = None
+    status: str = "unknown"
+
+
+@dataclass(frozen=True)
+class JudgeUsageReport:
+    """The scoring job's authoritative total beside explicit per-call detail."""
+
+    job_total: "AggregatedUsage"
+    per_call: tuple[JudgeUsageAttribution, ...]
+
+
+@dataclass(frozen=True)
 class AttestationReport:
     """Bounded report data without live I/O or verdict composition."""
 
     judge_status: str
+    evaluations: tuple[JudgeEvaluationRecord, ...]
+    composed_verdict: str | None
     objections: tuple[Objection, ...]
     resolutions: tuple[ObjectionResolution, ...]
     contradictions: tuple[tuple[str, str, str, str], ...]
     ci_status: str
     fully_fixed: bool
+    gates: tuple[GateResult, ...]
+    git_evidence: AttemptGitEvidence | None
+    usage: JudgeUsageReport | None = None
+
+
+def _usage_report(
+    evaluations: Sequence[JudgeEvaluationRecord],
+    job_usage: "AggregatedUsage | None",
+    observations: Sequence[UsageObservation],
+) -> JudgeUsageReport | None:
+    if job_usage is None:
+        return None
+
+    per_call: list[JudgeUsageAttribution] = []
+    for evaluation in evaluations:
+        response_ids = {
+            delivery.response_id
+            for delivery in evaluation.deliveries
+            if delivery.status == "delivered" and delivery.response_id is not None
+        }
+        matches: tuple[UsageObservation, ...] = ()
+        if len(response_ids) == 1:
+            request_id = next(iter(response_ids))
+            matches = tuple(
+                observation for observation in observations if observation.source_id == request_id
+            )
+        if len(response_ids) == 1 and len(matches) == 1:
+            observation = matches[0]
+            request_id = next(iter(response_ids))
+            attribution = JudgeUsageAttribution(
+                evaluation_id=evaluation.evaluation_id,
+                scoring_call_ordinal=evaluation.scoring_call_ordinal,
+                request_id=request_id,
+                serving_model=observation.serving_model,
+                prompt_tokens=observation.prompt_tokens,
+                completion_tokens=observation.completion_tokens,
+                cache_read_tokens=observation.cache_read_tokens,
+                cache_write_tokens=observation.cache_write_tokens,
+                request_count=observation.request_count,
+                spend_usd=observation.spend_usd,
+                status="attributed",
+            )
+        else:
+            attribution = JudgeUsageAttribution(
+                evaluation_id=evaluation.evaluation_id,
+                scoring_call_ordinal=evaluation.scoring_call_ordinal,
+            )
+        per_call.append(attribution)
+    return JudgeUsageReport(job_total=job_usage, per_call=tuple(per_call))
 
 
 def _objections(
@@ -177,10 +258,15 @@ def assemble_report(
     *,
     evaluations: Sequence[JudgeEvaluationRecord] = (),
     judge_status: str | None = None,
+    composed_verdict: str | None = None,
     objections: Sequence[tuple[str, str, str] | Objection] = (),
     dispositions: Sequence[tuple[str, str, str, str]] = (),
     contradictions: Sequence[tuple[str, str, str, str]] = (),
     ci_status: str = "unknown",
+    gates: Sequence[GateResult] = (),
+    git_evidence: AttemptGitEvidence | None = None,
+    job_usage: AggregatedUsage | None = None,
+    usage_observations: Sequence[UsageObservation] = (),
 ) -> AttestationReport:
     """Assemble explicit evidence without live reads or verdict changes."""
     objection_records = _objections(evaluations, objections, dispositions)
@@ -212,9 +298,14 @@ def assemble_report(
     ) and not contradiction_values and not disposition_ids and judge_status in (None, "valid")
     return AttestationReport(
         judge_status=judge_status or ("valid" if evaluations else "not_run"),
+        evaluations=tuple(evaluations),
+        composed_verdict=composed_verdict,
         objections=objection_records,
         resolutions=resolutions,
         contradictions=contradiction_values,
         ci_status=ci_status,
         fully_fixed=fully_fixed,
+        gates=tuple(gates),
+        git_evidence=git_evidence,
+        usage=_usage_report(evaluations, job_usage, usage_observations),
     )

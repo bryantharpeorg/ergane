@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import pytest
+from dataclasses import replace
 
 from factory.attestation import assemble_report
-from factory.attestation.models import JudgeEvaluationRecord
+from factory.attestation.models import (
+    AttemptGitEvidence,
+    GitFileChange,
+    JudgeDelivery,
+    JudgeEvaluationRecord,
+)
+from factory.attestation.usage import UsageObservation
+from factory.usage.models import AggregatedUsage
+from factory.verify.models import GateResult, GateStatus
 
 
 def evaluation(
@@ -145,3 +154,124 @@ def test_gate_contradictions_and_green_ci_are_not_full_fixes() -> None:
     assert report.resolutions[0].status == "unresolved"
     assert report.ci_status == "green"
     assert report.fully_fixed is False
+
+
+def test_a_composed_pass_does_not_label_an_objection_fixed() -> None:
+    report = assemble_report(
+        objections=(("objection", "US2-S1", "still failing"),),
+        composed_verdict="PASS",
+    )
+
+    assert report.composed_verdict == "PASS"
+    assert report.resolutions[0].status == "unverified"
+    assert report.fully_fixed is False
+
+
+def test_the_report_retains_raw_judge_and_exact_git_evidence() -> None:
+    evaluation_record = evaluation(
+        "objection",
+        status="contradiction",
+        results=(("US2-S1", False, "the test gate would fail"),),
+    )
+    gate = GateResult(
+        name="test",
+        command="pytest",
+        status=GateStatus.PASS,
+        exit_code=0,
+        duration_s=1.0,
+        output_tail="bounded tail",
+        output_truncated=True,
+    )
+    git_evidence = AttemptGitEvidence(
+        evidence_id="evidence-1",
+        epic_id="epic",
+        node_id="node",
+        attempt=1,
+        dispatch="dispatch",
+        base_commit="a" * 40,
+        attempted_commit="b" * 40,
+        verified_commit="c" * 40,
+        files=(
+            GitFileChange(path="new.txt", status="A"),
+            GitFileChange(path="binary.bin", status="A", binary=True),
+        ),
+        log_tail="test: bounded tail",
+        log_truncated=True,
+        tests_executed=("pytest",),
+        coverage_status="absent",
+    )
+
+    report = assemble_report(
+        evaluations=[evaluation_record],
+        gates=(gate,),
+        git_evidence=git_evidence,
+    )
+
+    assert report.evaluations == (evaluation_record,)
+    assert report.gates == (gate,)
+    assert report.git_evidence == git_evidence
+    assert report.git_evidence.files[1].binary is True
+    assert report.git_evidence.base_commit == "a" * 40
+    assert report.git_evidence.attempted_commit == "b" * 40
+    assert report.git_evidence.verified_commit == "c" * 40
+    assert report.git_evidence.log_truncated is True
+    assert report.git_evidence.coverage_status == "absent"
+
+
+def test_judge_usage_keeps_the_job_total_and_attribute_real_calls_only() -> None:
+    def evaluation_record(
+        evaluation_id: str, response_id: str | None
+    ) -> JudgeEvaluationRecord:
+        deliveries: tuple[JudgeDelivery, ...] = ()
+        if response_id is not None:
+            deliveries = (
+                JudgeDelivery(
+                    delivery_ordinal=1,
+                    status="delivered",
+                    response_id=response_id,
+                ),
+            )
+        return replace(evaluation(evaluation_id), deliveries=deliveries)
+
+    evaluations = (
+        evaluation_record("call-1", "request-a"),
+        evaluation_record("call-2", None),
+    )
+    observations = (
+        UsageObservation(
+            invocation_id="job-1",
+            source="gateway",
+            source_id="request-a",
+            serving_model="served-a",
+            model_alias="judge-model",
+            prompt_tokens=6,
+            completion_tokens=1,
+            request_count=1,
+        ),
+    )
+    job_total = AggregatedUsage(
+        prompt_tokens=10,
+        completion_tokens=2,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        request_count=2,
+        spend_usd=0.02,
+    )
+
+    report = assemble_report(
+        evaluations=evaluations,
+        job_usage=job_total,
+        usage_observations=observations,
+    )
+
+    assert report.usage is not None
+    assert report.usage.job_total == job_total
+    first = report.usage.per_call[0]
+    assert first.evaluation_id == "call-1"
+    assert first.request_id == "request-a"
+    assert (first.prompt_tokens, first.completion_tokens, first.request_count) == (6, 1, 1)
+    second = report.usage.per_call[1]
+    assert second.evaluation_id == "call-2"
+    assert second.prompt_tokens is None
+    assert second.completion_tokens is None
+    assert second.request_count is None
