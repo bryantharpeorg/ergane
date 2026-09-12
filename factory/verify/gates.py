@@ -1266,7 +1266,7 @@ def run_gates(
     concurrency_limiter: GateConcurrencyLimiter | None = None,
     candidate_runner: CandidateRunner | None = None,
     artifact_destination: Path | str | None = None,
-    capture_ids: Mapping[str, str] | None = None,
+    capture_ids: Mapping[tuple[str, str], str] | None = None,
     capture_dispatch: str = "",
 ) -> list[GateResult]:
     """Run every gate the manifest declares, in declaration order, and report each.
@@ -1473,7 +1473,7 @@ def _run_gate_list(
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
     artifact_destination: Path | str | None = None,
-    capture_ids: Mapping[str, str] | None = None,
+    capture_ids: Mapping[tuple[str, str], str] | None = None,
     capture_dispatch: str = "",
 ) -> list[GateResult]:
     """Run gates from a JSON view (candidate acceptance or fallback).
@@ -1537,7 +1537,7 @@ def _run_gate_list_from_config(
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
     artifact_destination: Path | str | None = None,
-    capture_ids: Mapping[str, str] | None = None,
+    capture_ids: Mapping[tuple[str, str], str] | None = None,
     capture_dispatch: str = "",
 ) -> list[GateResult]:
     """Run gates from an in-process FactoryConfig (today's fallback path)."""
@@ -1597,7 +1597,7 @@ def _run_watched(
     writes_declared: bool = False,
     artifacts: Sequence[ArtifactDeclaration] = (),
     artifact_destination: Path | str | None = None,
-    capture_ids: Mapping[str, str] = {},
+    capture_ids: Mapping[tuple[str, str], str] = {},
     capture_dispatch: str = "",
 ) -> tuple[GateResult, TreeSnapshot]:
     """Run one gate and report what running it did to the worktree (084 FR-001).
@@ -1678,7 +1678,7 @@ def _collect_artifacts(
     declarations: Sequence[ArtifactDeclaration],
     baselines: Mapping[str, object],
     destination: Path | str | None,
-    capture_ids: Mapping[str, str] = {},
+    capture_ids: Mapping[tuple[str, str], str] = {},
     capture_dispatch: str = "",
 ) -> tuple[GateArtifact, ...]:
     """Carry one gate's declared sources without touching its watched tree."""
@@ -1708,7 +1708,7 @@ def _collect_artifacts(
         present = capture.status in {SourceStatus.PERMITTED, SourceStatus.OVERSIZED}
         stored_path = None
         published = None
-        capture_id = capture_ids.get(declaration.path)
+        capture_id = capture_ids.get((invocation.name, declaration.path))
         if capture_id is None:
             capture_id = hashlib.sha256(
                 "\0".join(
@@ -1717,7 +1717,7 @@ def _collect_artifacts(
                             str(invocation.cwd),
                             str(resolved_destination),
                             invocation.name,
-                        declaration.path,
+                            declaration.path,
                     ]
                 ).encode("utf-8")
             ).hexdigest()

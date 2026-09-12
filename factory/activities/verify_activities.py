@@ -66,7 +66,6 @@ from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping
 
 import httpx
 from temporalio import activity
@@ -295,7 +294,7 @@ async def run_gates(request: RunGatesInput) -> list[GateResult]:
         ),
         timeout_overrides=request.timeout_overrides,
         artifact_destination=destination,
-        capture_ids=_capture_ids(request),
+    capture_ids=_capture_ids(request),
         capture_dispatch=request.dispatch,
     )
 
@@ -313,7 +312,7 @@ def _artifact_destination(request: RunGatesInput) -> Path | None:
     )
 
 
-def _capture_ids(request: RunGatesInput) -> dict[str, str]:
+def _capture_ids(request: RunGatesInput) -> dict[tuple[str, str], str]:
     manifest = (
         Path(request.worktree_path) / "factory.yaml"
         if request.factory_yaml_path is None
@@ -324,7 +323,7 @@ def _capture_ids(request: RunGatesInput) -> dict[str, str]:
     except gates.FactoryConfigError:
         return {}
     return {
-        artifact.path: hashlib.sha256(
+        (artifact.gate, artifact.path): hashlib.sha256(
             "\0".join(
                 [
                     request.dispatch,
@@ -690,4 +689,3 @@ def _store_path() -> Path:
         FACTORY_VERIFICATION_DB_PATH_ENV,
         DEFAULT_VERIFICATION_DB_PATH,
     )
-
