@@ -469,6 +469,7 @@ class GateResult:
     exit_code: int | None
     duration_s: float
     output_tail: str
+    output_truncated: bool = False
     concurrent_gates: int = 0
     worktree_writes: tuple[str, ...] = ()
     writes_declared: bool = False

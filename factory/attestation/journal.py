@@ -10,6 +10,8 @@ from factory.attestation.models import (
     JudgeDelivery,
     JudgeEvaluationRecord,
     LaunchRecord,
+    AttemptGitEvidence,
+    GitFileChange,
     RungSelection,
 )
 from factory.attestation.usage import UsageObservation
@@ -87,6 +89,21 @@ CREATE TABLE IF NOT EXISTS judge_evaluations (
 );
 CREATE INDEX IF NOT EXISTS idx_judge_evaluations_job
     ON judge_evaluations (scoring_job_id, scoring_call_ordinal);
+CREATE TABLE IF NOT EXISTS attempt_git_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    epic_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL,
+    dispatch TEXT NOT NULL,
+    base_commit TEXT NOT NULL,
+    attempted_commit TEXT NOT NULL,
+    verified_commit TEXT NOT NULL,
+    files TEXT NOT NULL,
+    log_tail TEXT NOT NULL,
+    log_truncated INTEGER NOT NULL,
+    tests_executed TEXT NOT NULL,
+    coverage_status TEXT NOT NULL
+);
 """
 
 
@@ -199,6 +216,7 @@ def set_launch_outcome(
 
 def read_launches(path: str | Path) -> tuple[LaunchRecord, ...]:
     with connect(path) as connection:
+        connection.row_factory = sqlite3.Row
         rows = connection.execute(
             "SELECT * FROM launches ORDER BY launch_ordinal, invocation_id"
         ).fetchall()
@@ -352,6 +370,83 @@ def read_scoring_evaluations(
                 usage_error=row["usage_error"],
                 truncated_input=bool(row["truncated_input"]),
                 gates_shown=bool(row["gates_shown"]),
+            )
+        )
+    return tuple(records)
+
+
+def record_attempt_evidence(
+    path: str | Path, record: AttemptGitEvidence
+) -> AttemptGitEvidence:
+    """Persist one exact Git snapshot by its evidence identity."""
+    with connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        values = {
+            **{
+                field.name: getattr(record, field.name)
+                for field in record.__dataclass_fields__.values()
+            },
+            "files": json.dumps(
+                [
+                    {
+                        "path": item.path,
+                        "status": item.status,
+                        "old_path": item.old_path,
+                        "binary": item.binary,
+                    }
+                    for item in record.files
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "log_truncated": int(record.log_truncated),
+            "tests_executed": json.dumps(list(record.tests_executed), separators=(",", ":")),
+        }
+        columns = tuple(values)
+        connection.execute(
+            f"INSERT INTO attempt_git_evidence ({', '.join(columns)}) VALUES "
+            f"({', '.join(':' + name for name in columns)}) "
+            "ON CONFLICT(evidence_id) DO UPDATE SET "
+            + ", ".join(f"{name} = excluded.{name}" for name in columns if name != "evidence_id"),
+            values,
+        )
+        connection.commit()
+    return record
+
+
+def read_attempt_evidence(path: str | Path) -> tuple[AttemptGitEvidence, ...]:
+    """Read retained Git evidence, evidence-id ordered for stable reports."""
+    with connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT * FROM attempt_git_evidence ORDER BY evidence_id"
+        ).fetchall()
+    records: list[AttemptGitEvidence] = []
+    for row in rows:
+        files = tuple(
+            GitFileChange(
+                path=item["path"],
+                status=item["status"],
+                old_path=item["old_path"],
+                binary=item["binary"],
+            )
+            for item in json.loads(row["files"])
+        )
+        records.append(
+            AttemptGitEvidence(
+                evidence_id=row["evidence_id"],
+                epic_id=row["epic_id"],
+                node_id=row["node_id"],
+                attempt=row["attempt"],
+                dispatch=row["dispatch"],
+                base_commit=row["base_commit"],
+                attempted_commit=row["attempted_commit"],
+                verified_commit=row["verified_commit"],
+                files=files,
+                log_tail=row["log_tail"],
+                log_truncated=bool(row["log_truncated"]),
+                tests_executed=tuple(json.loads(row["tests_executed"])),
+                coverage_status=row["coverage_status"],
             )
         )
     return tuple(records)

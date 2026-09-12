@@ -1895,6 +1895,7 @@ def _to_result(
     else:
         status, exit_code = GateStatus.PASS, 0
 
+    output_truncated = len(outcome.output.encode("utf-8")) > OUTPUT_TAIL_LIMIT
     tail = tail_output(outcome.output)
     if snapshot_error:
         note = f"[worktree snapshot failed: {snapshot_error}]"
@@ -1922,6 +1923,7 @@ def _to_result(
         exit_code=exit_code,
         duration_s=outcome.duration_s,
         output_tail=tail,
+        output_truncated=output_truncated,
         concurrent_gates=concurrent_gates,
         worktree_writes=worktree_writes,
         writes_declared=writes_declared,

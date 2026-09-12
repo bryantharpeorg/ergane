@@ -84,3 +84,32 @@ class JudgeEvaluationRecord:
     usage_error: str | None = None
     truncated_input: bool = False
     gates_shown: bool = False
+
+
+@dataclass(frozen=True)
+class GitFileChange:
+    """One path change with its exact Git status and binary fact."""
+
+    path: str
+    status: str
+    old_path: str | None = None
+    binary: bool = False
+
+
+@dataclass(frozen=True)
+class AttemptGitEvidence:
+    """Exact object ids and a bounded manifest, captured before cleanup."""
+
+    evidence_id: str
+    epic_id: str
+    node_id: str
+    attempt: int
+    dispatch: str
+    base_commit: str
+    attempted_commit: str
+    verified_commit: str
+    files: tuple[GitFileChange, ...]
+    log_tail: str
+    log_truncated: bool
+    tests_executed: tuple[str, ...]
+    coverage_status: str

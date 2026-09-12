@@ -72,11 +72,13 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from factory.verify import diffcheck, gates, judge, store
+from factory.attestation import AttemptGitEvidence, GitFileChange, record_attempt_evidence
 from factory.verify.criteria import CriteriaParseError, load_criteria
 from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.judge import DEFAULT_MAX_JUDGE_RETRIES
 from factory.workgraph.worktree import resolve_factory_root
 from factory.verify.gates import publish_artifact_capture
+from factory.verify.git_evidence import capture_attempt_evidence as capture_git_evidence
 from factory.verify.models import (
     ArtifactType,
     CriteriaSet,
@@ -539,6 +541,69 @@ class RecordedVerification:
 
     row_id: int
     criteria_drift: bool
+
+
+@dataclass(frozen=True)
+class CaptureAttemptEvidenceInput:
+    """The explicit identity and refs needed for one Git evidence read."""
+
+    evidence_id: str
+    epic_id: str
+    node_id: str
+    attempt: int
+    dispatch: str
+    worktree_path: str
+    base_ref: str
+    attempted_ref: str
+    verified_ref: str
+    gate_results: list[GateResult]
+    journal_path: str | None = None
+
+
+@activity.defn
+async def capture_attempt_evidence(
+    request: CaptureAttemptEvidenceInput,
+) -> AttemptGitEvidence:
+    """Read exact Git evidence while the worktree still exists."""
+    values = capture_git_evidence(
+        request.worktree_path,
+        base_ref=request.base_ref,
+        attempted_ref=request.attempted_ref,
+        verified_ref=request.verified_ref,
+        gate_results=request.gate_results,
+        evidence_id=request.evidence_id,
+        epic_id=request.epic_id,
+        node_id=request.node_id,
+        attempt=request.attempt,
+        dispatch=request.dispatch,
+    )
+    files = tuple(
+        GitFileChange(
+            path=item.path,
+            status=item.status,
+            old_path=item.old_path,
+            binary=item.binary,
+        )
+        for item in values["files"]
+    )
+    record = AttemptGitEvidence(
+        evidence_id=str(values["evidence_id"]),
+        epic_id=str(values["epic_id"]),
+        node_id=str(values["node_id"]),
+        attempt=int(values["attempt"]),
+        dispatch=str(values["dispatch"]),
+        base_commit=str(values["base_commit"]),
+        attempted_commit=str(values["attempted_commit"]),
+        verified_commit=str(values["verified_commit"]),
+        files=files,
+        log_tail=str(values["log_tail"]),
+        log_truncated=bool(values["log_truncated"]),
+        tests_executed=tuple(values["tests_executed"]),
+        coverage_status=str(values["coverage_status"]),
+    )
+    if request.journal_path:
+        record_attempt_evidence(request.journal_path, record)
+    return record
 
 
 @activity.defn

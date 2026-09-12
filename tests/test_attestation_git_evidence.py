@@ -116,7 +116,7 @@ async def test_capture_exact_refs_and_safe_file_manifest(
     assert ("removed.txt", "D", False) in statuses
     assert ("renamed-later.txt", "R100", False) in statuses
     assert ("binary.bin", "A", True) in statuses
-    assert ("new line \n and unicode.txt", "A", False) in statuses
+    assert ("new line \n and é.txt", "A", False) in statuses
     assert all("\0" not in item.path for item in evidence.files)
     assert evidence.tests_executed == ("pytest",)
     assert evidence.coverage_status == "absent"
