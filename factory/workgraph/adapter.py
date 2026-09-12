@@ -94,7 +94,7 @@ from factory.verify.toolchain import (
     system_tree_argv,
 )
 from factory.workgraph.detector import compare_and_report, capture_start
-from factory.workgraph.codex_events import decode_codex_events
+from factory.workgraph.codex_events import INVALID_JSON, decode_codex_events
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 
@@ -2213,13 +2213,19 @@ class CodexAdapter:
     def _archive_final_message(
         self, env: Mapping[str, str], archive: Path
     ) -> None:
-        """Keep neutral consumers on plain text: the last agent message only."""
+        """Keep neutral consumers on plain text: the last agent message only.
+
+        A stream that never decoded as JSONL can still carry the legacy plain
+        CLI output; preserving that value keeps the older adapter contracts
+        readable without publishing a valid raw Codex event stream.
+        """
         try:
+            evidence = self._current_evidence(env)
             plain_log = archive / STDOUT_LOG_NAME
-            plain_log.write_text(
-                f"{self._current_evidence(env).final_message.text}\n",
-                encoding="utf-8",
-            )
+            if evidence.final_message is not None:
+                plain_log.write_text(f"{evidence.final_message.text}\n", encoding="utf-8")
+            elif any(reason.code == INVALID_JSON for reason in evidence.reasons):
+                plain_log.write_bytes((archive / CODEX_EVENTS_NAME).read_bytes())
         except (AttributeError, OSError):
             pass
 

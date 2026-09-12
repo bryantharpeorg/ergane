@@ -28,6 +28,8 @@ import pytest
 
 from factory.usage.models import Termination
 from factory.workgraph.adapter import (
+    CODEX_EVENTS_NAME,
+    CODEX_STDERR_NAME,
     HostAgentBackend,
     codex_home_path,
     home_path,
@@ -121,16 +123,17 @@ def build_attempt(worker_cwd: Path, tmp_path: Path) -> Callable[..., AttemptCont
     return build
 
 
-async def test_two_nodes_keep_distinct_homes_and_each_archive_holds_its_own_rollout(
+async def test_two_nodes_keep_distinct_homes_and_current_evidence(
     adapter: Any,
     build_attempt: Callable[..., AttemptContext],
     worker_cwd: Path,
     tmp_path: Path,
 ) -> None:
     """US1-S3: two successful strict children — one on the relative home, one
-    on an already-absolute home — emit distinct synthetic rollouts; production
-    turn detection and the archive step find each node's own rollout; the two
-    homes stay distinct; and the already-absolute case retains its location.
+    on an already-absolute home — write distinct synthetic rollouts; current
+    JSONL evidence decides turn detection, so a session-meta rollout is not
+    promoted. The two homes stay distinct, and the already-absolute case
+    retains its location.
     """
     from factory.workgraph.adapter import CodexAdapter
 
@@ -159,8 +162,8 @@ async def test_two_nodes_keep_distinct_homes_and_each_archive_holds_its_own_roll
     assert record_a["codex_home"] != record_b["codex_home"]
     assert record_a["read"] == record_b["read"] == "config.toml"
 
-    # Production turn detection answers per node, from the env each launch
-    # built — not by re-deriving the home from a helper in the test.
+    # Production turn detection answers per node, from the current stream
+    # each launch built — not from the rollout tree or a sibling's home.
     codex = CodexAdapter(executable="codex")
     env_a = {
         "HOME": str(relative_home),
@@ -170,17 +173,16 @@ async def test_two_nodes_keep_distinct_homes_and_each_archive_holds_its_own_roll
         "HOME": str(absolute_home),
         CODEX_HOME_ENV: record_b["codex_home"],
     }
-    assert codex._turn_happened(relative_context, Path(relative_context.worktree_path), env_a)
-    assert codex._turn_happened(absolute_context, Path(absolute_context.worktree_path), env_b)
+    assert not codex._turn_happened(relative_context, Path(relative_context.worktree_path), env_a)
+    assert not codex._turn_happened(absolute_context, Path(absolute_context.worktree_path), env_b)
 
-    # The archive carries each node's own rollout, beside its own log.
+    # The archive carries the current stream, but not an unproven rollout.
     for node, record in ((NODE_A, record_a), (NODE_B, record_b)):
         archived = transcript_dir(factory_root, EPIC, node, ATTEMPT)
         archived_rollouts = sorted(p.name for p in archived.glob("rollout-*.jsonl"))
-        assert archived_rollouts == [Path(str(record["rollout"])).name], (
-            f"node {node}: the archive did not carry exactly its own rollout "
-            f"(archived {archived_rollouts})"
-        )
+        assert archived_rollouts == [], f"node {node} archived an unproven rollout"
+        assert (archived / CODEX_EVENTS_NAME).is_file()
+        assert (archived / CODEX_STDERR_NAME).is_file()
         source = Path(str(record["rollout"]))
         assert source.is_file() and source.is_relative_to(
             codex_home_path(relative_home if node == NODE_A else absolute_home)
@@ -214,4 +216,4 @@ async def test_the_already_absolute_home_retains_its_location(
     # The seeding happened at the declared location, not beside it.
     assert (codex_home_path(declared) / "config.toml").is_file()
     archived = transcript_dir(factory_root, EPIC, NODE_B, ATTEMPT)
-    assert any(p.name.startswith("rollout-") for p in archived.glob("rollout-*.jsonl"))
+    assert (archived / CODEX_EVENTS_NAME).is_file()

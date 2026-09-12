@@ -29,6 +29,7 @@ from temporalio.testing import ActivityEnvironment
 from factory.activities.agent_activities import run_agent_attempt
 from factory.usage.models import Termination
 from factory.workgraph.adapter import (
+    CODEX_STDERR_NAME,
     CODEX_REFUSAL_MARKER,
     STDOUT_LOG_NAME,
     home_path,
@@ -159,8 +160,10 @@ async def test_a_codex_auth_refusal_is_named_not_silent(
 
     assert result.termination == Termination.AUTH_FAILURE
     # The evidence beside the classification is the measured stream: the fatal
-    # line reached the combined log the scanner reads.
-    assert CODEX_REFUSAL_MARKER in stdout_log(factory_root)
+    # line reached the separate diagnostic spool the scanner reads.
+    assert CODEX_REFUSAL_MARKER in (
+        archive_dir(factory_root) / CODEX_STDERR_NAME
+    ).read_text(encoding="utf-8")
 
 
 # --- US2-S2: the measured string replays both ways ------------------------------
@@ -186,14 +189,14 @@ async def test_a_codex_failure_without_the_marker_stays_an_ordinary_agent_error(
     node_home: Path,
     factory_root: Path,
 ) -> None:
-    """US2-S2, the other way: the same run shape — exit 1, a turn behind it —
-    with the marker absent is ordinary ladder input, not a refusal. The
+    """US2-S2, the other way: the same run shape — exit 1, no model activity —
+    with the marker absent is a pre-agent failure, not a refusal. The
     classification is marker-driven, so a story's own failure keeps its class."""
     write_control(node_home, exit_code=1, stdout="the gate failed: 3 assertions")
 
     result = await ActivityEnvironment().run(run_agent_attempt, context())
 
-    assert result.termination == Termination.AGENT_ERROR
+    assert result.termination == Termination.PRE_AGENT_FAILURE
     assert "the gate failed" in stdout_log(factory_root)
 
 
@@ -226,7 +229,7 @@ async def test_reasoning_text_defeats_no_refusal(
 ) -> None:
     """US2-S3, the defeats half: a refused run whose reasoning streams beside
     the fatal line still ends `auth_failure` — reasoning text cannot erase a
-    measured marker, and the scan reads the combined log the CLI wrote."""
+    measured marker, and the scan reads the separate diagnostic spool."""
     write_control(
         node_home,
         exit_code=1,

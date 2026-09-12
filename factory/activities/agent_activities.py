@@ -83,6 +83,7 @@ from factory.verify.factory_yaml import (
 )
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import (
+    CODEX_STDERR_NAME,
     DEFAULT_HEARTBEAT_INTERVAL_S,
     SESSION_ID_REFUSAL_MARKER,
     STDOUT_LOG_NAME,
@@ -612,16 +613,22 @@ def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult
     adapter that ran declared the markers — a CLI whose refusal shape differs
     declares its own; nothing here knows a stream by name.
     """
-    if result.termination != Termination.AGENT_ERROR:
+    if result.termination not in (Termination.AGENT_ERROR, Termination.PRE_AGENT_FAILURE):
         return result
     if not result.transcript_path:
         return result
 
-    log_path = Path(result.transcript_path) / STDOUT_LOG_NAME
-    try:
-        log_text = log_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return result
+    archive = Path(result.transcript_path)
+    log_paths = [archive / STDOUT_LOG_NAME]
+    separate_stderr = archive / CODEX_STDERR_NAME
+    if separate_stderr.is_file():
+        log_paths.append(separate_stderr)
+    log_text = ""
+    for log_path in log_paths:
+        try:
+            log_text += log_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
     markers = _declared_refusal_markers(adapter)
     if not any(marker in log_text for marker in markers):
         return result
