@@ -107,3 +107,33 @@ def test_attempt_artifacts_returns_their_declared_fields(
     assert all(
         artifact.stored_path == "/tmp/coverage.xml" for artifact in artifacts
     )
+
+
+def test_attempt_artifacts_stay_scoped_to_one_attempt(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "verification.db"
+    with connect(database) as connection:
+        upsert_result(
+            connection,
+            _result(
+                "us4",
+                1,
+                artifacts=(_artifact("test", "first.xml"),),
+            ),
+        )
+        upsert_result(
+            connection,
+            _result(
+                "us4",
+                2,
+                artifacts=(_artifact("test", "second.xml"),),
+            ),
+        )
+
+    with connect_readonly(database) as connection:
+        first = attempt_artifacts(connection, "134-epic", "us4", 1)
+        second = attempt_artifacts(connection, "134-epic", "us4", 2)
+
+    assert [artifact.path for artifact in first] == ["first.xml"]
+    assert [artifact.path for artifact in second] == ["second.xml"]
