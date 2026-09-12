@@ -42,3 +42,45 @@ class LaunchRecord:
     transition_reason: str
     outcome: str | None = None
     outcome_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class JudgeDelivery:
+    """One observable transport delivery, including a failed retry."""
+
+    delivery_ordinal: int
+    status: str
+    error: str | None = None
+    response_id: str | None = None
+
+
+@dataclass(frozen=True)
+class JudgeEvaluationRecord:
+    """One actual scoring result or bounded failure, captured before re-ask."""
+
+    evaluation_id: str
+    scoring_job_id: str
+    scoring_call_ordinal: int
+    invocation_id: str
+    key_alias: str
+    criteria_fingerprint: str
+    tested_revision: str
+    status: str
+    model_alias: str
+    runner: str = "litellm-chat-completions"
+    route: str = "gateway"
+    backend: str = "litellm-chat-completions"
+    scenario_results: tuple[tuple[str, bool, str], ...] = ()
+    feedback: str = ""
+    parse_error: str | None = None
+    deliveries: tuple[JudgeDelivery, ...] = ()
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    request_count: int | None = None
+    spend_usd: float | None = None
+    usage_status: str = "unknown"
+    usage_error: str | None = None
+    truncated_input: bool = False
+    gates_shown: bool = False

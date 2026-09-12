@@ -6,7 +6,12 @@ import json
 import sqlite3
 from pathlib import Path
 
-from factory.attestation.models import LaunchRecord, RungSelection
+from factory.attestation.models import (
+    JudgeDelivery,
+    JudgeEvaluationRecord,
+    LaunchRecord,
+    RungSelection,
+)
 from factory.attestation.usage import UsageObservation
 
 SCHEMA_VERSION = 1
@@ -52,6 +57,36 @@ CREATE TABLE IF NOT EXISTS usage_observations (
     request_count INTEGER,
     spend_usd REAL
 );
+CREATE TABLE IF NOT EXISTS judge_evaluations (
+    evaluation_id TEXT PRIMARY KEY,
+    scoring_job_id TEXT NOT NULL,
+    scoring_call_ordinal INTEGER NOT NULL,
+    invocation_id TEXT NOT NULL,
+    key_alias TEXT NOT NULL,
+    criteria_fingerprint TEXT NOT NULL,
+    tested_revision TEXT NOT NULL,
+    status TEXT NOT NULL,
+    model_alias TEXT NOT NULL,
+    runner TEXT NOT NULL,
+    route TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    scenario_results TEXT NOT NULL,
+    feedback TEXT NOT NULL,
+    parse_error TEXT,
+    deliveries TEXT NOT NULL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    request_count INTEGER,
+    spend_usd REAL,
+    usage_status TEXT NOT NULL,
+    usage_error TEXT,
+    truncated_input INTEGER NOT NULL,
+    gates_shown INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_judge_evaluations_job
+    ON judge_evaluations (scoring_job_id, scoring_call_ordinal);
 """
 
 
@@ -210,3 +245,113 @@ def read_usage_observations(path: str | Path) -> tuple[UsageObservation, ...]:
             ).description
         ]
     return tuple(UsageObservation(**dict(zip(columns, row))) for row in rows)
+
+
+def record_scoring_evaluation(
+    path: str | Path, record: JudgeEvaluationRecord
+) -> JudgeEvaluationRecord:
+    """Persist one scoring result idempotently by its evaluation identity."""
+    with connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        values = {
+            **{
+                field.name: getattr(record, field.name)
+                for field in record.__dataclass_fields__.values()
+            },
+            "scenario_results": json.dumps(
+                [list(result) for result in record.scenario_results],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "deliveries": json.dumps(
+                [
+                    {
+                        "delivery_ordinal": delivery.delivery_ordinal,
+                        "status": delivery.status,
+                        "error": delivery.error,
+                        "response_id": delivery.response_id,
+                    }
+                    for delivery in record.deliveries
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "truncated_input": int(record.truncated_input),
+            "gates_shown": int(record.gates_shown),
+        }
+        columns = tuple(values)
+        connection.execute(
+            f"INSERT INTO judge_evaluations ({', '.join(columns)}) VALUES "
+            f"({', '.join(':' + name for name in columns)}) "
+            "ON CONFLICT(evaluation_id) DO UPDATE SET "
+            + ", ".join(
+                f"{name} = excluded.{name}" for name in columns if name != "evaluation_id"
+            ),
+            values,
+        )
+        connection.commit()
+    return record
+
+
+def read_scoring_evaluations(
+    path: str | Path, scoring_job_id: str | None = None
+) -> tuple[JudgeEvaluationRecord, ...]:
+    """Read persisted evaluations, oldest scoring call first."""
+    with connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        where = "" if scoring_job_id is None else "WHERE scoring_job_id = ?"
+        arguments: tuple[Any, ...] = ()
+        if scoring_job_id is not None:
+            arguments = (scoring_job_id,)
+        rows = connection.execute(
+            "SELECT * FROM judge_evaluations "
+            f"{where} ORDER BY scoring_call_ordinal, evaluation_id",
+            arguments,
+        ).fetchall()
+
+    records: list[JudgeEvaluationRecord] = []
+    for row in rows:
+        results = tuple(
+            (item[0], bool(item[1]), item[2])
+            for item in json.loads(row["scenario_results"])
+        )
+        deliveries = tuple(
+            JudgeDelivery(
+                delivery_ordinal=item["delivery_ordinal"],
+                status=item["status"],
+                error=item["error"],
+                response_id=item["response_id"],
+            )
+            for item in json.loads(row["deliveries"])
+        )
+        records.append(
+            JudgeEvaluationRecord(
+                evaluation_id=row["evaluation_id"],
+                scoring_job_id=row["scoring_job_id"],
+                scoring_call_ordinal=row["scoring_call_ordinal"],
+                invocation_id=row["invocation_id"],
+                key_alias=row["key_alias"],
+                criteria_fingerprint=row["criteria_fingerprint"],
+                tested_revision=row["tested_revision"],
+                status=row["status"],
+                model_alias=row["model_alias"],
+                runner=row["runner"],
+                route=row["route"],
+                backend=row["backend"],
+                scenario_results=results,
+                feedback=row["feedback"],
+                parse_error=row["parse_error"],
+                deliveries=deliveries,
+                prompt_tokens=row["prompt_tokens"],
+                completion_tokens=row["completion_tokens"],
+                cache_read_tokens=row["cache_read_tokens"],
+                cache_write_tokens=row["cache_write_tokens"],
+                request_count=row["request_count"],
+                spend_usd=row["spend_usd"],
+                usage_status=row["usage_status"],
+                usage_error=row["usage_error"],
+                truncated_input=bool(row["truncated_input"]),
+                gates_shown=bool(row["gates_shown"]),
+            )
+        )
+    return tuple(records)

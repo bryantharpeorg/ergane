@@ -19,12 +19,26 @@ from factory.activities.usage_activities import (
 from factory.attestation import read_scoring_evaluations, read_usage_evidence
 from factory.usage.litellm_client import LiteLLMClient
 from factory.usage.models import Termination
-from factory.verify.judge import run_judge
+from factory.verify.judge import run_scoring_job
 from factory.verify.models import (
     CriteriaSet,
+    GateResult,
+    GateStatus,
     Requirement,
     RequirementKind,
     Scenario,
+)
+
+
+GATE_RESULTS = (
+    GateResult(
+        name="test",
+        command="pytest",
+        status=GateStatus.PASS,
+        exit_code=0,
+        duration_s=1.0,
+        output_tail="1 passed",
+    ),
 )
 from tests.conftest import FakeLiteLLM
 from tests.judge_proxy import FakeJudgeProxy, verdict_json
@@ -101,9 +115,12 @@ async def score(
     sink: Callable[[Any], None] | None = None,
     **kwargs: Any,
 ) -> Any:
-    return await run_judge(
+    return await run_scoring_job(
         CRITERIA,
         "diff",
+        scoring_job_id="us2:1:score",
+        invocation_id="run-167:us2:judge:score:1",
+        tested_revision="attempt-tree-1",
         proxy_url=proxy.base_url,
         virtual_key=proxy.virtual_key,
         model_alias="judge-model",
@@ -123,7 +140,7 @@ async def test_the_real_reask_loop_keeps_malformed_contradictory_and_valid_evalu
         verdict_json_(
             verdict="pass",
             results=(
-                ("US2-S1", False, "S1 failed but the test gate is green"),
+                ("US2-S1", False, "the test gate would fail"),
                 ("US2-S2", True, "S2 passed"),
             ),
             feedback="contradictory draft",
@@ -140,7 +157,12 @@ async def test_the_real_reask_loop_keeps_malformed_contradictory_and_valid_evalu
     )
 
     records: list[Any] = []
-    verdict = await score(proxy, sink=records.append, max_judge_retries=2)
+    verdict = await score(
+        proxy,
+        sink=records.append,
+        max_judge_retries=2,
+        gate_results=GATE_RESULTS,
+    )
 
     assert verdict.judge_attempt == 3
     assert verdict.outcome.value == "PASS"
@@ -155,7 +177,7 @@ async def test_the_real_reask_loop_keeps_malformed_contradictory_and_valid_evalu
     assert len({record.evaluation_id for record in records}) == 3
     assert records[0].parse_error
     assert records[1].scenario_results == (
-        ("US2-S1", False, "S1 failed but the test gate is green"),
+        ("US2-S1", False, "the test gate would fail"),
         ("US2-S2", True, "S2 passed"),
     )
     assert all(record.prompt_tokens == 1200 for record in records)
@@ -183,11 +205,13 @@ async def test_transport_redelivery_is_one_evaluation_with_two_deliveries(
     assert len(records) == 1
     evaluation = records[0]
     assert evaluation.status == "valid"
-    assert [(item["status"], item["delivery_ordinal"]) for item in evaluation.deliveries] == [
+    assert [
+        (item.status, item.delivery_ordinal) for item in evaluation.deliveries
+    ] == [
         ("transport_error", 1),
         ("delivered", 2),
     ]
-    assert evaluation.deliveries[0]["error"]
+    assert evaluation.deliveries[0].error
     assert evaluation.usage_status == "partial"
 
 
@@ -207,7 +231,6 @@ async def test_one_scoring_job_has_one_usage_total_and_unknown_request_metrics(
     )
     environment = ActivityEnvironment()
     lease = await environment.run(issue_attempt_key, judge_input())
-    litellm_env.add_spend_row(lease.key, prompt_tokens=1200, completion_tokens=180, spend=0.01)
     await environment.run(
         teardown_attempt,
         __import__("factory.activities.usage_activities", fromlist=["TeardownInput"]).TeardownInput(
@@ -218,8 +241,8 @@ async def test_one_scoring_job_has_one_usage_total_and_unknown_request_metrics(
     evidence = read_usage_evidence(ledger)
     assert len(evidence) == 1
     assert evidence[0].builder_or_judge == "judge"
-    assert evidence[0].metrics["prompt_tokens"].value == 1200
-    assert evidence[0].metrics["completion_tokens"].value == 180
+    assert evidence[0].metrics["prompt_tokens"].value is None
+    assert evidence[0].metrics["completion_tokens"].value is None
     assert evidence[0].metrics["request_count"].value is None
     assert evidence[0].metrics["request_count"].complete is False
     assert read_scoring_evaluations(journal) == ()
