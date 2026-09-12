@@ -44,7 +44,14 @@ import temporalio.api.common.v1 as common
 import temporalio.workflow
 from temporalio.converter import default as default_data_converter
 
-from factory.roadmap.workflow import RoadmapStatus, RoadmapWorkflow
+from factory.roadmap.models import SpecState
+from factory.roadmap.workflow import (
+    ParkedFinding,
+    RoadmapCarryOver,
+    RoadmapSpecStatus,
+    RoadmapStatus,
+    RoadmapWorkflow,
+)
 from factory.usage.ledger import connect, upsert_record
 from factory.usage.models import Termination, UsageRecord
 from factory.worker import ACTIVITIES, WORKFLOWS
@@ -172,6 +179,70 @@ def test_the_zero_state_query_reports_the_bounds_in_force() -> None:
     assert answer.parked == []
     assert answer.max_concurrent_epics == 3
     assert answer.max_concurrent_nodes == 4
+
+
+def test_roadmap_carry_over_reconstructs_from_a_payload_without_a_snapshot() -> None:
+    """A history recorded before the query snapshot must decode unchanged."""
+    current = RoadmapCarryOver()
+
+    reconstructed = decode_as(payload_missing(current, "previous_status"), RoadmapCarryOver)
+
+    assert reconstructed == current
+    assert reconstructed.previous_status is None
+
+
+def test_roadmap_carry_over_round_trips_the_query_snapshot() -> None:
+    """The snapshot is a payload field, not in-memory-only workflow state."""
+    previous_status = RoadmapStatus(
+        specs=[],
+        running=[],
+        parked=[],
+        max_concurrent_epics=2,
+        max_concurrent_nodes=3,
+        paused=True,
+    )
+    current = RoadmapCarryOver(previous_status=previous_status)
+
+    reconstructed = decode_as(payload_of(current), RoadmapCarryOver)
+
+    assert reconstructed == current
+
+
+def test_the_query_snapshot_overlays_current_parked_state() -> None:
+    """A carried parked refusal cannot survive the current `unpark_spec` map."""
+    spec_row = RoadmapSpecStatus(
+        spec_dir="001-alpha",
+        state=SpecState.READY,
+        dispatchable=True,
+        blockers=[],
+        landed=False,
+        unlanded=[],
+        rendered_state="ready",
+    )
+    refusal = ParkedFinding(
+        spec_dir="001-alpha",
+        check="model-aliases-served",
+        detail="the proxy does not serve every alias this registry names.",
+    )
+    roadmap = RoadmapWorkflow()
+    roadmap._roadmap = None
+    roadmap._previous_status = RoadmapStatus(
+        specs=[spec_row],
+        running=[],
+        parked=[],
+        max_concurrent_epics=2,
+        max_concurrent_nodes=4,
+        paused=False,
+    )
+    roadmap._parked = {"001-alpha": refusal}
+
+    while_parked = roadmap.roadmap_status()
+    assert while_parked.parked == [refusal]
+
+    roadmap._parked.clear()
+    after_unpark = roadmap.roadmap_status()
+    assert after_unpark.parked == []
+    assert after_unpark.specs == [spec_row]
 
 
 def test_preserved_repeated_teardown_result_round_trips_as_usage_record(
