@@ -9,6 +9,7 @@ from factory.usage.models import Termination
 from factory.workgraph.adapter import CODEX_EVENTS_NAME, ATTEMPT_ARCHIVE_ENV, CodexAdapter
 from factory.workgraph.codex_events import decode_codex_events
 from factory.activities.agent_activities import _classify_auth_failure
+from factory.verify.question import detect_codex_question
 
 
 AUTH_MARKERS = ("unexpected status 401 Unauthorized",)
@@ -30,6 +31,12 @@ def _evidence(tmp_path: Path, events: list[dict[str, object]]):
     adapter = CodexAdapter()
     archive = _codex_events_file(tmp_path, events)
     return adapter._current_evidence({ATTEMPT_ARCHIVE_ENV: str(archive)})
+
+
+def _decode(events: list[dict[str, object]]):
+    return decode_codex_events(
+        [f"{json.dumps(event)}\n" for event in events]
+    )
 
 
 def test_classification_does_not_fall_back_to_quoted_combined_text(
@@ -139,6 +146,80 @@ def test_an_auth_error_and_unrelated_terminal_stay_ordinary(tmp_path: Path) -> N
     assert _typed_codex_auth_outcome(
         evidence, AUTH_MARKERS, Termination.PRE_AGENT_FAILURE
     ) == Termination.PRE_AGENT_FAILURE
+
+
+def test_only_the_final_agent_message_can_ask() -> None:
+
+    marker = "## OPERATOR QUESTION\nWhich option should we take?"
+    for event in [
+        {"id": "thought", "type": "reasoning", "text": marker},
+        {
+            "id": "command",
+            "type": "command_execution",
+            "command": "cat",
+            "output": marker,
+            "exit_code": 0,
+        },
+        {
+            "id": "fixture",
+            "type": "file_change",
+            "path": "tests/quoted-## OPERATOR QUESTION.txt",
+            "change_kind": "add",
+        },
+        {
+            "id": "diagnostic",
+            "type": "error",
+            "message": marker,
+        },
+    ]:
+        events = [
+            {"type": "thread.started", "thread_id": "thread-question"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": event},
+            {
+                "type": "item.completed",
+                "item": {"id": "final", "type": "agent_message", "text": "Done."},
+            },
+            {"type": "turn.completed", "usage": {}},
+        ]
+        assert detect_codex_question(_decode(events)) is None
+
+    events = [
+        {"type": "thread.started", "thread_id": "thread-question"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"id": "earlier", "type": "agent_message", "text": marker},
+        },
+        {
+            "type": "item.completed",
+            "item": {"id": "final", "type": "agent_message", "text": "Done."},
+        },
+        {"type": "turn.completed", "usage": {}},
+    ]
+    assert detect_codex_question(_decode(events)) is None
+
+
+def test_the_final_agent_message_satisfying_the_marker_asks() -> None:
+    marker = "## OPERATOR QUESTION\nThe fork: A or B. I lean A."
+    events = [
+        {"type": "thread.started", "thread_id": "thread-question"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"id": "thought", "type": "reasoning", "text": marker},
+        },
+        {
+            "type": "item.completed",
+            "item": {"id": "final", "type": "agent_message", "text": marker},
+        },
+        {"type": "turn.completed", "usage": {}},
+    ]
+
+    detected = detect_codex_question(_decode(events))
+    assert detected is not None
+    assert detected.is_question is True
+    assert detected.text == "The fork: A or B. I lean A."
 
 
 def test_a_typed_400_body_with_quoted_401_text_stays_non_auth(
