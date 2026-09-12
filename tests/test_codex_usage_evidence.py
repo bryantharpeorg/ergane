@@ -32,6 +32,10 @@ def decode(lines: list[str]):
     return decode_codex_events(raw.splitlines(keepends=True))
 
 
+def normalize(lines: list[str]):
+    return normalize_codex_usage(decode(lines))
+
+
 def test_completed_turn_maps_each_supported_count() -> None:
     evidence = decode(completed_stream())
 
@@ -43,6 +47,72 @@ def test_completed_turn_maps_each_supported_count() -> None:
     assert usage.cached_input_tokens == 5
     assert usage.output_tokens == 23
     assert usage.reasoning_output_tokens == 7
+
+
+def test_boolean_is_not_a_token_count() -> None:
+    lines = completed_stream()
+    lines[-1] = lines[-1].replace('"input_tokens":17', '"input_tokens":true')
+
+    usage = normalize(lines)
+
+    assert usage.input_tokens is None
+    assert usage.cached_input_tokens == 5
+    assert usage.output_tokens == 23
+    assert usage.reasoning_output_tokens == 7
+    assert usage.complete is False
+    assert usage.reason == "malformed-usage"
+
+
+@pytest.mark.parametrize(
+    ("lines", "reason"),
+    [
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+            ],
+            None,
+        ),
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+                '{"type":"turn.completed","usage":{"input_tokens":17}}',
+            ],
+            "partial-usage",
+        ),
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+                '{"type":"turn.failed","error":{"message":"provider error"}}',
+            ],
+            "turn-failed",
+        ),
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+                '{"type":"turn.failed","error":{"message":"provider error"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":17,'
+                '"output_tokens":23}}',
+            ],
+            "duplicate-terminal",
+        ),
+    ],
+)
+def test_unobserved_usage_stays_unknown_and_not_complete(
+    lines: list[str], reason: str | None
+) -> None:
+    usage = normalize(lines)
+
+    assert usage.complete is False
+    assert usage.source == "codex_cli"
+    assert usage.input_tokens is None
+    assert usage.cached_input_tokens is None
+    assert usage.output_tokens is None
+    assert usage.reasoning_output_tokens is None
+    assert usage.reason == reason
 
 
 def test_gateway_rollup_does_not_add_codex_corroboration(
