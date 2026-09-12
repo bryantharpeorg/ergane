@@ -52,6 +52,7 @@ def _result(
     attempt: int,
     *,
     artifacts: tuple[GateArtifact, ...],
+    dispatch: str = "workflow-run-1",
 ) -> VerificationResult:
     gate = GateResult(
         name="test",
@@ -83,7 +84,7 @@ def _result(
         spec_ref="134/US4",
         started_at="2026-01-01T00:00:00Z",
         finished_at="2026-01-01T00:01:00Z",
-        dispatch="workflow-run-1",
+        dispatch=dispatch,
     )
 
 
@@ -229,6 +230,7 @@ def test_an_ambiguous_old_style_request_refuses(
             _result(
                 "us4",
                 1,
+                dispatch="workflow-run-1",
                 artifacts=(
                     _artifact(
                         "test",
@@ -244,6 +246,7 @@ def test_an_ambiguous_old_style_request_refuses(
             _result(
                 "us4",
                 1,
+                dispatch="workflow-run-2",
                 artifacts=(
                     _artifact(
                         "test",
