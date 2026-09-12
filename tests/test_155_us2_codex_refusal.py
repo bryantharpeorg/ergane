@@ -8,17 +8,18 @@ story wires it into the classification path the activity layer owns, so a
 refused run ends NAMED (`auth_failure`), never silent.
 
 These tests drive `run_agent_attempt` — the function production calls — with
-`tests/stub_codex.py` standing in for the CLI, and script the measured refusal
-shapes (re-measured 2026-09-08 on `@openai/codex@0.153.4`: exit 1, stdout
-empty, fatal lines on stderr, a rollout file written anyway). Scenarios:
-US2-S1/FR-005 (a refusal is classified, from the measured text); US2-S2 (the
-measured string replays both ways — named refusal, and the ordinary-failure
-control); US2-S3/FR-007 (cleartext reasoning neither satisfies nor defeats
-detection).
+`tests/stub_codex.py` standing in for the CLI, and script the typed fatal
+shapes 160 measured on 2026-09-10 (top-level `error` plus the matching
+`turn.failed`). The stderr-only fixture remains the no-event compatibility
+control. Scenarios: US2-S1/FR-005 (a refusal is classified, from typed
+evidence); US2-S2 (the measured string replays both ways — named refusal, and
+the ordinary-failure control); US2-S3/FR-007 (cleartext reasoning neither
+satisfies nor defeats typed detection).
 """
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -29,7 +30,7 @@ from temporalio.testing import ActivityEnvironment
 from factory.activities.agent_activities import run_agent_attempt
 from factory.usage.models import Termination
 from factory.workgraph.adapter import (
-    CODEX_STDERR_NAME,
+    CODEX_EVENTS_NAME,
     CODEX_REFUSAL_MARKER,
     STDOUT_LOG_NAME,
     home_path,
@@ -143,6 +144,16 @@ def stdout_log(factory_root: Path) -> str:
     return (archive_dir(factory_root) / STDOUT_LOG_NAME).read_text(encoding="utf-8")
 
 
+def _fatal_stream(fatal_message: str) -> str:
+    events = [
+        {"type": "thread.started", "thread_id": "thread-typed"},
+        {"type": "turn.started"},
+        {"type": "error", "message": fatal_message},
+        {"type": "turn.failed", "error": {"message": fatal_message}},
+    ]
+    return "".join(f"{json.dumps(event)}\n" for event in events)
+
+
 # --- US2-S1: the refusal is classified, from the measured text (FR-005) --------
 
 
@@ -151,10 +162,13 @@ async def test_a_codex_auth_refusal_is_named_not_silent(
     node_home: Path,
     factory_root: Path,
 ) -> None:
-    """US2-S1/FR-005: Codex invoked with no valid credential refuses on stderr
-    with exit 1 (measured; the inverse of Claude Code) — and the attempt ends
-    `auth_failure`, the named refusal, never a diffless `agent_error`."""
-    write_control(node_home, exit_code=1, stderr=CODEX_REFUSAL_MARKER)
+    """US2-S1/FR-005: Codex's typed 401 pair ends `auth_failure`, never silent."""
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout=_fatal_stream(CODEX_REFUSAL_MARKER),
+    )
 
     result = await ActivityEnvironment().run(run_agent_attempt, context())
 
@@ -162,7 +176,7 @@ async def test_a_codex_auth_refusal_is_named_not_silent(
     # The evidence beside the classification is the measured stream: the fatal
     # line reached the separate diagnostic spool the scanner reads.
     assert CODEX_REFUSAL_MARKER in (
-        archive_dir(factory_root) / CODEX_STDERR_NAME
+        archive_dir(factory_root) / CODEX_EVENTS_NAME
     ).read_text(encoding="utf-8")
 
 
@@ -177,7 +191,12 @@ async def test_the_measured_string_replays_as_a_named_refusal(
     """US2-S2, the refusal way: the exact measured substring, replayed through
     the production classifier, is a refusal — the control half asserting the
     thing 070's probe taught (a refused run must not read as silent success)."""
-    write_control(node_home, exit_code=1, stderr=f"ERROR: {CODEX_REFUSAL_MARKER}: no bearer")
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout=_fatal_stream(f"ERROR: {CODEX_REFUSAL_MARKER}: no bearer"),
+    )
 
     result = await ActivityEnvironment().run(run_agent_attempt, context())
 
@@ -192,12 +211,19 @@ async def test_a_codex_failure_without_the_marker_stays_an_ordinary_agent_error(
     """US2-S2, the other way: the same run shape — exit 1, no model activity —
     with the marker absent is a pre-agent failure, not a refusal. The
     classification is marker-driven, so a story's own failure keeps its class."""
-    write_control(node_home, exit_code=1, stdout="the gate failed: 3 assertions")
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout=_fatal_stream("the gate failed: 3 assertions"),
+    )
 
     result = await ActivityEnvironment().run(run_agent_attempt, context())
 
     assert result.termination == Termination.PRE_AGENT_FAILURE
-    assert "the gate failed" in stdout_log(factory_root)
+    assert "the gate failed" in (
+        archive_dir(factory_root) / CODEX_EVENTS_NAME
+    ).read_text(encoding="utf-8")
 
 
 # --- US2-S3: cleartext reasoning neither satisfies nor defeats (FR-007) ---------
@@ -211,11 +237,27 @@ async def test_reasoning_text_alone_satisfies_no_refusal(
     """US2-S3, the satisfies half: a successful run whose cleartext chain-of-
     thought mentions the refusal text stays COMPLETED — reasoning text is never
     a refusal, whatever it quotes (trap 1)."""
-    write_control(
-        node_home,
-        stdout='reasoning: the upstream returned "unexpected status 401 '
-        'Unauthorized" in an earlier turn; retrying worked. Final: ok',
+    reasoning = (
+        "reasoning: the upstream returned "
+        f'"{CODEX_REFUSAL_MARKER}" in an earlier turn; retrying worked.'
     )
+    stdout = "".join(
+        f"{json.dumps(event)}\n"
+        for event in [
+            {"type": "thread.started", "thread_id": "thread-reasoning"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {"id": "thought", "type": "reasoning", "text": reasoning},
+            },
+            {
+                "type": "item.completed",
+                "item": {"id": "final", "type": "agent_message", "text": "Final: ok"},
+            },
+            {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 2}},
+        ]
+    )
+    write_control(node_home, stdout=stdout)
 
     result = await ActivityEnvironment().run(run_agent_attempt, context())
 
@@ -227,15 +269,24 @@ async def test_reasoning_text_defeats_no_refusal(
     node_home: Path,
     factory_root: Path,
 ) -> None:
-    """US2-S3, the defeats half: a refused run whose reasoning streams beside
-    the fatal line still ends `auth_failure` — reasoning text cannot erase a
-    measured marker, and the scan reads the separate diagnostic spool."""
+    """US2-S3, the defeats half: quoted reasoning beside a typed fatal pair
+    still ends `auth_failure` — reasoning text is not the fatal source."""
+    reasoning = "reasoning: I should check whether the key expired before blaming the proxy."
+    stream = [
+        {"type": "thread.started", "thread_id": "thread-typed"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"id": "thought", "type": "reasoning", "text": reasoning},
+        },
+        {"type": "error", "message": CODEX_REFUSAL_MARKER},
+        {"type": "turn.failed", "error": {"message": CODEX_REFUSAL_MARKER}},
+    ]
     write_control(
         node_home,
         exit_code=1,
-        stdout="reasoning: I should check whether the key expired before "
-        "blaming the proxy.",
-        stderr=f"ERROR: {CODEX_REFUSAL_MARKER}: Missing bearer authentication",
+        write_rollout=False,
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
     )
 
     result = await ActivityEnvironment().run(run_agent_attempt, context())
