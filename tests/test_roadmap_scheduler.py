@@ -1827,6 +1827,120 @@ async def test_quiescent_query_overlays_signals_received_during_the_held_read(
         factory_roadmap_workflow.read_corpus_activity = original_read_corpus
 
 
+async def test_fresh_read_replaces_the_snapshot_and_controls_dispatch(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """FR-004/005 / US1-S4: the new corpus is the only scheduling authority.
+
+    `002-bravo` starts as a draft and therefore is carried into the
+    initialization gap as not dispatchable. The test edits it to `ready` while
+    the first new-run read is still held; only the completed fresh read makes
+    it dispatchable and only that fresh dispatch lands it.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.DRAFT),
+        },
+    )
+    original_read_corpus = factory_roadmap_workflow.read_corpus_activity
+    alpha_dispatched = asyncio.Event()
+    alpha_completed = asyncio.Event()
+    second_read_held = asyncio.Event()
+    release_second_read = asyncio.Event()
+    read_calls: list[str] = []
+
+    @activity.defn(name="read_corpus_activity")
+    async def held_second_read(request: dict) -> Roadmap:
+        typed_request = factory_roadmap_workflow.ReadCorpusInput(
+            specs_root=request["specs_root"]
+        )
+        read_calls.append(typed_request.specs_root)
+        if len(read_calls) == 1:
+            return await original_read_corpus(typed_request)
+        second_read_held.set()
+        await release_second_read.wait()
+        return await original_read_corpus(typed_request)
+
+    factory_roadmap_workflow.read_corpus_activity = held_second_read
+    try:
+        async with run_roadmap(
+            env,
+            RoadmapWorld(),
+            str(specs_root),
+            hold_specs={"001-alpha"},
+            on_dispatch=lambda epic_id: alpha_dispatched.set()
+            if epic_id == "001-alpha"
+            else None,
+            on_complete=lambda epic_id: alpha_completed.set()
+            if epic_id == "001-alpha"
+            else None,
+        ) as handle:
+            await alpha_dispatched.wait()
+            await handle.signal("pause_roadmap")
+            await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+            await alpha_completed.wait()
+            await second_read_held.wait()
+
+            carried = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            assert _status_of(carried, "002-bravo").state is SpecState.DRAFT
+            assert _status_of(carried, "002-bravo").dispatchable is False
+
+            _write_spec(specs_root / "002-bravo", state=SpecState.READY)
+            release_second_read.set()
+            await handle.signal("resume_roadmap")
+            fresh = await handle.result()
+            assert _status_of(fresh, "002-bravo").landed is True
+    finally:
+        factory_roadmap_workflow.read_corpus_activity = original_read_corpus
+
+
+async def test_a_fresh_first_run_holds_the_empty_initialization_answer(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """FR-003 / US1-S5: no snapshot means no fabricated row.
+
+    The same deterministic hold is applied to the very first read. With no
+    carry-over, the query must remain wire-compatible with the initialization
+    contract: zero spec rows, and the live bounds and pause flag still named.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {"001-alpha": dict(state=SpecState.READY)},
+    )
+    original_read_corpus = factory_roadmap_workflow.read_corpus_activity
+    first_read_held = asyncio.Event()
+    release_first_read = asyncio.Event()
+    read_calls: list[str] = []
+
+    @activity.defn(name="read_corpus_activity")
+    async def held_first_read(request: dict) -> Roadmap:
+        typed_request = factory_roadmap_workflow.ReadCorpusInput(
+            specs_root=request["specs_root"]
+        )
+        read_calls.append(typed_request.specs_root)
+        first_read_held.set()
+        await release_first_read.wait()
+        return await original_read_corpus(typed_request)
+
+    factory_roadmap_workflow.read_corpus_activity = held_first_read
+    try:
+        async with run_roadmap(env, RoadmapWorld(), str(specs_root)) as handle:
+            await first_read_held.wait()
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            assert status.specs == []
+            assert status.running == []
+            assert status.max_concurrent_epics == 1
+            assert status.max_concurrent_nodes == 1
+
+            release_first_read.set()
+            final_status = await handle.result()
+            assert _status_of(final_status, "001-alpha").landed is True
+    finally:
+        factory_roadmap_workflow.read_corpus_activity = original_read_corpus
+
+
 # ============================================================================
 # T013 / T014 — US3 idle behaviour (must fail before the field/signal lands)
 # ============================================================================
