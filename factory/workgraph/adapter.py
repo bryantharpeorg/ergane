@@ -1350,8 +1350,8 @@ class SharedAttemptPolicy:
                 await self._reclaim(process)
                 self._archive_session(context, worktree, env, archive)
                 _clear_pid_file(pids)
-                self._finish_raw_files(context, archive)
                 self._archive_plain_final(env, archive)
+                self._finish_raw_files(context, archive)
                 if target_repo is not None:
                     compare_and_report(Path(factory_root), target_repo, context)
                 raise
@@ -1360,8 +1360,8 @@ class SharedAttemptPolicy:
 
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
-        self._finish_raw_files(context, archive)
         self._archive_plain_final(env, archive)
+        self._finish_raw_files(context, archive)
         if target_repo is not None:
             compare_and_report(Path(factory_root), target_repo, context)
         return AdapterResult(

@@ -437,20 +437,19 @@ async def test_raw_files_declare_and_record_size_and_retention(
     from factory.workgraph import adapter as adapter_module
 
     monkeypatch.setattr(adapter_module, "CODEX_RAW_MAX_BYTES", 32)
-    stream = [{"type": "thread.started", "thread_id": "thread-current"}]
     write_control(
         node_home,
         exit_code=1,
         write_rollout=False,
-        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
         stderr="d" * 64,
     )
 
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
     archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
     status = json.loads((archive / CODEX_RAW_STATUS_NAME).read_text())
+    plain_log = (archive / STDOUT_LOG_NAME).read_text()
 
-    assert result.termination == Termination.PRE_AGENT_FAILURE
+    assert result.termination == Termination.AGENT_ERROR
     assert adapter_module.CODEX_RAW_MAX_BYTES == 32
     assert adapter_module.CODEX_RAW_RETENTION_FILES == 1
     assert len((archive / CODEX_EVENTS_NAME).read_bytes()) <= 32
@@ -459,6 +458,7 @@ async def test_raw_files_declare_and_record_size_and_retention(
     assert status["codex-events.jsonl"]["completeness"] == "incomplete"
     assert status["codex-stderr.log"]["truncated"] is True
     assert status["codex-stderr.log"]["completeness"] == "incomplete"
+    assert "stub-codex complete" in plain_log
 
 
 async def test_raw_files_honor_the_declared_retention_count(
