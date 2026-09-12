@@ -29,6 +29,19 @@ with no diagnostic, and `{"input_tokens":true,"output_tokens":2}` published
 notes: the decoder must validate the body of every known event and must interpret
 JSON types rather than Python's `bool`-is-an-`int` inheritance.
 
+US3's first two candidates proved three classification traps that the declared
+gate and judge did not catch. Candidate `51fa3f820752c406b9f5f0d9e33acfb1e481df49`
+let a typed non-authentication `400` fatal body containing quoted `401` text fall
+through to the legacy substring scan, and it paired an authentication error with
+an unrelated `turn.failed` terminal. Candidate
+`7412f3c90d024e884178363503dc2439dc45d15d` corrected those Codex cases by
+removing the fallback, but thereby changed the landed Claude path from
+`AUTH_FAILURE` to `AGENT_ERROR`; it then rewrote the Claude control to inject
+synthetic Codex error and terminal events that production Claude does not emit.
+The recovery must prove all three cases together against production-real result
+shapes. A green replacement fixture is not conformance evidence when it changes
+the control's protocol.
+
 The measured top-level error and matching `turn.failed.error` contain a
 `message`, not a separate numeric HTTP status. Normalize only recognized fatal
 message forms inside current typed error evidence; do not invent a required
@@ -63,6 +76,14 @@ Authentication and question classifiers accept typed evidence. Plain neutral
 fields are derived once from the current final agent message. Usage normalization
 produces an optional corroboration record; the existing LiteLLM aggregation stays
 authoritative for gateway attempts.
+
+Typed Codex evidence has precedence over the legacy text path: a structurally
+valid non-authentication Codex fatal result cannot be reclassified by arbitrary
+text it happens to quote, and a fatal authentication event is accepted only with
+the matching terminal for that same current failure. This is a Codex migration,
+not a deletion of the Claude compatibility path. Claude continues to classify
+its real current-attempt combined log exactly as the landed adapter did, without
+manufactured Codex evidence in either production or its conformance control.
 
 ## Story slices
 
@@ -113,11 +134,16 @@ derive dollar value from subscription tokens.
 16. **A typed error can quote another error.** A non-authentication fatal body containing401 remains non-authentication; recognizing the event family is necessary but not sufficient.
 17. **A known envelope does not validate its body.** `item.started` and `item.completed` with a non-object `item` are malformed current events, not no-ops; retain them raw, emit a stable diagnostic, and mark evidence incomplete/invalid.
 18. **JSON booleans are not token counts.** Python accepts `isinstance(True, int)`, so usage validation must require an actual non-negative JSON integer (`type(value) is int` or an equivalent strict check) before publishing any count. Wrong-shaped, negative, or fractional counts remain unknown and make completeness false with a stable reason.
+19. **Typed non-auth is terminal for classification.** Once current Codex evidence identifies a non-authentication fatal result, quoted `401` text cannot send it through the legacy substring fallback.
+20. **Two nearby failures are not one matching pair.** An authentication error and an unrelated `turn.failed` terminal do not prove a typed authentication refusal merely because both occur in the same stream.
+21. **A rewritten control is not compatibility.** The Claude regression test must use the result shape the production Claude adapter emits; injecting Codex error events into it proves only the synthetic fixture.
 
 ## Verification
 
 Use fake processes and official-shape fixtures for all implementation stories.
 Exercise persistent homes, malformed streams, cancellation, and result-field
-round trips. Run 154/155 adapter and question tests as regressions, the usage
-suite, then the declared full gate. Sweep committed fixtures and rendered errors
-for credential patterns.
+round trips. Run the typed non-auth fallback-precedence case, the unrelated
+terminal case, and the production-real Claude authentication control together.
+Then run 154/155 adapter and question tests as regressions, the usage suite, and
+the declared full gate. Sweep committed fixtures and rendered errors for
+credential patterns.
