@@ -27,6 +27,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import asyncio
 from dataclasses import dataclass, replace
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -797,6 +798,74 @@ def _status_of(status: RoadmapStatus, spec_dir: str) -> Any:
         if spec.spec_dir == spec_dir:
             return spec
     raise AssertionError(f"{spec_dir} not in roadmap status: {status}")
+
+
+async def test_status_survives_the_continued_run_first_corpus_read(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S1/S2: the last complete reading remains queryable across CAN.
+
+    The first call completes, the alpha child is held then released, and the
+    continued run's second call is entered but held. Entering that call is the
+    boundary evidence: the query happens while the new run awaits its corpus,
+    not while the original run is still working.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    world = RoadmapWorld()
+    original_read_corpus = factory_roadmap_workflow.read_corpus_activity
+    test_loop = asyncio.get_running_loop()
+    read_calls: list[str] = []
+    alpha_dispatched = asyncio.Event()
+    continued_read_held = asyncio.Event()
+    release_continued_read = threading.Event()
+
+    @activity.defn(name="read_corpus_activity")
+    async def held_read_corpus(request: dict) -> Roadmap:
+        read_calls.append(request["specs_root"])
+        if len(read_calls) == 2:
+            test_loop.call_soon_threadsafe(continued_read_held.set)
+            await asyncio.to_thread(release_continued_read.wait)
+        return await original_read_corpus(
+            factory_roadmap_workflow.ReadCorpusInput(specs_root=request["specs_root"])
+        )
+
+    world.apply()
+    factory_roadmap_workflow.read_corpus_activity = held_read_corpus
+    try:
+        async with run_roadmap(
+            env,
+            world,
+            str(specs_root),
+            hold_specs={"001-alpha"},
+            on_dispatch=lambda _spec_dir: alpha_dispatched.set(),
+        ) as handle:
+            await asyncio.wait_for(alpha_dispatched.wait(), timeout=30)
+            await handle.signal(RoadmapWorkflow.pause_roadmap)
+            await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+            await asyncio.wait_for(continued_read_held.wait(), timeout=30)
+
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+
+            assert read_calls == [str(specs_root), str(specs_root)]
+            assert [spec.spec_dir for spec in status.specs] == [
+                "001-alpha",
+                "002-bravo",
+            ]
+            assert status.running == []
+            assert status.paused is True
+            assert _status_of(status, "001-alpha").landed is True
+            assert _status_of(status, "002-bravo").dispatchable is True
+            assert status.max_concurrent_epics == 1
+            assert status.max_concurrent_nodes == 1
+    finally:
+        release_continued_read.set()
+        factory_roadmap_workflow.read_corpus_activity = original_read_corpus
 
 
 # ============================================================================
