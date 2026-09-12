@@ -35,6 +35,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import typing
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -44,7 +45,10 @@ import temporalio.workflow
 from temporalio.converter import default as default_data_converter
 
 from factory.roadmap.workflow import RoadmapStatus, RoadmapWorkflow
+from factory.usage.ledger import connect, upsert_record
+from factory.usage.models import Termination, UsageRecord
 from factory.worker import ACTIVITIES, WORKFLOWS
+from tests.test_ledger_schema import make_record
 
 #: The seam the sweep measures against. It is the worker's own registration
 #: rather than a list written here, because the boundary *is* what the worker
@@ -168,6 +172,43 @@ def test_the_zero_state_query_reports_the_bounds_in_force() -> None:
     assert answer.parked == []
     assert answer.max_concurrent_epics == 3
     assert answer.max_concurrent_nodes == 4
+
+
+def test_preserved_repeated_teardown_result_round_trips_as_usage_record(
+    tmp_path: Path,
+) -> None:
+    """A preserved SQLite flag survives the default Temporal typed boundary.
+
+    `1 == True` hides the storage defect in a direct assertion, but the
+    converter decodes `UsageRecord.final_usage_confirmed` strictly. Encoding the
+    actual lower-quality repeated-write result therefore proves that the value
+    was normalized before it reached the activity boundary.
+    """
+    ledger = connect(tmp_path / "ledger.db")
+    try:
+        upsert_record(ledger, make_record())
+        second = upsert_record(
+            ledger,
+            make_record(
+                prompt_tokens=None,
+                completion_tokens=None,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                request_count=None,
+                spend_usd=0.5,
+                final_usage_confirmed=False,
+                termination=Termination.TIMEOUT,
+                torn_down_at="2026-07-24T11:02:00Z",
+            ),
+        )
+    finally:
+        ledger.close()
+
+    reconstructed = decode_as(payload_of(second), UsageRecord)
+
+    assert reconstructed == second
+    assert type(reconstructed.final_usage_confirmed) is bool
+    assert reconstructed.final_usage_confirmed is True
 
 
 # --- US2-S2 / FR-007: the sweep, and the boundary it reads ---------------------

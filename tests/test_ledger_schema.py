@@ -434,6 +434,16 @@ def test_re_running_teardown_updates_the_same_row(ledger: sqlite3.Connection) ->
 
     assert ledger.execute("SELECT COUNT(*) FROM usage_records").fetchone()[0] == 1
     assert second.id == first.id
+    assert type(second.final_usage_confirmed) is bool
+    assert second.final_usage_confirmed is True
+    assert second.prompt_tokens == first.prompt_tokens
+    assert second.completion_tokens == first.completion_tokens
+    assert second.cache_read_tokens == first.cache_read_tokens
+    assert second.cache_write_tokens == first.cache_write_tokens
+    assert second.request_count == first.request_count
+    assert second.spend_usd == first.spend_usd
+    assert second.termination is Termination.TIMEOUT
+    assert second.torn_down_at == "2026-07-24T11:02:00Z"
 
     stored = row_as_dict(ledger, "epic-7:node-3:2")
     assert stored["prompt_tokens"] == first.prompt_tokens

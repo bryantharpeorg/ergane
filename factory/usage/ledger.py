@@ -285,6 +285,22 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE usage_records ADD COLUMN {name} TEXT NOT NULL DEFAULT '{default}'")
 
 
+def _usage_record_from_row(columns: tuple[str, ...], row: tuple[Any, ...]) -> UsageRecord:
+    """Rebuild a domain record, converting SQLite's flag to its domain type."""
+    return UsageRecord(**{
+        **dict(zip(columns, row)),
+        "final_usage_confirmed": bool(row[columns.index("final_usage_confirmed")]),
+    })
+
+
+def _codex_record_from_row(columns: tuple[str, ...], row: tuple[Any, ...]) -> CodexUsageRecord:
+    """Rebuild corroboration, converting SQLite's flag to its domain type."""
+    return CodexUsageRecord(**{
+        **dict(zip(columns, row)),
+        "complete": bool(row[columns.index("complete")]),
+    })
+
+
 def upsert_record(conn: sqlite3.Connection, record: UsageRecord) -> UsageRecord:
     """Write one attempt's usage, returning the record with its ledger `id`.
 
@@ -301,7 +317,7 @@ def upsert_record(conn: sqlite3.Connection, record: UsageRecord) -> UsageRecord:
         f"SELECT {', '.join(columns)} FROM usage_records WHERE key_alias = ?", (record.key_alias,)
     ).fetchone()
     if previous is not None:
-        old = UsageRecord(**dict(zip(columns, previous)))
+        old = _usage_record_from_row(columns, previous)
         old_rank = _quality(old)
         new_rank = _quality(record)
         if old_rank > new_rank:
@@ -343,7 +359,7 @@ def upsert_codex_usage(
         (record.key_alias,),
     ).fetchone()
     if previous is not None:
-        old = CodexUsageRecord(**dict(zip(columns, previous)))
+        old = _codex_record_from_row(columns, previous)
         if old.complete and not record.complete:
             record = replace(record, **{
                 field: getattr(old, field)
