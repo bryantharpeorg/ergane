@@ -266,3 +266,43 @@ def test_only_a_recorded_provider_result_is_called_revoked(tmp_path: Path) -> No
     assert revoked_credential.failure == CredentialFailure.PROVIDER_REVOKED
     assert revoked_credential.readiness.state == CredentialReadinessState.REVOKED
     assert "recorded Codex provider result" in revoked_credential.refusal
+
+
+def test_provenance_is_fully_redacted_and_serializable(tmp_path: Path) -> None:
+    """The workflow record names identity facts only, never credential data."""
+    path = tmp_path / "operator-home" / ".codex" / "auth.json"
+    source = declaration(tmp_path, managed_payload())
+    credential = validate_codex_credential(source, now=NOW)
+    provenance = credential.provenance
+    assert provenance is not None
+
+    assert provenance.owner_id == OWNER_ID
+    assert provenance.source_kind == "codex-file"
+    assert provenance.credential_mode == CredentialMode.MANAGED_CHATGPT
+    assert provenance.generation == GENERATION
+    assert len(provenance.path_identity) == 64
+
+    serialized = credential_provenance_json(provenance)
+    assert list(json.loads(serialized)) == [
+        "credential_mode",
+        "generation",
+        "owner_id",
+        "path_identity",
+        "source_kind",
+    ]
+    assert "source_path" not in json.loads(serialized)
+    assert_no_secret_or_home(
+        credential,
+        path=path,
+        forbidden=(
+            "synthetic-id-token",
+            "synthetic-access-token",
+            "synthetic-refresh-token",
+            "synthetic-account-id",
+        ),
+    )
+    assert_no_secret_or_home(
+        serialized,
+        path=path,
+        forbidden=("synthetic-id-token", str(path)),
+    )
