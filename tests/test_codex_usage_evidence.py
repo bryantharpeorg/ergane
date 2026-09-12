@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Iterator
 
 import pytest
+from temporalio.testing import ActivityEnvironment
 
 from factory.usage.ledger import (
     connect,
@@ -14,7 +16,27 @@ from factory.usage.ledger import (
 )
 from factory.usage.models import CodexUsageEvidence, CodexUsageRecord
 from factory.workgraph.codex_events import decode_codex_events
+from factory.activities.usage_activities import (
+    IssueKeyInput,
+    TeardownInput,
+    issue_attempt_key,
+    teardown_attempt,
+)
+from factory.usage.models import KeyLease, Termination
+from factory.workgraph.adapter import CODEX_EVENTS_NAME, transcript_dir
+from tests.conftest import FakeLiteLLM
+from tests.test_usage_activities import (
+    ATTEMPT,
+    EPIC,
+    NODE,
+    SPEC_REF,
+    spend_rows_for,
+)
 from tests.test_ledger_schema import make_record
+
+
+GATEWAY_PERSONA = "gateway-CHANGEME"
+SUBSCRIPTION_PERSONA = "subscription-CHANGEME"
 
 
 def completed_stream() -> list[str]:
@@ -157,3 +179,115 @@ def test_gateway_rollup_does_not_add_codex_corroboration(
         assert totals["spend_usd"] == pytest.approx(0.4212)
     finally:
         ledger.close()
+
+
+@pytest.fixture
+def ledger_path(tmp_path: Path) -> Path:
+    return tmp_path / "ledger.db"
+
+
+@pytest.fixture
+def proxy(
+    litellm_env: FakeLiteLLM, ledger_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> FakeLiteLLM:
+    monkeypatch.setenv("ERGANE_LEDGER_PATH", str(ledger_path))
+    monkeypatch.setattr(
+        "factory.activities.usage_activities.open_client",
+        lambda: __import__(
+            "factory.usage.litellm_client", fromlist=["LiteLLMClient"]
+        ).LiteLLMClient.from_env(transport=litellm_env.transport),
+    )
+    return litellm_env
+
+
+@pytest.fixture
+def activity_env() -> ActivityEnvironment:
+    return ActivityEnvironment()
+
+
+@pytest.fixture
+def archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
+    monkeypatch.setenv("FACTORY_ROOT", str(tmp_path))
+    path = transcript_dir(tmp_path, EPIC, NODE, ATTEMPT)
+    path.mkdir(parents=True)
+    yield path
+
+
+def write_usage(archive: Path) -> None:
+    raw = ("\n".join(completed_stream()) + "\n").encode()
+    (archive / CODEX_EVENTS_NAME).write_bytes(raw)
+    (archive / CODEX_EVENTS_NAME).chmod(0o600)
+
+
+async def issue(env: ActivityEnvironment, persona: str, route: str) -> KeyLease:
+    return await env.run(
+        issue_attempt_key,
+        IssueKeyInput(
+            node_id=NODE,
+            epic_id=EPIC,
+            attempt=ATTEMPT,
+            persona=persona,
+            spec_ref=SPEC_REF,
+            route=route,
+        ),
+    )
+
+
+async def test_gateway_keeps_litellm_authoritative_and_stores_codex_separately(
+    activity_env: ActivityEnvironment,
+    proxy: FakeLiteLLM,
+    ledger_path: Path,
+    archive: Path,
+) -> None:
+    lease = await issue(activity_env, GATEWAY_PERSONA, "gateway")
+    spend_rows_for(proxy, lease.key)
+    write_usage(archive)
+
+    record = await activity_env.run(
+        teardown_attempt,
+        TeardownInput(lease=lease, termination=Termination.COMPLETED),
+    )
+
+    ledger = connect(ledger_path)
+    try:
+        main = ledger.execute("SELECT * FROM usage_records").fetchone()
+        corroboration = ledger.execute(
+            "SELECT input_tokens, cached_input_tokens, output_tokens,"
+            " reasoning_output_tokens, complete FROM codex_usage_evidence"
+            " WHERE key_alias = ?",
+            (lease.key_alias,),
+        ).fetchone()
+    finally:
+        ledger.close()
+
+    assert record.prompt_tokens == 600
+    assert record.completion_tokens == 60
+    assert record.spend_usd == pytest.approx(0.06)
+    assert record.usage_source == "gateway"
+    assert record.final_usage_confirmed is True
+    assert main is not None
+    assert corroboration == (17, 5, 23, 7, 1)
+
+
+async def test_subscription_records_codex_cli_and_no_spend(
+    activity_env: ActivityEnvironment,
+    ledger_path: Path,
+    archive: Path,
+) -> None:
+    lease = await issue(activity_env, SUBSCRIPTION_PERSONA, "subscription")
+    write_usage(archive)
+
+    record = await activity_env.run(
+        teardown_attempt,
+        TeardownInput(lease=lease, termination=Termination.COMPLETED),
+    )
+
+    assert record.prompt_tokens == 17
+    assert record.completion_tokens == 23
+    assert record.cache_read_tokens == 5
+    assert record.request_count is None
+    assert record.spend_usd is None
+    assert record.usage_source == "codex_cli"
+    assert record.final_usage_confirmed is True
