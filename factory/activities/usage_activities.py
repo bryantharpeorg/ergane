@@ -70,6 +70,14 @@ from factory.env import (
     FACTORY_LEDGER_PATH_ENV,
     resolve_env_path,
 )
+from factory.attestation import (
+    LaunchRecord,
+    RungSelection,
+    link_usage,
+    record_launch,
+    set_launch_outcome,
+)
+from factory.attestation import UsageObservation, record_usage_observation
 from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient, LiteLLMError
 from factory.usage.codex_evidence import read_codex_usage_evidence
 from factory.usage.models import (
@@ -104,9 +112,13 @@ _ATTRIBUTION_FIELDS = ("epic_id", "node_id", "persona", "spec_ref")
 #: resolves the same default, or an operator's `ergane usage` reads an empty
 #: database (contracts/cli.md).
 DEFAULT_LEDGER_PATH = ".factory/ledger.db"
+DEFAULT_ATTESTATION_PATH = ".factory/attestation.db"
 
 LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"  # legacy re-export
 ERGANE_LEDGER_PATH_ENV = ERGANE_LEDGER_PATH_ENV  # re-export
+
+ATTESTATION_PATH_ENV = "FACTORY_ATTESTATION_DB"  # legacy re-export
+ERGANE_ATTESTATION_PATH_ENV = "ERGANE_ATTESTATION_DB"  # re-export
 
 #: A credential the proxy rejected is a worker-host misconfiguration; retrying
 #: it for ten minutes only delays the diagnosis.
@@ -138,6 +150,19 @@ class IssueKeyInput:
     #: the subscription decision (FR-006); empty means a payload that predates
     #: the field, answered from the `agent` sentinel, then the registry.
     route: str = ""
+    #: 167-US1: identity supplied in deterministic workflow state. Empty fields
+    #: are old payloads and retain the pre-journal behavior.
+    target: str = ""
+    spec_revision: str = ""
+    spec_fingerprint: str = ""
+    epic_workflow_id: str = ""
+    epic_run_id: str = ""
+    invocation_id: str = ""
+    launch_ordinal: int = 0
+    ladder_ordinal: int = 0
+    ladder: tuple[RungSelection, ...] = ()
+    transition_reason: str = ""
+    scoring_job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -156,6 +181,10 @@ class TeardownInput:
     lease: KeyLease
     termination: Termination
     last_snapshot: UsageSnapshot | None = None
+    #: 167-US1: the lifecycle outcome supplied by the workflow. None leaves a
+    #: launch pending; it never invents an ending.
+    launch_outcome: str | None = None
+    launch_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +196,7 @@ class _ConfirmedUsage:
     status: str = "complete"
     source: str = "gateway"
     cost_basis: str = "proxy_estimate"
+    observations: tuple[UsageObservation, ...] = ()
 
 
 def open_client() -> LiteLLMClient:
@@ -239,7 +269,14 @@ def _direct_credential() -> str:
     return value
 
 
-def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str:
+def key_alias_for(
+    epic_id: str,
+    node_id: str,
+    attempt: int,
+    persona: str,
+    *,
+    invocation_id: str = "",
+) -> str:
     """The key's identity as the proxy and the ledger both spell it (R1).
 
     All four dimensions, persona included: the judge scores an attempt while
@@ -249,7 +286,8 @@ def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str
     an alias without the persona is a failed mint on every scored node, or
     one persona's row silently overwriting the other's.
     """
-    return f"{epic_id}:{node_id}:{attempt}:{persona}"
+    alias = f"{epic_id}:{node_id}:{attempt}:{persona}"
+    return f"{alias}:{invocation_id}" if invocation_id else alias
 
 
 @activity.defn
@@ -274,8 +312,50 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
     gets the workflow's ten-minute retry budget (R4).
     """
     alias = key_alias_for(
-        request.epic_id, request.node_id, request.attempt, request.persona
+        request.epic_id,
+        request.node_id,
+        request.attempt,
+        request.persona,
+        invocation_id=request.invocation_id,
     )
+
+    actual = RungSelection(
+        persona=request.persona,
+        runner=request.agent or "<unresolved>",
+        route=request.route or "<unknown>",
+        model_aliases=tuple(request.models),
+        reason=request.transition_reason,
+    )
+    if request.invocation_id:
+        record_launch(
+            _journal_path(),
+            LaunchRecord(
+                target=request.target,
+                spec_revision=request.spec_revision,
+                spec_fingerprint=request.spec_fingerprint,
+                epic_id=request.epic_id,
+                epic_workflow_id=request.epic_workflow_id,
+                epic_run_id=request.epic_run_id,
+                node_id=request.node_id,
+                invocation_id=request.invocation_id,
+                ladder_ordinal=request.ladder_ordinal or request.attempt,
+                launch_ordinal=request.launch_ordinal,
+                phase=(
+                    "builder"
+                    if request.scoring_job_id is None and request.persona != "judge"
+                    else "judge"
+                ),
+                form="launch",
+                scoring_job_id=request.scoring_job_id,
+                scoring_call_ordinal=None,
+                delivery_id=request.invocation_id,
+                key_alias=alias,
+                usage_id=None,
+                actual_rung=actual,
+                ladder=tuple(request.ladder),
+                transition_reason=request.transition_reason,
+            ),
+        )
 
     # US2 FR-006: subscription-routed personas authenticate through the operator's
     # own credential, not a gateway virtual key. A minted-and-unused key would be
@@ -290,13 +370,14 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             persona=request.persona,
             spec_ref=request.spec_ref,
             issued_at=_now_iso(),
+            invocation_id=request.invocation_id,
         )
 
     if _is_direct_mode():
         try:
             key = _direct_credential()
         except LiteLLMError as exc:
-            raise _issuance_failed(exc, permanent=True) from exc
+            raise _record_issuance_failed(request, exc, permanent=True) from exc
         return KeyLease(
             key=key,
             key_alias=alias,
@@ -306,13 +387,14 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             persona=request.persona,
             spec_ref=request.spec_ref,
             issued_at=_now_iso(),
+            invocation_id=request.invocation_id,
         )
 
     try:
         client = open_client()
     except LiteLLMError as exc:
         # The worker host itself is misconfigured: no amount of waiting fixes it.
-        raise _issuance_failed(exc, permanent=True) from exc
+        raise _record_issuance_failed(request, exc, permanent=True) from exc
 
     try:
         existing = await _find_key_for_alias(client, alias)
@@ -322,17 +404,29 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             key_alias=alias,
             models=request.models,
             metadata={
-                "node_id": request.node_id,
-                "epic_id": request.epic_id,
-                "attempt": request.attempt,
-                "persona": request.persona,
-                "spec_ref": request.spec_ref,
+                **{
+                    name: getattr(request, name)
+                    for name in (
+                        "node_id",
+                        "epic_id",
+                        "attempt",
+                        "persona",
+                        "spec_ref",
+                    )
+                },
+                **(
+                    {"invocation_id": request.invocation_id}
+                    if request.invocation_id
+                    else {}
+                ),
             },
             ttl=request.ttl,
         )
     except LiteLLMError as exc:
         raise _issuance_failed(
-            exc, permanent=exc.status in _CREDENTIAL_REJECTED
+            exc,
+            permanent=exc.status in _CREDENTIAL_REJECTED,
+            invocation_id=request.invocation_id,
         ) from exc
     finally:
         await client.aclose()
@@ -346,6 +440,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         persona=request.persona,
         spec_ref=request.spec_ref,
         issued_at=_now_iso(),
+        invocation_id=request.invocation_id,
     )
 
 
@@ -412,6 +507,8 @@ async def _maybe_recover_alias(
     token, _hashed = existing
     existing_epic_id = await _key_epic_id(client, token)
     if existing_epic_id != request.epic_id:
+        if request.invocation_id:
+            set_launch_outcome(_journal_path(), request.invocation_id, "issuance_failed", "alias-unsafe")
         raise _issuance_failed(
             LiteLLMError(
                 f"alias {alias!r} is held by a live key for epic {existing_epic_id!r} "
@@ -501,6 +598,12 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
         with closing(ledger.connect(_ledger_path())) as conn:
             record = ledger.upsert_record(conn, record)
             _store_codex_corroboration(conn, codex_usage, record)
+            _store_observations(
+                request.lease,
+                reading.observations if reading is not None else (),
+            )
+            _record_launch_usage(request.lease, record.id)
+            _complete_launch(request)
             return record
 
     client: LiteLLMClient | None
@@ -520,6 +623,12 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
         with closing(ledger.connect(_ledger_path())) as conn:
             stored = ledger.upsert_record(conn, record)
             _store_codex_corroboration(conn, codex_usage, stored)
+            _store_observations(
+                request.lease,
+                confirmed.observations if confirmed is not None else (),
+            )
+            _record_launch_usage(request.lease, stored.id)
+            _complete_launch(request)
 
         if client is not None:
             await _revoke_quietly(client, request.lease.key)
@@ -528,6 +637,25 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
             await client.aclose()
 
     return stored
+
+
+def _record_launch_usage(lease: KeyLease, usage_id: int | None) -> None:
+    """Link durable usage to a launch when it carries a supplied identity."""
+    if not lease.invocation_id:
+        return
+    link_usage(_journal_path(), lease.invocation_id, usage_id)
+
+
+def _complete_launch(request: TeardownInput) -> None:
+    lease = request.lease
+    if not lease.invocation_id or request.launch_outcome is None:
+        return
+    set_launch_outcome(
+        _journal_path(),
+        lease.invocation_id,
+        request.launch_outcome,
+        request.launch_reason,
+    )
 
 
 async def _read_final_usage(
@@ -564,7 +692,9 @@ async def _read_final_usage(
         )
         consistent = spend is not None and math.isclose(current.spend_usd, spend, rel_tol=1e-6, abs_tol=1e-8)
         if usable and consistent and current == previous:
-            return _ConfirmedUsage(spend, current)
+            return _ConfirmedUsage(
+                spend, current, observations=_observations(rows, lease)
+            )
         previous = current
     if spend is None and best.request_count is None:
         return None
@@ -578,6 +708,58 @@ def _measurement_quality(value: AggregatedUsage) -> tuple[int, int, int]:
         value.request_count or 0,
         int(value.cache_read_tokens is not None) + int(value.cache_write_tokens is not None),
     )
+
+
+def _observations(
+    rows: list[dict[str, Any]], lease: KeyLease
+) -> tuple[UsageObservation, ...]:
+    """Preserve authoritative request identity and serving model when present."""
+    observations: list[UsageObservation] = []
+    for index, row in enumerate(rows, 1):
+        source_id = row.get("request_id") or f"{lease.invocation_id}:row:{index}"
+        metadata = row.get("metadata")
+        model_alias = (
+            metadata.get("user_api_key_alias")
+            if isinstance(metadata, dict)
+            else None
+        )
+        additional = (
+            metadata.get("additional_usage_values")
+            if isinstance(metadata, dict)
+            else {}
+        )
+        if not isinstance(additional, dict):
+            additional = {}
+        observations.append(
+            UsageObservation(
+                invocation_id=lease.invocation_id,
+                source="gateway",
+                source_id=str(source_id),
+                serving_model=(
+                    row.get("model") if isinstance(row.get("model"), str) else None
+                ),
+                model_alias=model_alias if isinstance(model_alias, str) else None,
+                prompt_tokens=(
+                    row.get("prompt_tokens")
+                    if isinstance(row.get("prompt_tokens"), int)
+                    else None
+                ),
+                completion_tokens=(
+                    row.get("completion_tokens")
+                    if isinstance(row.get("completion_tokens"), int)
+                    else None
+                ),
+                cache_read_tokens=additional.get("cache_read_input_tokens"),
+                cache_write_tokens=additional.get("cache_creation_input_tokens"),
+                request_count=1,
+                spend_usd=(
+                    row.get("spend")
+                    if isinstance(row.get("spend"), (int, float))
+                    else None
+                ),
+            )
+        )
+    return tuple(observations)
 
 
 def _codex_reading(usage: CodexUsageEvidence) -> _ConfirmedUsage:
@@ -628,6 +810,27 @@ def _store_codex_corroboration(
             reason=usage.reason,
         ),
     )
+
+
+def _store_observations(
+    lease: KeyLease, observations: tuple[UsageObservation, ...]
+) -> None:
+    """Copy bounded source rows under invocation identity; never relabel money."""
+    if not lease.invocation_id:
+        return
+    for observation in observations:
+        record_usage_observation(
+            _journal_path(),
+            UsageObservation(
+                **{
+                    **{
+                        field.name: getattr(observation, field.name)
+                        for field in observation.__dataclass_fields__.values()
+                    },
+                    "invocation_id": lease.invocation_id,
+                }
+            ),
+        )
 
 
 def _is_subscription_lease(lease: KeyLease) -> bool:
@@ -744,8 +947,35 @@ async def _revoke_quietly(client: LiteLLMClient, key: str) -> None:
         pass
 
 
-def _issuance_failed(exc: LiteLLMError, *, permanent: bool) -> ApplicationError:
+def _issuance_failed(
+    exc: LiteLLMError,
+    *,
+    permanent: bool,
+    invocation_id: str = "",
+) -> ApplicationError:
     """The R4 error, carrying the proxy's (already credential-free) explanation."""
+    if invocation_id:
+        set_launch_outcome(
+            _journal_path(), invocation_id, "issuance_failed", str(exc.status)
+        )
+    return ApplicationError(
+        f"key issuance failed: {exc}",
+        type=KEY_ISSUANCE_FAILED,
+        non_retryable=permanent,
+    )
+
+
+def _record_issuance_failed(
+    request: IssueKeyInput, exc: LiteLLMError, *, permanent: bool
+) -> ApplicationError:
+    """Record the failed launch intent before the workflow's error is raised."""
+    if request.invocation_id:
+        set_launch_outcome(
+            _journal_path(),
+            request.invocation_id,
+            "issuance_failed",
+            str(exc.status),
+        )
     return ApplicationError(
         f"key issuance failed: {exc}",
         type=KEY_ISSUANCE_FAILED,
@@ -758,6 +988,14 @@ def _ledger_path() -> Path:
         ERGANE_LEDGER_PATH_ENV,
         FACTORY_LEDGER_PATH_ENV,
         DEFAULT_LEDGER_PATH,
+    )
+
+
+def _journal_path() -> Path:
+    return resolve_env_path(
+        ERGANE_ATTESTATION_PATH_ENV,
+        ATTESTATION_PATH_ENV,
+        DEFAULT_ATTESTATION_PATH,
     )
 
 

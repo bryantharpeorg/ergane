@@ -592,6 +592,9 @@ def test_the_attempt_context_carries_exactly_the_adapters_inputs() -> None:
         # runs — the adapter reads the route axis for gateway routing, not the
         # agent name.
         "route",
+        # 167-US1: launch identity, so adapter evidence is not correlated by
+        # host path or wall-clock timestamps.
+        "invocation_id",
     }
 
 
