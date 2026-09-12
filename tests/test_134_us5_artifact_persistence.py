@@ -61,6 +61,9 @@ def _stored_result(
             artifacts_present=None,
             passed=True,
         ),
+        judge=None,
+        judge_unavailable=False,
+        criteria_drift=False,
         verdict=OverallVerdict.PASS,
         criteria_sha256="a" * 64,
         spec_ref="134/US5",
@@ -115,7 +118,7 @@ async def _capture_destination(
 ) -> Path:
     seen: list[Path] = []
 
-    async def fake_gates(*args: object, **kwargs: object) -> list[GateResult]:
+    def fake_gates(*args: object, **kwargs: object) -> list[GateResult]:
         seen.append(Path(kwargs["artifact_destination"]))
         return [_result()]
 
@@ -237,7 +240,7 @@ def test_an_old_artifact_free_gate_payload_is_readable(tmp_path: Path) -> None:
     assert _old_fields(decoded) == _old_fields(result)
 
     store = tmp_path / "verification.db"
-    with connect(store) as connection:
+    with sqlite3.connect(store) as connection:
         connection.execute(
             """
             CREATE TABLE verification_results (
@@ -271,6 +274,9 @@ def test_a_repository_declaring_no_artifacts_round_trips(tmp_path: Path) -> None
             artifacts_present=None,
             passed=True,
         ),
+        judge=None,
+        judge_unavailable=False,
+        criteria_drift=False,
         verdict=OverallVerdict.PASS,
         criteria_sha256="a" * 64,
         spec_ref="134/US5",

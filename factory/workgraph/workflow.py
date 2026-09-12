@@ -801,6 +801,24 @@ class _LaunchFailed(Exception):
         self.fault = fault
 
 
+def _gate_input(
+    *,
+    epic_id: str,
+    node_id: str,
+    attempt: int,
+    dispatch: str,
+    worktree_path: str,
+) -> RunGatesInput:
+    """Give the activity attempt identity; compose no host location here."""
+    return RunGatesInput(
+        epic_id=epic_id,
+        node_id=node_id,
+        attempt=attempt,
+        dispatch=dispatch,
+        worktree_path=worktree_path,
+    )
+
+
 # 082-US1: an epic finishes on the code it started with. PINNED means every
 # workflow task and activity of this run is served by the worker version that
 # started it, however many newer versions become current while it builds — the
@@ -2694,10 +2712,17 @@ class EpicWorkflow:
         node = resolved.node
         config = request.config
         started_at = _now()
+        dispatch = workflow.info().run_id
 
         gate_results = await workflow.execute_activity(
             run_gates,
-            RunGatesInput(worktree_path=prepared.path),
+            _gate_input(
+                epic_id=request.graph.epic_id,
+                node_id=node.id,
+                attempt=attempt,
+                dispatch=dispatch,
+                worktree_path=prepared.path,
+            ),
             heartbeat_timeout=timedelta(
                 seconds=config.gate_timeout_s + _GATE_HEARTBEAT_GRACE_S
             ),
@@ -2775,7 +2800,7 @@ class EpicWorkflow:
             # the row it already wrote; a re-dispatch is a different run and
             # adds rows instead of overwriting the last build's evidence. A
             # timestamp or a fresh uuid would satisfy neither half.
-            dispatch=workflow.info().run_id,
+            dispatch=dispatch,
             # 117 US2 (FR-005, FR-006, plan trap 5): read off the entry that
             # dispatched this attempt, at the point the rung resolved it. The
             # persona is the *rung's* — an operator's hand-back has no routing

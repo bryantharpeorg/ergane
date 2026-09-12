@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import os
 import signal
 import subprocess
@@ -1265,6 +1266,8 @@ def run_gates(
     concurrency_limiter: GateConcurrencyLimiter | None = None,
     candidate_runner: CandidateRunner | None = None,
     artifact_destination: Path | str | None = None,
+    capture_ids: Mapping[str, str] | None = None,
+    capture_dispatch: str = "",
 ) -> list[GateResult]:
     """Run every gate the manifest declares, in declaration order, and report each.
 
@@ -1337,6 +1340,8 @@ def run_gates(
             timeout_overrides=timeout_overrides,
             concurrency_limiter=concurrency_limiter,
             artifact_destination=artifact_destination,
+            capture_ids=capture_ids or {},
+            capture_dispatch=capture_dispatch,
         )
 
     if isinstance(interpreted, _RejectedConfig):
@@ -1466,6 +1471,8 @@ def _run_gate_list(
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
     artifact_destination: Path | str | None = None,
+    capture_ids: Mapping[str, str] | None = None,
+    capture_dispatch: str = "",
 ) -> list[GateResult]:
     """Run gates from a JSON view (candidate acceptance or fallback).
 
@@ -1513,6 +1520,8 @@ def _run_gate_list(
             writes_declared=declared.get(name, False),
             artifacts=artifacts.get(name, ()),
             artifact_destination=artifact_destination,
+            capture_ids=capture_ids or {},
+            capture_dispatch=capture_dispatch,
         )
         results.append(result)
     return results
@@ -1526,6 +1535,8 @@ def _run_gate_list_from_config(
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
     artifact_destination: Path | str | None = None,
+    capture_ids: Mapping[str, str] | None = None,
+    capture_dispatch: str = "",
 ) -> list[GateResult]:
     """Run gates from an in-process FactoryConfig (today's fallback path)."""
     backend = executor
@@ -1567,6 +1578,8 @@ def _run_gate_list_from_config(
             writes_declared=declared.get(name, False),
             artifacts=artifacts.get(name, ()),
             artifact_destination=artifact_destination,
+            capture_ids=capture_ids or {},
+            capture_dispatch=capture_dispatch,
         )
         results.append(result)
     return results
@@ -1582,6 +1595,8 @@ def _run_watched(
     writes_declared: bool = False,
     artifacts: Sequence[ArtifactDeclaration] = (),
     artifact_destination: Path | str | None = None,
+    capture_ids: Mapping[str, str] = {},
+    capture_dispatch: str = "",
 ) -> tuple[GateResult, TreeSnapshot]:
     """Run one gate and report what running it did to the worktree (084 FR-001).
 
@@ -1646,6 +1661,8 @@ def _run_watched(
         artifacts,
         baselines,
         artifact_destination,
+        capture_ids,
+        capture_dispatch,
     )
     result = dataclasses.replace(result, artifacts=collected)
     # Carried forward even when it is an error: a gate that ran while the check
@@ -1659,6 +1676,8 @@ def _collect_artifacts(
     declarations: Sequence[ArtifactDeclaration],
     baselines: Mapping[str, object],
     destination: Path | str | None,
+    capture_ids: Mapping[str, str] = {},
+    capture_dispatch: str = "",
 ) -> tuple[GateArtifact, ...]:
     """Carry one gate's declared sources without touching its watched tree."""
     if destination is None:
@@ -1686,12 +1705,34 @@ def _collect_artifacts(
         )
         present = capture.status in {SourceStatus.PERMITTED, SourceStatus.OVERSIZED}
         stored_path = None
+        published = None
+        capture_id = capture_ids.get(declaration.path)
+        if capture_id is None:
+            capture_id = hashlib.sha256(
+                "\0".join(
+                        [
+                            capture_dispatch,
+                            str(invocation.cwd),
+                            str(resolved_destination),
+                            invocation.name,
+                        declaration.path,
+                    ]
+                ).encode("utf-8")
+            ).hexdigest()
         if capture.status is SourceStatus.PERMITTED and capture.bytes is not None:
-            stored_path = resolved_destination / invocation.name / (
-                capture.digest or "artifact"
+            published = publish_artifact_capture(
+                resolved_destination,
+                dispatch=capture_dispatch,
+                capture_id=capture_id,
+                gate=invocation.name,
+                path=declaration.path,
+                artifact_type=declaration.type,
+                payload=capture.bytes,
+                status=capture.status.value,
+                provenance=capture.provenance.value,
+                reason=capture.reason,
             )
-            stored_path.parent.mkdir(parents=True, exist_ok=True)
-            stored_path.write_bytes(capture.bytes)
+            stored_path = Path(published.stored_path)
 
         records.append(
             GateArtifact(
@@ -1703,10 +1744,82 @@ def _collect_artifacts(
                 stored_path=str(stored_path) if stored_path is not None else None,
                 status=capture.status.value,
                 provenance=capture.provenance.value,
+                dispatch=published.dispatch if published is not None else "",
+                capture_id=capture_id,
+                digest=published.digest if published is not None else capture.digest,
                 reason=capture.reason,
             )
         )
     return tuple(records)
+
+
+def publish_artifact_capture(
+    destination: Path | str,
+    *,
+    dispatch: str,
+    capture_id: str,
+    gate: str,
+    path: str,
+    artifact_type: ArtifactType,
+    payload: bytes,
+    status: str = "permitted",
+    provenance: str = "new",
+    reason: str | None = None,
+) -> GateArtifact:
+    """Publish one capture atomically; identical redelivery is a no-op."""
+    digest = hashlib.sha256(payload).hexdigest()
+    capture_dir = Path(destination) / "captures" / gate / capture_id
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = capture_dir / "manifest.json"
+    blob_path = capture_dir / digest
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if existing["digest"] != digest:
+            raise ValueError(
+                f"conflicting bytes for capture {capture_id}; "
+                f"existing digest {existing['digest']}, incoming {digest}"
+            )
+    else:
+        manifest = {
+            "capture_id": capture_id,
+            "dispatch": dispatch,
+            "gate": gate,
+            "path": path,
+            "type": artifact_type.value,
+            "digest": digest,
+            "status": status,
+            "provenance": provenance,
+            "reason": reason,
+        }
+        _atomic_write(manifest_path, json.dumps(manifest).encode("utf-8"))
+    if not blob_path.exists():
+        _atomic_write(blob_path, payload)
+    elif blob_path.read_bytes() != payload:
+        raise ValueError(f"conflicting bytes at {blob_path}")
+
+    return GateArtifact(
+        gate=gate,
+        path=path,
+        type=artifact_type,
+        present=True,
+        size=len(payload),
+        stored_path=str(blob_path),
+        status=status,
+        provenance=provenance,
+        dispatch=dispatch,
+        capture_id=capture_id,
+        digest=digest,
+        reason=reason,
+    )
+
+
+def _atomic_write(path: Path, payload: bytes) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temporary.open("wb") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
 
 
 def _resolve_timeout(

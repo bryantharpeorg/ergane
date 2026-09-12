@@ -66,6 +66,7 @@ from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Mapping
 
 import httpx
 from temporalio import activity
@@ -75,8 +76,12 @@ from factory.verify import diffcheck, gates, judge, store
 from factory.verify.criteria import CriteriaParseError, load_criteria
 from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.judge import DEFAULT_MAX_JUDGE_RETRIES
+from factory.workgraph.worktree import resolve_factory_root
+from factory.verify.gates import publish_artifact_capture
 from factory.verify.models import (
+    ArtifactType,
     CriteriaSet,
+    GateArtifact,
     GateResult,
     JudgeVerdict,
     OutputCheck,
@@ -225,6 +230,10 @@ class RunGatesInput:
     """
 
     worktree_path: str
+    epic_id: str = ""
+    node_id: str = ""
+    attempt: int = 0
+    dispatch: str = ""
     factory_yaml_path: str | None = None
     timeout_overrides: dict[str, int] = field(default_factory=dict)
 
@@ -272,6 +281,7 @@ async def run_gates(request: RunGatesInput) -> list[GateResult]:
     long as their deadline allows, and blocking the event loop for ten minutes
     would stall every other activity this worker is running.
     """
+    destination = _artifact_destination(request)
     return await asyncio.to_thread(
         gates.run_gates,
         request.worktree_path,
@@ -284,7 +294,50 @@ async def run_gates(request: RunGatesInput) -> list[GateResult]:
             asyncio.get_running_loop(),
         ),
         timeout_overrides=request.timeout_overrides,
+        artifact_destination=destination,
+        capture_ids=_capture_ids(request),
+        capture_dispatch=request.dispatch,
     )
+
+
+def _artifact_destination(request: RunGatesInput) -> Path | None:
+    if not request.epic_id or not request.node_id or request.attempt < 1:
+        return None
+    root, _choice, _source = resolve_factory_root()
+    return (
+        root.resolve(strict=False)
+        / "artifacts"
+        / request.epic_id
+        / request.node_id
+        / str(request.attempt)
+    )
+
+
+def _capture_ids(request: RunGatesInput) -> dict[str, str]:
+    manifest = (
+        Path(request.worktree_path) / "factory.yaml"
+        if request.factory_yaml_path is None
+        else Path(request.factory_yaml_path)
+    )
+    try:
+        config = gates.load_factory_config(manifest)
+    except gates.FactoryConfigError:
+        return {}
+    return {
+        artifact.path: hashlib.sha256(
+            "\0".join(
+                [
+                    request.dispatch,
+                    request.epic_id,
+                    request.node_id,
+                    str(request.attempt),
+                    artifact.gate,
+                    artifact.path,
+                ]
+            ).encode("utf-8")
+        ).hexdigest()
+        for artifact in config.artifacts
+    }
 
 
 # --- output check -----------------------------------------------------------
@@ -637,3 +690,4 @@ def _store_path() -> Path:
         FACTORY_VERIFICATION_DB_PATH_ENV,
         DEFAULT_VERIFICATION_DB_PATH,
     )
+
