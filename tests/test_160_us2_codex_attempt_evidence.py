@@ -194,8 +194,6 @@ async def test_startup_and_errors_are_not_a_model_turn(
     raw_events = (archive / CODEX_EVENTS_NAME).read_bytes()
     raw_stderr = (archive / CODEX_STDERR_NAME).read_bytes()
     evidence = decode_codex_events(raw_events.splitlines(keepends=True))
-    plain_log = (archive / STDOUT_LOG_NAME).read_bytes()
-
     assert result.termination == Termination.PRE_AGENT_FAILURE
     assert evidence.thread_id == "thread-current"
     assert evidence.turn_started is True
@@ -205,7 +203,7 @@ async def test_startup_and_errors_are_not_a_model_turn(
         fatal_message in event.message for event in evidence.fatal_events
     )
     assert b"provider diagnostic" in raw_stderr
-    assert plain_log == b""
+    assert (archive / STDOUT_LOG_NAME).read_bytes() == b""
 
 
 @pytest.mark.parametrize(
@@ -447,18 +445,18 @@ async def test_raw_files_declare_and_record_size_and_retention(
     result = await adapter.run_attempt(attempt(), factory_root=factory_root)
     archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
     status = json.loads((archive / CODEX_RAW_STATUS_NAME).read_text())
-    plain_log = (archive / STDOUT_LOG_NAME).read_text()
 
     assert result.termination == Termination.AGENT_ERROR
     assert adapter_module.CODEX_RAW_MAX_BYTES == 32
     assert adapter_module.CODEX_RAW_RETENTION_FILES == 1
     assert len((archive / CODEX_EVENTS_NAME).read_bytes()) <= 32
     assert len((archive / CODEX_STDERR_NAME).read_bytes()) <= 32
-    assert status["codex-events.jsonl"]["truncated"] is True
-    assert status["codex-events.jsonl"]["completeness"] == "incomplete"
-    assert status["codex-stderr.log"]["truncated"] is True
-    assert status["codex-stderr.log"]["completeness"] == "incomplete"
-    assert "stub-codex complete" in plain_log
+    assert all(
+        status[name]["truncated"] is True
+        and status[name]["completeness"] == "incomplete"
+        for name in (CODEX_EVENTS_NAME, CODEX_STDERR_NAME)
+    )
+    assert "stub-codex complete" in (archive / STDOUT_LOG_NAME).read_text()
 
 
 async def test_raw_files_honor_the_declared_retention_count(
