@@ -13,6 +13,7 @@ from factory.attestation.journal import (
     record_scoring_evaluation,
 )
 from factory.attestation.models import JudgeDelivery, JudgeEvaluationRecord
+from factory.attestation.report import AttestationReport, Objection, ObjectionResolution, assemble_report
 from factory.attestation.usage import UsageEvidence, UsageObservation, read_usage_evidence
 
 __all__ = [
@@ -26,4 +27,8 @@ __all__ = [
     "set_launch_outcome",
     "read_scoring_evaluations",
     "record_scoring_evaluation",
+    "assemble_report",
+    "AttestationReport",
+    "Objection",
+    "ObjectionResolution",
 ]
