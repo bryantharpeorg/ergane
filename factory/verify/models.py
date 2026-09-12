@@ -290,6 +290,30 @@ class ArtifactDeclaration:
     type: ArtifactType
 
 
+MAX_ARTIFACT_STORED_BYTES = 64 * 1024
+
+
+@dataclass(frozen=True)
+class GateArtifact:
+    """One declared artifact observed by the gate boundary.
+
+    `stored_path` is an absolute reference, never artifact bytes: a Temporal
+    activity returns `GateResult`, so a large SBOM would otherwise be inlined
+    into the payload. Above the stored-byte limit the source is recorded with
+    its true size and no stored location rather than truncated.
+    """
+
+    gate: str
+    path: str
+    type: ArtifactType
+    present: bool
+    size: int | None
+    stored_path: str | None
+    status: str
+    provenance: str
+    reason: str | None = None
+
+
 def _default_ladder() -> "VerificationConfig":
     """Deferred default so `VerificationConfig` need not move above `FactoryConfig`."""
     return VerificationConfig()
@@ -443,6 +467,7 @@ class GateResult:
     concurrent_gates: int = 0
     worktree_writes: tuple[str, ...] = ()
     writes_declared: bool = False
+    artifacts: tuple[GateArtifact, ...] = ()
 
 
 # Diff/artifact entities -----------------------------------------------------
