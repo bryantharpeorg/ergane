@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from .models import LaunchRecord, RungSelection
+from .usage import UsageObservation
 
 SCHEMA_VERSION = 1
 
@@ -37,6 +38,20 @@ CREATE TABLE IF NOT EXISTS launches (
     outcome_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_launches_epic_node ON launches (epic_id, node_id);
+CREATE TABLE IF NOT EXISTS usage_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invocation_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_id TEXT NOT NULL UNIQUE,
+    serving_model TEXT,
+    model_alias TEXT,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    cache_read_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    request_count INTEGER,
+    spend_usd REAL
+);
 """
 
 
@@ -160,3 +175,38 @@ def read_launches(path: str | Path) -> tuple[LaunchRecord, ...]:
         data["ladder"] = tuple(_selection(item) for item in json.loads(data.pop("ladder")))
         records.append(LaunchRecord(**data))
     return tuple(records)
+
+
+def record_usage_observation(path: str | Path, record: UsageObservation) -> UsageObservation:
+    """Persist one source row by its immutable source identity."""
+    with connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        values = {
+            **{field.name: getattr(record, field.name) for field in record.__dataclass_fields__.values()}
+        }
+        columns = tuple(name for name in values if name != "id")
+        connection.execute(
+            f"INSERT INTO usage_observations ({', '.join(columns)}) VALUES "
+            f"({', '.join(':' + name for name in columns)}) "
+            "ON CONFLICT(source_id) DO UPDATE SET "
+            + ", ".join(f"{name} = excluded.{name}" for name in columns if name != "source_id"),
+            values,
+        )
+        row = connection.execute(
+            "SELECT id FROM usage_observations WHERE source_id = ?",
+            (record.source_id,),
+        ).fetchone()
+        connection.commit()
+    return UsageObservation(**{**values, "id": row[0]})
+
+
+def read_usage_observations(path: str | Path) -> tuple[UsageObservation, ...]:
+    with connect(path) as connection:
+        rows = connection.execute("SELECT * FROM usage_observations ORDER BY id").fetchall()
+        columns = [
+            item[0]
+            for item in connection.execute(
+                "SELECT * FROM usage_observations LIMIT 0"
+            ).description
+        ]
+    return tuple(UsageObservation(**dict(zip(columns, row))) for row in rows)

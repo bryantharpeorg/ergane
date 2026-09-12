@@ -77,6 +77,7 @@ from factory.attestation import (
     record_launch,
     set_launch_outcome,
 )
+from factory.attestation import UsageObservation, record_usage_observation
 from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient, LiteLLMError
 from factory.usage.codex_evidence import read_codex_usage_evidence
 from factory.usage.models import (
@@ -194,6 +195,7 @@ class _ConfirmedUsage:
     status: str = "complete"
     source: str = "gateway"
     cost_basis: str = "proxy_estimate"
+    observations: tuple[UsageObservation, ...] = ()
 
 
 def open_client() -> LiteLLMClient:
@@ -591,6 +593,10 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
         with closing(ledger.connect(_ledger_path())) as conn:
             record = ledger.upsert_record(conn, record)
             _store_codex_corroboration(conn, codex_usage, record)
+            _store_observations(
+                request.lease,
+                reading.observations if reading is not None else (),
+            )
             _record_launch_usage(request.lease, record.id)
             _complete_launch(request)
             return record
@@ -612,6 +618,10 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
         with closing(ledger.connect(_ledger_path())) as conn:
             stored = ledger.upsert_record(conn, record)
             _store_codex_corroboration(conn, codex_usage, stored)
+            _store_observations(
+                request.lease,
+                confirmed.observations if confirmed is not None else (),
+            )
             _record_launch_usage(request.lease, stored.id)
             _complete_launch(request)
 
@@ -677,7 +687,9 @@ async def _read_final_usage(
         )
         consistent = spend is not None and math.isclose(current.spend_usd, spend, rel_tol=1e-6, abs_tol=1e-8)
         if usable and consistent and current == previous:
-            return _ConfirmedUsage(spend, current)
+            return _ConfirmedUsage(
+                spend, current, observations=_observations(rows, lease)
+            )
         previous = current
     if spend is None and best.request_count is None:
         return None
@@ -691,6 +703,58 @@ def _measurement_quality(value: AggregatedUsage) -> tuple[int, int, int]:
         value.request_count or 0,
         int(value.cache_read_tokens is not None) + int(value.cache_write_tokens is not None),
     )
+
+
+def _observations(
+    rows: list[dict[str, Any]], lease: KeyLease
+) -> tuple[UsageObservation, ...]:
+    """Preserve authoritative request identity and serving model when present."""
+    observations: list[UsageObservation] = []
+    for index, row in enumerate(rows, 1):
+        source_id = row.get("request_id") or f"{lease.invocation_id}:row:{index}"
+        metadata = row.get("metadata")
+        model_alias = (
+            metadata.get("user_api_key_alias")
+            if isinstance(metadata, dict)
+            else None
+        )
+        additional = (
+            metadata.get("additional_usage_values")
+            if isinstance(metadata, dict)
+            else {}
+        )
+        if not isinstance(additional, dict):
+            additional = {}
+        observations.append(
+            UsageObservation(
+                invocation_id=lease.invocation_id,
+                source="gateway",
+                source_id=str(source_id),
+                serving_model=(
+                    row.get("model") if isinstance(row.get("model"), str) else None
+                ),
+                model_alias=model_alias if isinstance(model_alias, str) else None,
+                prompt_tokens=(
+                    row.get("prompt_tokens")
+                    if isinstance(row.get("prompt_tokens"), int)
+                    else None
+                ),
+                completion_tokens=(
+                    row.get("completion_tokens")
+                    if isinstance(row.get("completion_tokens"), int)
+                    else None
+                ),
+                cache_read_tokens=additional.get("cache_read_input_tokens"),
+                cache_write_tokens=additional.get("cache_creation_input_tokens"),
+                request_count=1,
+                spend_usd=(
+                    row.get("spend")
+                    if isinstance(row.get("spend"), (int, float))
+                    else None
+                ),
+            )
+        )
+    return tuple(observations)
 
 
 def _codex_reading(usage: CodexUsageEvidence) -> _ConfirmedUsage:
@@ -741,6 +805,27 @@ def _store_codex_corroboration(
             reason=usage.reason,
         ),
     )
+
+
+def _store_observations(
+    lease: KeyLease, observations: tuple[UsageObservation, ...]
+) -> None:
+    """Copy bounded source rows under invocation identity; never relabel money."""
+    if not lease.invocation_id:
+        return
+    for observation in observations:
+        record_usage_observation(
+            _journal_path(),
+            UsageObservation(
+                **{
+                    **{
+                        field.name: getattr(observation, field.name)
+                        for field in observation.__dataclass_fields__.values()
+                    },
+                    "invocation_id": lease.invocation_id,
+                }
+            ),
+        )
 
 
 def _is_subscription_lease(lease: KeyLease) -> bool:
