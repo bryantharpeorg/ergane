@@ -620,13 +620,11 @@ class EpicInput:
     #: gets today's sequential behaviour exactly. Validated here as well as in
     #: the CLI, because `EpicInput` can be constructed without the CLI.
     max_concurrent_nodes: int = 1
-    #: US4 FR-010: how many subscription-routed ready nodes may run at once.
-    #: A subscription persona shares one operator credential, so virtual keys do
-    #: not isolate concurrent attempts.  `None` (the default) means no additional
-    #: subscription-specific cap: subscription-routed nodes are constrained only
-    #: by `max_concurrent_nodes`.  A declared positive integer lower than that
-    #: general cap caps subscription nodes specifically; a higher value is harmless
-    #: because the general cap is still enforced first.
+    #: US4 FR-010: a scheduler-capacity bound, not credential serialization.
+    #: A subscription persona may share the operator credential, but US2's
+    #: durable owner now owns that safety. `None` means only the general cap
+    #: applies; a declared positive integer can still lower this epic's local
+    #: dispatch concurrency.
     max_concurrent_subscription_nodes: int | None = None
     #: 053 US3: the revision of the worker code that imported this workflow,
     #: captured once at worker boot and carried in the query answer. `None` when
@@ -1184,12 +1182,9 @@ class EpicWorkflow:
                     break
                 if item.node.id in in_flight:
                     continue
-                # US4 FR-010: a declared subscription-specific cap bounds how many
-                # subscription-routed nodes may be in flight at once.  When no limit
-                # is declared, subscription nodes are constrained only by the
-                # general cap above.  A non-subscription node that appears later in
-                # the ready set still gets its slot, so this check is a `continue`
-                # rather than a `break`.
+                # US4 FR-010: a declared scheduler cap bounds how many
+                # subscription-routed nodes this epic dispatches at once. It is
+                # not credential serialization; the effective-rung owner is.
                 if self._is_subscription_node(item.node.persona):
                     limit = request.max_concurrent_subscription_nodes
                     if limit is not None:
@@ -1537,7 +1532,7 @@ class EpicWorkflow:
     def _subscription_nodes_in_flight(
         self, in_flight: dict[str, asyncio.Task[None]]
     ) -> int:
-        """How many in-flight nodes are routed through the operator's subscription."""
+        """How many in-flight nodes were originally routed through subscription."""
         return sum(
             1
             for node_id in in_flight
