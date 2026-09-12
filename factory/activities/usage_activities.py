@@ -370,7 +370,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         try:
             key = _direct_credential()
         except LiteLLMError as exc:
-            raise _issuance_failed(exc, permanent=True) from exc
+            raise _record_issuance_failed(request, exc, permanent=True) from exc
         return KeyLease(
             key=key,
             key_alias=alias,
@@ -387,7 +387,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         client = open_client()
     except LiteLLMError as exc:
         # The worker host itself is misconfigured: no amount of waiting fixes it.
-        raise _issuance_failed(exc, permanent=True) from exc
+        raise _record_issuance_failed(request, exc, permanent=True) from exc
 
     try:
         existing = await _find_key_for_alias(client, alias)
@@ -397,17 +397,29 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             key_alias=alias,
             models=request.models,
             metadata={
-                "node_id": request.node_id,
-                "epic_id": request.epic_id,
-                "attempt": request.attempt,
-                "persona": request.persona,
-                "spec_ref": request.spec_ref,
+                **{
+                    name: getattr(request, name)
+                    for name in (
+                        "node_id",
+                        "epic_id",
+                        "attempt",
+                        "persona",
+                        "spec_ref",
+                    )
+                },
+                **(
+                    {"invocation_id": request.invocation_id}
+                    if request.invocation_id
+                    else {}
+                ),
             },
             ttl=request.ttl,
         )
     except LiteLLMError as exc:
         raise _issuance_failed(
-            exc, permanent=exc.status in _CREDENTIAL_REJECTED
+            exc,
+            permanent=exc.status in _CREDENTIAL_REJECTED,
+            invocation_id=request.invocation_id,
         ) from exc
     finally:
         await client.aclose()
@@ -488,6 +500,8 @@ async def _maybe_recover_alias(
     token, _hashed = existing
     existing_epic_id = await _key_epic_id(client, token)
     if existing_epic_id != request.epic_id:
+        if request.invocation_id:
+            set_launch_outcome(_journal_path(), request.invocation_id, "issuance_failed", "alias-unsafe")
         raise _issuance_failed(
             LiteLLMError(
                 f"alias {alias!r} is held by a live key for epic {existing_epic_id!r} "
@@ -843,8 +857,35 @@ async def _revoke_quietly(client: LiteLLMClient, key: str) -> None:
         pass
 
 
-def _issuance_failed(exc: LiteLLMError, *, permanent: bool) -> ApplicationError:
+def _issuance_failed(
+    exc: LiteLLMError,
+    *,
+    permanent: bool,
+    invocation_id: str = "",
+) -> ApplicationError:
     """The R4 error, carrying the proxy's (already credential-free) explanation."""
+    if invocation_id:
+        set_launch_outcome(
+            _journal_path(), invocation_id, "issuance_failed", str(exc.status)
+        )
+    return ApplicationError(
+        f"key issuance failed: {exc}",
+        type=KEY_ISSUANCE_FAILED,
+        non_retryable=permanent,
+    )
+
+
+def _record_issuance_failed(
+    request: IssueKeyInput, exc: LiteLLMError, *, permanent: bool
+) -> ApplicationError:
+    """Record the failed launch intent before the workflow's error is raised."""
+    if request.invocation_id:
+        set_launch_outcome(
+            _journal_path(),
+            request.invocation_id,
+            "issuance_failed",
+            str(exc.status),
+        )
     return ApplicationError(
         f"key issuance failed: {exc}",
         type=KEY_ISSUANCE_FAILED,
