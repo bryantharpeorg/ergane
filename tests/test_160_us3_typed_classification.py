@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 from factory.usage.models import Termination
 from factory.workgraph.adapter import CODEX_EVENTS_NAME, ATTEMPT_ARCHIVE_ENV, CodexAdapter
 from factory.workgraph.codex_events import decode_codex_events
 from factory.activities.agent_activities import _classify_auth_failure
+from factory.workgraph.models import AdapterResult
 from factory.verify.question import detect_codex_question
 
 
@@ -39,6 +42,17 @@ def _decode(events: list[dict[str, object]]):
     )
 
 
+@dataclass
+class EvidenceAdapter:
+    evidence: object
+
+    def _current_evidence(self, _env: dict[str, str]):
+        return self.evidence
+
+    def _refusal_markers(self):
+        return AUTH_MARKERS
+
+
 def test_classification_does_not_fall_back_to_quoted_combined_text(
     tmp_path: Path,
 ) -> None:
@@ -66,19 +80,8 @@ def test_classification_does_not_fall_back_to_quoted_combined_text(
     evidence = _evidence(tmp_path, events)
     result = Termination.PRE_AGENT_FAILURE
 
-    from dataclasses import dataclass
-    from factory.activities.agent_activities import _classify_auth_failure
-    from factory.workgraph.models import AdapterResult
-
-    @dataclass
-    class Adapter:
-        evidence: object
-
-        def _current_evidence(self, _env: dict[str, str]):
-            return self.evidence
-
     result = _classify_auth_failure(
-        Adapter(evidence),
+        EvidenceAdapter(evidence),
         AdapterResult(
             termination=Termination.PRE_AGENT_FAILURE,
             transcript_path=str(tmp_path / "attempt"),
@@ -220,6 +223,49 @@ def test_the_final_agent_message_satisfying_the_marker_asks() -> None:
     assert detected is not None
     assert detected.is_question is True
     assert detected.text == "The fork: A or B. I lean A."
+
+
+def test_reclassification_preserves_every_current_result_field(
+    tmp_path: Path,
+) -> None:
+    """A class change is an immutable replacement, not a rebuild."""
+
+    fatal_message = "unexpected status 401 Unauthorized"
+    evidence = _evidence(
+        tmp_path,
+        [
+            {"type": "thread.started", "thread_id": "thread-current"},
+            {"type": "turn.started"},
+            {"type": "error", "message": fatal_message},
+            {"type": "turn.failed", "error": {"message": fatal_message}},
+        ],
+    )
+    baseline = AdapterResult(
+        termination=Termination.AGENT_ERROR,
+        transcript_path=str(tmp_path / "attempt"),
+        last_snapshot=None,
+        detail="the process said this",
+        credential_source="gateway",
+    )
+    before = {
+        field.name: getattr(baseline, field.name)
+        for field in dataclass_fields(AdapterResult)
+    }
+    raw_before = (tmp_path / "attempt" / CODEX_EVENTS_NAME).read_bytes()
+    stdout_before = (tmp_path / "attempt" / "stdout.log").read_bytes()
+
+    classified = _classify_auth_failure(EvidenceAdapter(evidence), baseline)
+
+    assert dataclass_fields(classified) == dataclass_fields(baseline)
+    for field in dataclass_fields(AdapterResult):
+        expected = (
+            Termination.AUTH_FAILURE
+            if field.name == "termination"
+            else before[field.name]
+        )
+        assert getattr(classified, field.name) == expected
+    assert (tmp_path / "attempt" / CODEX_EVENTS_NAME).read_bytes() == raw_before
+    assert (tmp_path / "attempt" / "stdout.log").read_bytes() == stdout_before
 
 
 def test_a_typed_400_body_with_quoted_401_text_stays_non_auth(
