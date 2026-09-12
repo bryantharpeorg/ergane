@@ -252,6 +252,50 @@ def test_codex_usage_ledger_keeps_unknowns_not_complete(
     assert row == expected
 
 
+def test_a_repeated_incomplete_codex_write_preserves_complete_evidence() -> None:
+    with connect(":memory:") as ledger:
+        complete = upsert_codex_usage(
+            ledger,
+            CodexUsageRecord(
+                key_alias="epic-7:node-3:2:codex",
+                input_tokens=17,
+                cached_input_tokens=5,
+                output_tokens=23,
+                reasoning_output_tokens=7,
+                source="codex_cli",
+                complete=True,
+                reason=None,
+            ),
+        )
+        later = upsert_codex_usage(
+            ledger,
+            CodexUsageRecord(
+                key_alias="epic-7:node-3:2:codex",
+                input_tokens=None,
+                cached_input_tokens=None,
+                output_tokens=None,
+                reasoning_output_tokens=None,
+                source="codex_cli",
+                complete=False,
+                reason="partial-usage",
+            ),
+        )
+        stored = ledger.execute(
+            "SELECT input_tokens, cached_input_tokens, output_tokens,"
+            " reasoning_output_tokens, complete, reason FROM codex_usage_evidence"
+            " WHERE key_alias = ?",
+            (complete.key_alias,),
+        ).fetchone()
+
+    assert stored == (17, 5, 23, 7, 1, None)
+    assert type(later.complete) is bool
+    assert later.complete is True
+    assert later.id == complete.id
+    assert (later.input_tokens, later.cached_input_tokens) == (17, 5)
+    assert (later.output_tokens, later.reasoning_output_tokens) == (23, 7)
+    assert later.reason is None
+
+
 @pytest.fixture
 def ledger_path(tmp_path: Path) -> Path:
     return tmp_path / "ledger.db"

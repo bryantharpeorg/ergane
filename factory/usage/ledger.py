@@ -293,6 +293,14 @@ def _usage_record_from_row(columns: tuple[str, ...], row: tuple[Any, ...]) -> Us
     })
 
 
+def _codex_record_from_row(columns: tuple[str, ...], row: tuple[Any, ...]) -> CodexUsageRecord:
+    """Rebuild corroboration, converting SQLite's flag to its domain type."""
+    return CodexUsageRecord(**{
+        **dict(zip(columns, row)),
+        "complete": bool(row[columns.index("complete")]),
+    })
+
+
 def upsert_record(conn: sqlite3.Connection, record: UsageRecord) -> UsageRecord:
     """Write one attempt's usage, returning the record with its ledger `id`.
 
@@ -351,7 +359,7 @@ def upsert_codex_usage(
         (record.key_alias,),
     ).fetchone()
     if previous is not None:
-        old = CodexUsageRecord(**dict(zip(columns, previous)))
+        old = _codex_record_from_row(columns, previous)
         if old.complete and not record.complete:
             record = replace(record, **{
                 field: getattr(old, field)
