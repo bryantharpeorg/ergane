@@ -73,12 +73,19 @@ SPEC_REF = "155-codex-runs-as-a-second-runner/us3"
 #: persona registry's (FR-010).
 GENEROUS_TIMEOUT_S = 60
 
-#: The measured `auth.json` shape (155 trap 3, 2026-09-08 on 0.153.4):
-#: `codex login` writes these fields for an API-key login, and a ChatGPT login
-#: adds token fields beside them. The adapter copies bytes and parses nothing —
-#: which login produced the file changes nothing it does — so the test plants
-#: the measured shape and asserts on the copy, never on a parse.
-FAKE_AUTH_JSON = {"auth_mode": "apikey", "OPENAI_API_KEY": "sk-fake-operator-key"}
+FAKE_AUTH_JSON = {
+    "auth_mode": "chatgpt",
+    "OPENAI_API_KEY": None,
+    "tokens": {
+        "id_token": (
+            "synthetic-id-token.eyJleHAiOjk5OTk5OTk5OTl9.synthetic-signature"
+        ),
+        "access_token": "synthetic-access-token",
+        "refresh_token": "synthetic-refresh-token",
+        "account_id": "synthetic-account-id",
+    },
+    "last_refresh": "2026-01-01T00:00:00+00:00",
+}
 
 
 # --- setup -------------------------------------------------------------------
