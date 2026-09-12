@@ -57,6 +57,7 @@ from typing import Mapping, Sequence
 # `factory` — and an annotation that resolves is the only kind worth writing.
 from factory.config import DETERMINISTIC_AGENT, SUBSCRIPTION_AGENT
 from factory.mergequeue.models import CheckFailure
+from factory.verify.artifact_capture import CaptureProvenance, SourceStatus
 
 
 class RequirementKind(StrEnum):
@@ -290,6 +291,30 @@ class ArtifactDeclaration:
     type: ArtifactType
 
 
+@dataclass(frozen=True)
+class GateArtifact:
+    """One declared artifact observed at the gate boundary (134 FR-006).
+
+    The record carries evidence *about* the bytes, never the bytes themselves:
+    a `GateResult` crosses a Temporal activity boundary, and an SBOM or
+    coverage report belongs beside an attempt rather than inside its payload.
+    `capture_status` and `provenance` come from the bounded source boundary, so
+    a refusal or an unstable observation cannot be mistaken for a published
+    snapshot (134 FR-020, FR-022).
+    """
+
+    gate: str = ""
+    path: str = ""
+    type: ArtifactType = ArtifactType.OPAQUE
+    present: bool = False
+    capture_status: SourceStatus = SourceStatus.UNAVAILABLE
+    provenance: CaptureProvenance = CaptureProvenance.UNKNOWN
+    size: int | None = None
+    stored_path: str | None = None
+    digest: str | None = None
+    reason: str | None = None
+
+
 def _default_ladder() -> "VerificationConfig":
     """Deferred default so `VerificationConfig` need not move above `FactoryConfig`."""
     return VerificationConfig()
@@ -443,6 +468,14 @@ class GateResult:
     concurrent_gates: int = 0
     worktree_writes: tuple[str, ...] = ()
     writes_declared: bool = False
+    artifacts: tuple[GateArtifact, ...] = ()
+    #: 134 FR-006. Empty is what every result produced before this field
+    #: existed meant, and what every manifest that declares nothing still means:
+    #: no collection occurred, and no existing caller's behaviour changes.
+    #: 134 FR-006. Empty is what every result produced before this field
+    #: existed meant, and what every manifest that declares nothing still means:
+    #: no collection occurred, and no existing caller's behaviour changes.
+    artifacts: tuple[GateArtifact, ...] = ()
 
 
 # Diff/artifact entities -----------------------------------------------------

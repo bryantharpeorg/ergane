@@ -52,10 +52,16 @@ import signal
 import subprocess
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import IO, Mapping, Protocol, Sequence
 
+from factory.verify.artifact_capture import (
+    CaptureProvenance,
+    SourceStatus,
+    capture_source,
+    observe_source,
+)
 from factory.verify.factory_yaml import (
     MANIFEST_NAME,
     PARSE_CLI_OK,
@@ -69,6 +75,7 @@ from factory.verify.models import (
     ArtifactDeclaration,
     ArtifactType,
     CacheDeclaration,
+    GateArtifact,
     GateResult,
     GateStatus,
     VerificationConfig,
@@ -113,6 +120,9 @@ DEFAULT_GATE_CONCURRENCY: int = 1
 
 #: How much of a gate's combined output is kept as evidence (R3).
 OUTPUT_TAIL_LIMIT = 32 * 1024
+
+#: The largest artifact the gate boundary will copy (134 FR-015).
+ARTIFACT_STORED_BYTES_LIMIT = 1024 * 1024
 
 #: Environment variable names a gate subprocess may inherit — an allowlist, not
 #: a denylist, because a denylist protects the credentials we thought of and
@@ -1256,6 +1266,7 @@ def run_gates(
     timeout_overrides: Mapping[str, int] | None = None,
     concurrency_limiter: GateConcurrencyLimiter | None = None,
     candidate_runner: CandidateRunner | None = None,
+    artifact_destination: Path | str | None = None,
 ) -> list[GateResult]:
     """Run every gate the manifest declares, in declaration order, and report each.
 
@@ -1327,6 +1338,7 @@ def run_gates(
             executor=backend,
             timeout_overrides=timeout_overrides,
             concurrency_limiter=concurrency_limiter,
+            artifact_destination=artifact_destination,
         )
 
     if isinstance(interpreted, _RejectedConfig):
@@ -1368,6 +1380,7 @@ def run_gates(
         executor=backend,
         timeout_overrides=timeout_overrides,
         concurrency_limiter=concurrency_limiter,
+        artifact_destination=artifact_destination,
     )
 
 
@@ -1454,6 +1467,7 @@ def _run_gate_list(
     executor: GateExecutor,
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
+    artifact_destination: Path | str | None = None,
 ) -> list[GateResult]:
     """Run gates from a JSON view (candidate acceptance or fallback).
 
@@ -1500,6 +1514,7 @@ def _run_gate_list(
             env=env,
             writes_declared=declared.get(name, False),
             artifacts=artifacts.get(name, ()),
+            artifact_destination=artifact_destination,
         )
         results.append(result)
     return results
@@ -1512,6 +1527,7 @@ def _run_gate_list_from_config(
     executor: GateExecutor,
     timeout_overrides: Mapping[str, int] | None,
     concurrency_limiter: GateConcurrencyLimiter | None,
+    artifact_destination: Path | str | None = None,
 ) -> list[GateResult]:
     """Run gates from an in-process FactoryConfig (today's fallback path)."""
     backend = executor
@@ -1552,6 +1568,7 @@ def _run_gate_list_from_config(
             env=env,
             writes_declared=declared.get(name, False),
             artifacts=artifacts.get(name, ()),
+            artifact_destination=artifact_destination,
         )
         results.append(result)
     return results
@@ -1566,6 +1583,7 @@ def _run_watched(
     env: Mapping[str, str],
     writes_declared: bool = False,
     artifacts: Sequence[ArtifactDeclaration] = (),
+    artifact_destination: Path | str | None = None,
 ) -> tuple[GateResult, TreeSnapshot]:
     """Run one gate and report what running it did to the worktree (084 FR-001).
 
@@ -1594,6 +1612,16 @@ def _run_watched(
     is, and passed down rather than looked up here: the snapshot is taken and
     the paths are recorded identically either way, and only the verdict moves.
     """
+    baselines: Mapping[str, object] = {}
+    if artifact_destination is not None:
+        baselines = {
+            declaration.path: observe_source(
+                invocation.cwd,
+                declaration.path,
+                byte_limit=ARTIFACT_STORED_BYTES_LIMIT,
+            )
+            for declaration in artifacts
+        }
     peers = limiter.acquire()
     try:
         outcome = backend.run(invocation)
@@ -1611,10 +1639,119 @@ def _run_watched(
         writes_declared=writes_declared,
         artifacts=artifacts,
     )
+    artifacts_record = _collect_artifacts(
+        invocation,
+        artifacts,
+        destination=artifact_destination,
+        baselines=baselines,
+    )
+    result = replace(result, artifacts=artifacts_record)
     # Carried forward even when it is an error: a gate that ran while the check
     # had no readable baseline cannot be vouched for either, and fail-closed is
     # this module's rule everywhere else.
     return result, after
+
+
+def _resolve_artifact_destination(
+    destination: Path | str | None, worktree: Path
+) -> Path | None:
+    """Validate the explicit destination the caller handed this collector."""
+    if destination is None:
+        return None
+    candidate = Path(destination)
+    if not candidate.is_absolute():
+        raise ValueError("artifact destination must be absolute")
+    resolved = candidate.resolve(strict=False)
+    if resolved == worktree or worktree in resolved.parents:
+        raise ValueError("artifact destination must be outside the watched worktree")
+    return resolved
+
+
+def _write_stored_artifact(stored_path: Path, payload: bytes) -> None:
+    """Publish one capture without exposing a partial file."""
+    temporary = stored_path.with_name(f".{stored_path.name}.tmp")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+        with os.fdopen(descriptor, "wb") as stored:
+            descriptor = -1
+            stored.write(payload)
+        os.replace(temporary, stored_path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _collect_artifacts(
+    invocation: GateInvocation,
+    declarations: Sequence[ArtifactDeclaration],
+    *,
+    destination: Path | str | None,
+    baselines: Mapping[str, object],
+) -> tuple[GateArtifact, ...]:
+    """Collect declared sources through the bounded capture boundary.
+
+    Collection happens after the gate's closing snapshot: a destination write
+    belongs to the platform, not to the next gate's `worktree_writes`. Only a
+    stable permitted capture is copied; every absent, oversized, unsafe or
+    unstable source remains a record with its own refusal reason.
+    """
+    try:
+        resolved = _resolve_artifact_destination(destination, invocation.cwd)
+    except ValueError as error:
+        return tuple(
+            GateArtifact(
+                gate=declaration.gate,
+                path=declaration.path,
+                type=declaration.type,
+                present=False,
+                capture_status=SourceStatus.UNAVAILABLE,
+                provenance=CaptureProvenance.UNKNOWN,
+                reason=str(error),
+            )
+            for declaration in declarations
+        )
+    if resolved is None:
+        return ()
+
+    records: list[GateArtifact] = []
+    for declaration in declarations:
+        baseline = baselines.get(declaration.path)
+        capture = capture_source(
+            invocation.cwd,
+            declaration.path,
+            byte_limit=ARTIFACT_STORED_BYTES_LIMIT,
+            baseline=baseline,
+        )
+        stored_path: Path | None = None
+        if capture.status is SourceStatus.PERMITTED and capture.bytes is not None:
+            stored_path = resolved / invocation.name / declaration.path
+            stored_path.parent.mkdir(parents=True, exist_ok=True)
+            _write_stored_artifact(stored_path, capture.bytes)
+
+        records.append(
+            GateArtifact(
+                gate=declaration.gate,
+                path=declaration.path,
+                type=declaration.type,
+                present=capture.status is not SourceStatus.ABSENT,
+                capture_status=capture.status,
+                provenance=capture.provenance,
+                size=capture.size,
+                stored_path=str(stored_path) if stored_path is not None else None,
+                digest=capture.digest,
+                reason=capture.reason,
+            )
+        )
+    return tuple(records)
 
 
 def _resolve_timeout(
