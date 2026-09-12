@@ -54,7 +54,7 @@ PROXY_URL = "http://litellm.test:4000"
 VIRTUAL_KEY = "sk-virtual-164-us4-synthetic-2"
 PROMPT = "You are the implementer persona.\n\n## Scope\n\nImplement US1.\n"
 GENEROUS_TIMEOUT_S = 60
-OPERATOR_KEY = "sk-fake-operator-subscription-key"
+OPERATOR_REFRESH_TOKEN = "synthetic-refresh-token"
 
 
 @pytest.fixture
@@ -139,7 +139,22 @@ def _write_auth_json(operator_home: Path) -> Path:
     path = operator_home / ".codex" / "auth.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": OPERATOR_KEY}),
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "OPENAI_API_KEY": None,
+                "tokens": {
+                    "id_token": (
+                        "synthetic-id-token.eyJleHAiOjk5OTk5OTk5OTl9"
+                        ".synthetic-signature"
+                    ),
+                    "access_token": "synthetic-access-token",
+                    "refresh_token": OPERATOR_REFRESH_TOKEN,
+                    "account_id": "synthetic-account-id",
+                },
+                "last_refresh": "2026-01-01T00:00:00+00:00",
+            }
+        ),
         encoding="utf-8",
     )
     path.chmod(0o600)
@@ -221,15 +236,23 @@ async def test_the_subscription_relative_home_carries_the_isolated_credential_co
     assert result.termination == Termination.COMPLETED
     seeded = codex_home_path(home) / "auth.json"
     assert seeded.is_file(), "the discovered credential never reached the node home"
-    assert json.loads(seeded.read_text(encoding="utf-8")) == {
-        "auth_mode": "apikey",
-        "OPENAI_API_KEY": OPERATOR_KEY,
-    }
+    seeded_payload = json.loads(seeded.read_text(encoding="utf-8"))
+    assert seeded_payload["auth_mode"] == "chatgpt"
+    assert seeded_payload["tokens"]["refresh_token"] == OPERATOR_REFRESH_TOKEN
     assert seeded.stat().st_mode & 0o777 == 0o600
     # No provider configuration on the subscription route.
     assert not (codex_home_path(home) / "config.toml").exists()
-    # The recorded source names the discovered file.
-    assert result.credential_source == str(credential)
+    # The recorded source is redacted provenance, not the discovered path.
+    assert result.credential_source is not None
+    provenance = json.loads(result.credential_source)
+    assert provenance == {
+        "credential_mode": "managed-chatgpt",
+        "generation": 1,
+        "owner_id": "codex-factory",
+        "path_identity": provenance["path_identity"],
+        "source_kind": "codex-file",
+    }
+    assert str(credential) not in result.credential_source
     # The child's env carries no gateway key (none was minted) and no Claude
     # token: the credential travels as the seeded file.
     env = last_invocation(tmp_path / "node-worktrees" / EPIC / NODE)["env"]
@@ -258,8 +281,8 @@ async def test_the_subscription_child_never_receives_the_synthetic_operator_key(
     )
 
     env = last_invocation(tmp_path / "node-worktrees" / EPIC / NODE)["env"]
-    assert OPERATOR_KEY not in json.dumps(env)
+    assert OPERATOR_REFRESH_TOKEN not in json.dumps(env)
     # The copied file inside the node home is the only place it went.
     seeded = (codex_home_path(home) / "auth.json").read_text(encoding="utf-8")
-    assert OPERATOR_KEY in seeded
+    assert OPERATOR_REFRESH_TOKEN in seeded
     assert not (home / "config.toml").exists()

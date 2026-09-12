@@ -94,7 +94,11 @@ from factory.verify.toolchain import (
     system_tree_argv,
 )
 from factory.workgraph.detector import compare_and_report, capture_start
-from factory.workgraph.codex_credential import CredentialDeclaration
+from factory.workgraph.codex_credential import (
+    CredentialDeclaration,
+    credential_provenance_json,
+    validate_codex_credential,
+)
 from factory.workgraph.codex_events import INVALID_JSON, decode_codex_events
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
@@ -2152,17 +2156,28 @@ class CodexAdapter:
                     "Run `codex login` on the worker host."
                 ),
             )
-        # 155-US3-S3: no expiry is read and no rotation is measured — auth.json
-        # carries no expiry field the CLI honours (measured shape, trap 3), and
-        # the rotation hazard is inherited, not solved. See the discovery's
-        # docstring for the hazard this stage carries unmeasured.
+        validation = validate_codex_credential(
+            CredentialDeclaration(
+                owner_id="codex-factory",
+                source_path=credential_path,
+                generation=1,
+            ),
+            now=datetime.now(timezone.utc),
+        )
+        if not validation.admitted:
+            return CredentialStage(
+                gateway=False,
+                path=None,
+                error=validation.refusal,
+            )
         return CredentialStage(
             gateway=False,
             path=credential_path,
-            # The source names the file it came from (US3-S2): a subscription
-            # run is distinguishable from a gateway run in the evidence, and a
-            # relocated CODEX_HOME is legible in the record.
-            source=str(credential_path),
+            source=(
+                credential_provenance_json(validation.provenance)
+                if validation.provenance is not None
+                else None
+            ),
         )
 
     def _seed_home(

@@ -12,7 +12,8 @@ import json
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Mapping
+
+import pytest
 
 from factory.workgraph.codex_credential import (
     CredentialDeclaration,
@@ -23,7 +24,12 @@ from factory.workgraph.codex_credential import (
     credential_provenance_json,
     validate_codex_credential,
 )
-from factory.workgraph.adapter import CODEX_HOME_ENV, discover_codex_credential
+from factory.workgraph.adapter import (
+    CODEX_HOME_ENV,
+    CodexAdapter,
+    discover_codex_credential,
+)
+from factory.workgraph.models import AttemptContext
 
 NOW = datetime(2026, 9, 12, 12, 0, 0, tzinfo=timezone.utc)
 OWNER_ID = "codex-factory"
@@ -306,3 +312,75 @@ def test_provenance_is_fully_redacted_and_serializable(tmp_path: Path) -> None:
         path=path,
         forbidden=("synthetic-id-token", str(path)),
     )
+
+
+def _codex_attempt(*, worktree: Path, node_home: Path) -> AttemptContext:
+    return AttemptContext(
+        epic_id="159-a-subscription-credential-has-one-durable-owner",
+        node_id="us1",
+        attempt=1,
+        prompt="synthetic prompt",
+        worktree_path=str(worktree),
+        home_path=str(node_home),
+        proxy_url="http://litellm.invalid:4000",
+        virtual_key="",
+        model_alias="synthetic-model",
+        session_id="00000000-0000-4000-8000-000000000001",
+        timeout_s=60,
+        agent="codex",
+        route="subscription",
+    )
+
+
+def test_codex_adapter_records_serialized_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The adapter's workflow record is the redacted provenance JSON itself."""
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    path = codex_home / "auth.json"
+    path.write_text(json.dumps(managed_payload()), encoding="utf-8")
+    monkeypatch.setenv(CODEX_HOME_ENV, str(codex_home))
+    source = CredentialDeclaration(
+        owner_id=OWNER_ID, source_path=path, generation=1
+    )
+    expected = credential_provenance_json(
+        validate_codex_credential(source, now=NOW).provenance
+    )
+    context = _codex_attempt(
+        worktree=tmp_path / "worktree",
+        node_home=tmp_path / "node-home",
+    )
+
+    stage = CodexAdapter()._credential(context)
+
+    assert stage.path == path
+    assert stage.source == expected
+    assert str(path) not in stage.source
+
+
+def test_codex_adapter_refuses_api_key_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps(
+            {"auth_mode": "apikey", "OPENAI_API_KEY": "synthetic-api-key-value"}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(CODEX_HOME_ENV, str(codex_home))
+    context = _codex_attempt(
+        worktree=tmp_path / "worktree",
+        node_home=tmp_path / "node-home",
+    )
+
+    stage = CodexAdapter()._credential(context)
+
+    assert stage.path is None
+    assert stage.gateway is False
+    assert stage.error == (
+        "API-key mode is not a managed ChatGPT subscription credential"
+    )
+    assert "synthetic-api-key-value" not in str(stage)
