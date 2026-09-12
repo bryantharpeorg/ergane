@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 from factory.usage.models import Termination
 from factory.workgraph.adapter import CODEX_EVENTS_NAME, ATTEMPT_ARCHIVE_ENV, CodexAdapter
+from factory.workgraph.adapter import ClaudeCodeAdapter, HostAgentBackend, SUBSCRIPTION_REFUSAL_MARKER
 from factory.workgraph.codex_events import decode_codex_events
 from factory.activities.agent_activities import _classify_auth_failure
-from factory.workgraph.models import AdapterResult
+from factory.workgraph.models import AdapterResult, AttemptContext
+from tests.stub_agent import STUB_AGENT_PATH, write_control
 from factory.verify.question import detect_codex_question
+import pytest
+from temporalio.testing import ActivityEnvironment
 
 
 AUTH_MARKERS = ("unexpected status 401 Unauthorized",)
@@ -266,6 +271,53 @@ def test_reclassification_preserves_every_current_result_field(
         assert getattr(classified, field.name) == expected
     assert (tmp_path / "attempt" / CODEX_EVENTS_NAME).read_bytes() == raw_before
     assert (tmp_path / "attempt" / "stdout.log").read_bytes() == stdout_before
+
+
+async def test_landed_claude_auth_control_keeps_combined_log_behavior(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Production Claude still classifies its real combined-log refusal."""
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    factory_root = tmp_path / "factory"
+    home_path = factory_root / "homes" / "160" / "claude"
+    worktree = factory_root / "worktrees" / "claude"
+    worktree.mkdir(parents=True)
+    home_path.mkdir(parents=True)
+    write_control(
+        home_path,
+        exit_code=1,
+        write_transcript=False,
+        stdout=SUBSCRIPTION_REFUSAL_MARKER,
+    )
+    adapter = ClaudeCodeAdapter(
+        executable=str(STUB_AGENT_PATH),
+        backend=HostAgentBackend(executable=str(STUB_AGENT_PATH)),
+    )
+    context = AttemptContext(
+        epic_id="160",
+        node_id="claude",
+        attempt=1,
+        prompt="Claude conformance control.",
+        worktree_path=str(worktree),
+        home_path=str(home_path),
+        proxy_url="http://litellm.test:4000",
+        virtual_key="virtual-key-160-claude-1",
+        model_alias="claude-control",
+        session_id="d0a2fbb0-fb9f-5df1-8d4f-d8f37f7ad5b5",
+        timeout_s=60,
+        agent="claude-code",
+        route="gateway",
+    )
+
+    adapter_result = await adapter.run_attempt(context, factory_root=factory_root)
+    result = _classify_auth_failure(adapter, adapter_result)
+
+    assert result.termination == Termination.AUTH_FAILURE
+    assert not (Path(result.transcript_path) / CODEX_EVENTS_NAME).exists()
 
 
 def test_a_typed_400_body_with_quoted_401_text_stays_non_auth(
