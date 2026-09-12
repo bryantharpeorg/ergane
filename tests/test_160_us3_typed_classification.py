@@ -254,6 +254,31 @@ def test_question_controls_cover_every_non_agent_item_and_non_final_message() ->
     assert detect_operator_question_text(evidence.final_message.text) is None
 
 
+async def test_marker_in_a_fixture_file_is_not_an_agent_message(
+    tmp_path: Path,
+) -> None:
+    marker = "## OPERATOR QUESTION\nWhich declaration owns this value?"
+    archive = tmp_path / "archive"
+    write_typed_fixture(
+        archive,
+        [
+            line(
+                {
+                    "type": "item.completed",
+                    "item": {"id": "item-final", "type": "agent_message", "text": "done"},
+                }
+            )
+        ],
+    )
+    (archive / "fixture.txt").write_text(marker, encoding="utf-8")
+
+    marker_result = await detect_operator_question_activity(
+        DetectQuestionInput(transcript_path=str(archive))
+    )
+
+    assert marker_result.is_question is False
+
+
 def test_typed_pre_agent_detail_preserves_every_unrelated_field(
     tmp_path: Path,
 ) -> None:
