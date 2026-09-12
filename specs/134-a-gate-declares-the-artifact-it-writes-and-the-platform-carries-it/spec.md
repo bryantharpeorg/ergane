@@ -56,7 +56,7 @@ fixes:
 # cites — but one INSTRUCTION WAS WRONG and would have been built: the plan told
 # the implementer to hang the declaration on `VerificationConfig`, which is the
 # retry-ladder configuration. The class that carries `gates`, `timeouts` and
-# `writes` is `FactoryConfig` (`factory/verify/models.py:291` — `FactoryConfig`).
+# `writes` is `FactoryConfig` (`factory/verify/models.py:314` — `FactoryConfig`).
 # Corrected, and kept as a trap.
 #
 # THREE MECHANISMS WERE READ THIS TIME THAT THE DRAFT HAD NOT READ, and each one
@@ -113,7 +113,7 @@ fixes:
 # plan.md's header, which is the document a future refiner re-reads from, and it
 # is stated there once so there is no second copy to rot. One anchor in the block
 # above was also mis-cited: `worktree_writes` is
-# `factory/verify/models.py:405` — `GateResult`, not `:403`, which is
+# `factory/verify/models.py:444` — `GateResult`, not `:442`, which is
 # `output_tail`. Two reasons the symbol tier could not catch it, and both matter
 # to whoever writes the next citation: both lines sit inside `GateResult`, so the
 # span check is satisfied either way — and `_check_symbol_anchors` strips this
@@ -192,7 +192,7 @@ fixes:
 # (`factory/verify/worktree_snapshot.py:100` — `changes_between`) fills
 # `worktree_writes` from `git diff-tree -r --name-only -z`, so the paths US2 subtracts
 # against are git's own normalised spelling, and the subtraction at
-# `factory/verify/gates.py:1629` — `_to_result` is string equality. A manifest
+# `factory/verify/gates.py:1681` — `_to_result` is string equality. A manifest
 # declaring `./coverage.xml` parsed, collected correctly and still demoted its gate
 # for writing the artifact it declared — the self-defeat US2 exists to prevent,
 # reachable through a spelling. The stale compiled `workgraph.json` this directory
@@ -221,14 +221,14 @@ required for new persisted captures (FR-020 through FR-023).
 ## The gap, stated precisely
 
 1. A manifest can declare a gate's **command** and nothing else about it.
-   `_read_gates` (`factory/verify/factory_yaml.py:340` — `_read_gates`) requires
+   `_read_gates` (`factory/verify/factory_yaml.py:351` — `_read_gates`) requires
    each gate's value to be a non-empty string, so there is no place on a gate to
    hang a path or a type.
 2. What survives a gate is its exit code, its duration and the last ≤32 KiB of
-   its output. `GateResult` (`factory/verify/models.py:374` — `GateResult`) has
+   its output. `GateResult` (`factory/verify/models.py:401` — `GateResult`) has
    nine fields and not one of them is a file the gate wrote.
 3. The one field that names files names them and throws them away.
-   `worktree_writes` (`factory/verify/models.py:417` — `GateResult`) is a tuple
+   `worktree_writes` (`factory/verify/models.py:444` — `GateResult`) is a tuple
    of paths, recorded so that a gate which dirtied the judge's evidence can be
    demoted — never so that anything reads what is at those paths.
 4. So a coverage report, a dependency inventory, a scan result or an SBOM is
@@ -241,9 +241,9 @@ required for new persisted captures (FR-020 through FR-023).
    been forbidden by its own constitution from reading them, because reading them
    would be inventing the per-repo answer this gap forces.
 6. There is a decoy in the tree with exactly the right name. `expected_artifacts`
-   / `artifacts_present` (`factory/verify/models.py:563` — `OutputCheck`) look
+   / `artifacts_present` (`factory/verify/models.py:591` — `OutputCheck`) look
    like this feature and are not: the docstring above them
-   (`factory/verify/models.py:527` — `OutputCheck`) is explicit that they are the
+   (`factory/verify/models.py:548` — `OutputCheck`) is explicit that they are the
    anti-rubber-stamp check for read-scope nodes, and the one production caller
    passes an empty list literally inside `_verify`
    (`factory/workgraph/workflow.py:2714` — `_verify`).
@@ -441,7 +441,7 @@ worker, operational store or artifact publication is involved.
 **Acceptance Scenarios**:
 
 1. **Given** a worktree-relative path naming an ordinary regular file, an escaping or substituted symlink, a hardlink alias, or a FIFO/special file, **When** the reusable source boundary opens it, **Then** committed real-file tests prove a bounded regular-file reading or an explicit refusal without opening unrelated bytes or blocking on the special file.
-2. **Given** observations before and after a fixture gate that leaves an existing file unchanged or writes a new report, and a file mutated during capture, **When** the source boundary compares and captures them, **Then** committed tests preserve the observed unchanged/new provenance and refuse the unstable snapshot without claiming that presence alone proves production by the gate.
+2. **Given** observations before and after a fixture gate that leaves an existing file unchanged, writes a new report, rewrites an oversized pre-gate file to a within-bound or different oversized value, or mutates a file during capture, **When** the source boundary compares and captures them, **Then** committed tests preserve the observed unchanged/new provenance, classify every observable rewrite as changed, and refuse the unstable snapshot without publishing its bytes or claiming that presence alone proves production by the gate.
 3. **Given** an absent file, a file within the supplied byte limit, an oversized file, and a file that grows during reading, **When** the source boundary observes them, **Then** committed tests prove explicit absence, exact bounded bytes for the stable permitted file, and a bounded oversize or unstable result with no truncated bytes eligible for publication.
 
 ### User Story 3 - The boundary collects what was declared (Priority: P2)

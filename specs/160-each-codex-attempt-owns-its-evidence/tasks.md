@@ -6,8 +6,9 @@ not a dependency. Write tests first; no real model turn is part of this epic.
 ## Phase 1: User Story 1 — A decoder identifies one current Codex execution
 
 - [ ] [US1-S1] Add official-shape failing JSONL fixtures and typed assertions for thread, turn, items, agent messages, fatal events, and usage in `tests/test_codex_events.py`; use the plan's measured0.154.0 error shapes, distinguish diagnostic error items, and accept normal items without repeated thread identifiers.
-- [ ] [US1-S2] Add failing malformed, unknown, missing-thread, duplicate-terminal, and cross-thread cases requiring incomplete diagnostics and no fabricated evidence.
+- [ ] [US1-S2] Add failing malformed, unknown, missing-thread, duplicate-terminal, and cross-thread cases requiring incomplete diagnostics and no fabricated evidence. Include an otherwise valid stream with `{"type":"item.completed","item":"bad"}` and require a stable malformed-known-event reason rather than silent success.
 - [ ] [US1-S3] Add token-pattern fixtures and failing redaction/bounding tests for orchestration serialization while retaining a caller-owned raw spool.
+- [ ] [US1-S4] Add failing usage-shape fixtures for JSON boolean, negative, fractional, string, object, and list values. Prove `{"input_tokens":true,"output_tokens":2}` cannot publish `True`/`1`, marks evidence incomplete/invalid with a stable malformed-usage reason, and preserves valid sibling counts only when the evidence model can represent their partial provenance honestly.
 - [ ] [US1] Implement the pure streaming decoder and frozen evidence models in `factory/workgraph/codex_events.py`.
 
 ## Phase 2: User Story 2 — The adapter archives only this attempt's execution as current evidence

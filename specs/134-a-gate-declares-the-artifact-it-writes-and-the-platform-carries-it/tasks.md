@@ -74,12 +74,12 @@ without it touch a region an earlier task in the same phase is already editing.
       that set, assert refusal with the entry and the permitted types named.
 - [ ] T003 [P] [US1] (spec US1-S3, FR-002) Given an entry naming a gate the
       manifest does not declare, assert refusal naming the entry and the declared
-      gates, the way `_read_writes` (`factory/verify/factory_yaml.py:443` —
+      gates, the way `_read_writes` (`factory/verify/factory_yaml.py:454` —
       `_read_writes`) already refuses one.
 - [ ] T004 [P] [US1] (spec US1-S4, FR-012) Given an entry whose path is absolute,
       and one whose relative path escapes the repository root, assert each is
       refused with the path named at load time — the same discipline `_read_caches`
-      (`factory/verify/factory_yaml.py:761` — `_read_caches`) applies to a declared
+      (`factory/verify/factory_yaml.py:772` — `_read_caches`) applies to a declared
       bind.
 - [ ] T005 [P] [US1] (spec US1-S5, FR-003) **The control.** Given a manifest
       declaring no artifacts, assert the parsed configuration is equal, in every
@@ -95,7 +95,7 @@ without it touch a region an earlier task in the same phase is already editing.
       configuration carrying artifact declarations, assert the parser's own CLI
       renders it as one JSON document whose entries carry path and type as
       strings. A `Path` or a plain `Enum` raises inside `json.dumps` at
-      `factory/verify/factory_yaml.py:1239` — `_main`, and the caller cannot tell
+      `factory/verify/factory_yaml.py:1384` — `_main`, and the caller cannot tell
       that from a crashed parser.
 - [ ] T052 [P] [US1] (spec US1-S8, FR-012, plan trap 3) Given an entry whose path
       is spelled `./coverage.xml` and another spelled `reports/../coverage.xml`,
@@ -121,7 +121,7 @@ without it touch a region an earlier task in the same phase is already editing.
       FR-001 fixes because every target repository's manifest will carry it
       forever — to `_V2_TOP_LEVEL_KEYS` (`factory/verify/factory_yaml.py:144`), as
       a **sibling** top-level key and not a richer gate value: `_read_gates`
-      (`factory/verify/factory_yaml.py:340` — `_read_gates`) requires each gate's
+      (`factory/verify/factory_yaml.py:351` — `_read_gates`) requires each gate's
       value to be a non-empty string, and changing that grammar would touch every
       manifest in existence. Spec 128 is adding `boundary_only_gates` to the same
       tuple; expect a one-line conflict there if both epics run at once.
@@ -129,7 +129,7 @@ without it touch a region an earlier task in the same phase is already editing.
       `sbom`/`coverage`/`scan`/`opaque` and the declaration record beside
       `CacheDeclaration` (`factory/verify/models.py:241` — `CacheDeclaration`),
       path as `str`, and the field on `FactoryConfig`
-      (`factory/verify/models.py:291` — `FactoryConfig`), defaulted empty so a
+      (`factory/verify/models.py:314` — `FactoryConfig`), defaulted empty so a
       manifest that declares nothing is unchanged. **This story owns the four type
       names.** They live here, as a `StrEnum` for the reason `GateStatus`
       (`factory/verify/models.py:73` — `GateStatus`) is one — it survives
@@ -137,7 +137,7 @@ without it touch a region an earlier task in the same phase is already editing.
       and US3 reuses this enum on `GateArtifact` rather than spelling the set a
       second time.
 - [ ] T010 [US1] (FR-001, FR-002, FR-012) Write the reader modelled on
-      `_read_caches` (`factory/verify/factory_yaml.py:761` — `_read_caches`):
+      `_read_caches` (`factory/verify/factory_yaml.py:772` — `_read_caches`):
       entry-is-a-mapping, unknown-key-inside-an-entry, empty-list and path-bound
       refusals, each naming the entry. Validate all three required keys before
       indexing the mapping; `.get(...)` plus an explicit `FactoryConfigError` is
@@ -184,9 +184,9 @@ without it touch a region an earlier task in the same phase is already editing.
       exit code and deadline made it, unchanged.
 - [ ] T015 [P] [US2] (spec US2-S4, FR-014, plan trap 5) Given a candidate
       acceptance document carrying artifact declarations, assert
-      `_interpret_candidate` (`factory/verify/gates.py:1045` —
+      `_interpret_candidate` (`factory/verify/gates.py:1048` —
       `_interpret_candidate`) lifts them onto `_AcceptedConfig`
-      (`factory/verify/gates.py:205` — `_AcceptedConfig`) and that the runner
+      (`factory/verify/gates.py:207` — `_AcceptedConfig`) and that the runner
       receives them on that route, not only on the in-process fallback.
 - [ ] T016 [P] [US2] (spec US2-S5, FR-005) **The control.** Given a gate whose
       written paths were all declared artifacts but whose worktree snapshot git
@@ -203,19 +203,19 @@ without it touch a region an earlier task in the same phase is already editing.
 ### Implementation for this story
 
 - [ ] T018 [US2] (FR-014) Carry the declarations through the JSON route: the field
-      on `_AcceptedConfig` (`factory/verify/gates.py:205` — `_AcceptedConfig`), the
-      lift in `_interpret_candidate` (`factory/verify/gates.py:1045` —
+      on `_AcceptedConfig` (`factory/verify/gates.py:207` — `_AcceptedConfig`), the
+      lift in `_interpret_candidate` (`factory/verify/gates.py:1048` —
       `_interpret_candidate`), and the view parameter on `_run_gate_list`
-      (`factory/verify/gates.py:1416` — `_run_gate_list`).
+      (`factory/verify/gates.py:1444` — `_run_gate_list`).
 - [ ] T019 [US2] (FR-014) Carry the same declarations on the in-process route from
-      `_run_gate_list_from_config` (`factory/verify/gates.py:1467` —
+      `_run_gate_list_from_config` (`factory/verify/gates.py:1508` —
       `_run_gate_list_from_config`), and down into `_run_watched`
-      (`factory/verify/gates.py:1511` — `_run_watched`) as an argument, the way
+      (`factory/verify/gates.py:1560` — `_run_watched`) as an argument, the way
       `writes_declared` is decided by the runners and passed down.
 - [ ] T020 [US2] (FR-004, FR-005, plan trap 3) Exempt this gate's declared
       artifact paths, path by path, inside `_to_result`
-      (`factory/verify/gates.py:1583` — `_to_result`), below the `snapshot_error`
-      branch at `factory/verify/gates.py:1629` — `_to_result`. Subtract the
+      (`factory/verify/gates.py:1634` — `_to_result`), below the `snapshot_error`
+      branch at `factory/verify/gates.py:1681` — `_to_result`. Subtract the
       declared paths from the set the demotion tests; leave `worktree_writes` and
       `writes_declared` untouched. Do not set `writes_declared` — it means "the
       manifest named this gate in its `writes:` block" and would excuse every path
@@ -238,7 +238,7 @@ without it touch a region an earlier task in the same phase is already editing.
 ### Tests for this story (write FIRST, must fail)
 
 - [ ] T061 [US6] (US6-S1, FR-020) In `tests/test_134_bounded_artifact_capture.py`, exercise real regular files, escaping and substituted symlinks, hardlink aliases, FIFOs and other special files against the reusable source boundary. Prove bounded refusal without unrelated reads or blocking, plus a regular-file positive control. Keep reusable real-file cases available to US3 integration tests.
-- [ ] T062 [US6] (US6-S2, FR-022) Exercise pre-gate and post-gate observations with unchanged existing bytes, a new fixture report, and controlled mutation during capture. Assert honest unchanged/new/unstable outcomes; an unavailable baseline must not certify freshness.
+- [ ] T062 [US6] (US6-S2, FR-022) Exercise pre-gate and post-gate observations with unchanged existing bytes, a new fixture report, an oversized baseline rewritten within-bound or to a different oversized value, and controlled mutation during capture. Assert honest unchanged/new/changed/unstable outcomes; an unavailable baseline must not certify freshness. Include PR #528's exact regression control at a 16-byte limit: observe 17 bytes, rewrite to 8 bytes, then require `changed` provenance, `unstable` status and no publishable bytes.
 - [ ] T063 [US6] (US6-S3, FR-020, FR-022) Exercise absent, within-bound, oversized and growing files. Assert bounded actual reads on both observation phases, exact stable permitted bytes, and no partial or inconsistent bytes eligible for publication.
 
 ### Implementation for this story
@@ -247,7 +247,7 @@ without it touch a region an earlier task in the same phase is already editing.
 
 ### Verification for this story
 
-- [ ] T065 [US6] Commit a compact real-file qualification transcript with a permitted regular-file control, refused link/special file, bounded oversize and unstable-capture result. Do not paste payload bytes or duplicate the full fixture matrix in the transcript.
+- [ ] T065 [US6] Commit a compact real-file qualification transcript with a permitted regular-file control, refused link/special file, bounded oversize, oversized-to-smaller rewrite refusal and unstable-capture result. Do not paste payload bytes or duplicate the full fixture matrix in the transcript.
 
 ## Phase 4: User Story 3 — The boundary collects what was declared
 
@@ -293,8 +293,8 @@ without it touch a region an earlier task in the same phase is already editing.
       gates where the first declares and writes an artifact that is collected,
       assert the second gate's status and `worktree_writes` are exactly what they
       are when nothing is declared. `_run_watched` hands its closing snapshot
-      (`factory/verify/gates.py:1553` — `_run_watched`) forward as the next gate's
-      opening one (`factory/verify/gates.py:1566` — `_run_watched`), so a copy made
+      (`factory/verify/gates.py:1603` — `_run_watched`) forward as the next gate's
+      opening one (`factory/verify/gates.py:1617` — `_run_watched`), so a copy made
       inside the worktree demotes an innocent gate.
 - [ ] T030 [P] [US3] (spec US3-S9, FR-011, plan trap 13) **The control.** Given an
       attempt with collected artifacts, assert the prompt `_gate_blocks`
@@ -312,7 +312,7 @@ without it touch a region an earlier task in the same phase is already editing.
 
 - [ ] T031 [US3] (FR-006, FR-008) Add the `GateArtifact` record and `artifacts:
       tuple[GateArtifact, ...] = ()` on `GateResult`
-      (`factory/verify/models.py:374` — `GateResult`), defaulted so every caller and
+      (`factory/verify/models.py:401` — `GateResult`), defaulted so every caller and
       every stored row written before this story reads back unchanged. Type the
       record's type field with the `ArtifactType` `StrEnum` US1 defined — do not
       mint a second spelling of the four names, or the refusal message US1 emits
@@ -320,20 +320,20 @@ without it touch a region an earlier task in the same phase is already editing.
 - [ ] T055 [US3] (FR-020, FR-022) Integrate US6's source boundary before and after gate execution in `factory/verify/gates.py`, with freshness/status metadata in `factory/verify/models.py`. Publish only stable permitted captures and preserve every refusal independently of the gate verdict. Add no parallel direct-read/copy path; keep output references bounded and never execute/interpret report bytes. T053/T054 run before this integration.
 - [ ] T032 [US3] (FR-006, FR-018, plan trap 8) Thread the destination across all
       four frames, defaulted empty and meaning "collect nothing" — `run_gates`
-      (`factory/verify/gates.py:1225` — `run_gates`), `_run_gate_list`
-      (`factory/verify/gates.py:1416` — `_run_gate_list`),
-      `_run_gate_list_from_config` (`factory/verify/gates.py:1467` —
+      (`factory/verify/gates.py:1251` — `run_gates`), `_run_gate_list`
+      (`factory/verify/gates.py:1444` — `_run_gate_list`),
+      `_run_gate_list_from_config` (`factory/verify/gates.py:1508` —
       `_run_gate_list_from_config`) and `_run_watched`
-      (`factory/verify/gates.py:1511` — `_run_watched`). A parameter added to
+      (`factory/verify/gates.py:1560` — `_run_watched`). A parameter added to
       `_run_watched` alone compiles and never arrives; US5 is the story that
       supplies a value.
 - [ ] T033 [US3] (FR-006, FR-007, FR-009, FR-015, FR-018) Collect in `_run_watched`
-      (`factory/verify/gates.py:1511` — `_run_watched`): for each declaration on
+      (`factory/verify/gates.py:1560` — `_run_watched`): for each declaration on
       the gate that just ran, read the declared path from the worktree on disk,
       record present/absent and the true size, copy the bytes to the destination
       when they are within the bound, and never parse them. Refuse to write
       anywhere inside `invocation.cwd`: the snapshot taken at
-      `factory/verify/gates.py:1553` — `_run_watched` is already the next gate's
+      `factory/verify/gates.py:1603` — `_run_watched` is already the next gate's
       baseline.
 
 ### Verification for this story
