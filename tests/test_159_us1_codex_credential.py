@@ -12,6 +12,7 @@ import json
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Mapping
 
 from factory.workgraph.codex_credential import (
     CredentialDeclaration,
@@ -22,6 +23,7 @@ from factory.workgraph.codex_credential import (
     credential_provenance_json,
     validate_codex_credential,
 )
+from factory.workgraph.adapter import CODEX_HOME_ENV, discover_codex_credential
 
 NOW = datetime(2026, 9, 12, 12, 0, 0, tzinfo=timezone.utc)
 OWNER_ID = "codex-factory"
@@ -171,3 +173,34 @@ def test_inaccessible_storage_is_refused_by_name(tmp_path: Path) -> None:
     assert credential.admitted is False
     assert credential.failure == CredentialFailure.INACCESSIBLE_SOURCE
     assert "inaccessible storage" in credential.refusal
+
+
+def test_explicit_missing_source_never_falls_back_interactively(
+    tmp_path: Path,
+) -> None:
+    """A declared missing source stays missing when a login exists elsewhere."""
+    codex_home = tmp_path / "interactive-codex-home"
+    codex_home.mkdir()
+    (codex_home / "auth.json").write_text(
+        json.dumps(managed_payload()), encoding="utf-8"
+    )
+    declared = tmp_path / "declared-codex-home"
+    declared.mkdir()
+    missing_source = CredentialDeclaration(
+        owner_id=OWNER_ID,
+        source_path=declared / "auth.json",
+        generation=GENERATION,
+    )
+    environ: dict[str, str] = {CODEX_HOME_ENV: str(codex_home)}
+
+    assert (
+        discover_codex_credential(
+            operator_home=tmp_path / "operator-home",
+            environ=environ,
+            declaration=missing_source,
+        )
+        is None
+    )
+    assert discover_codex_credential(
+        operator_home=tmp_path / "operator-home", environ=environ
+    ) == (codex_home / "auth.json")
