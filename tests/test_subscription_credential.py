@@ -23,6 +23,7 @@ from factory.workgraph.adapter import (
     STDOUT_LOG_NAME,
     discover_subscription_credential,
 )
+from factory.workgraph.codex_events import decode_codex_events
 from factory.workgraph.models import AttemptContext
 from tests.stub_agent import (
     STUB_AGENT_PATH,
@@ -320,7 +321,7 @@ async def test_moved_credential_is_still_seeded(
 
 
 @pytest.mark.asyncio
-async def test_present_but_refused_credential_is_auth_failure(
+async def test_present_but_refused_credential_is_typed_pre_agent_failure(
     adapter: ClaudeCodeAdapter,
     factory_root: Path,
     worktree: Path,
@@ -328,9 +329,9 @@ async def test_present_but_refused_credential_is_auth_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A credential that is seeded but rejected by the CLI must be classified as
-    an authentication failure, not as a diffless AGENT_ERROR. The measured CLI
-    behaviour (2026-08-19) is exit 1 with the refusal on stdout."""
+    """A credential that is seeded but rejected by the CLI must be classified
+    from its typed fatal-auth pair as a pre-agent failure, not from a substring
+    in the log."""
     operator_home = _fake_operator_home(tmp_path)
     _write_credential(operator_home / ".claude" / ".credentials.json")
     monkeypatch.setattr(
@@ -347,8 +348,17 @@ async def test_present_but_refused_credential_is_auth_failure(
     # markers mean a refusal is the adapter's declaration (`_refusal_markers`,
     # 155-US2), and interpreting them is the activity's.
     from factory.activities.agent_activities import _classify_auth_failure
-    result = _classify_auth_failure(adapter, adapter_result)
-    assert result.termination == Termination.AUTH_FAILURE
+    fatal_lines = [
+        json.dumps({"type": "error", "message": SUBSCRIPTION_REFUSAL}),
+        json.dumps({"type": "turn.failed", "error": {"message": SUBSCRIPTION_REFUSAL}}),
+    ]
+    result = _classify_auth_failure(
+        adapter,
+        adapter_result,
+        evidence=decode_codex_events(fatal_lines),
+        markers=(SUBSCRIPTION_REFUSAL,),
+    )
+    assert result.termination == Termination.PRE_AGENT_FAILURE
     log = (factory_root / "transcripts" / EPIC / NODE / f"attempt-{ATTEMPT}" / STDOUT_LOG_NAME).read_text(encoding="utf-8")
     assert SUBSCRIPTION_REFUSAL in log
 

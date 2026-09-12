@@ -555,10 +555,10 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
         # ahead would reclassify the attempt AUTH_FAILURE and this non-retryable
         # raise would never fire.
         _raise_if_launch_refused(context, result)
-        # 155-US2 (FR-005): the CLI refused its credential. Which strings read
-        # as that refusal is the adapter's declaration (`_refusal_markers`,
-        # 154's per-CLI seam — Claude's two measured stdout markers, Codex's
-        # measured stderr 401); interpreting them is this activity's (FR-012).
+        # 160-US3: the CLI refused its credential. Which typed fatal message
+        # forms read as that refusal is the adapter's declaration
+        # (`_refusal_markers`, 154's per-CLI seam); interpreting the current
+        # event pair is this activity's (FR-009).
         # The reclassification is what keeps a refused run from reading as a
         # silent diffless success — 070's lesson, second runner over.
         result = _classify_auth_failure(
