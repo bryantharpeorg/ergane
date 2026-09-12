@@ -2222,10 +2222,13 @@ class CodexAdapter:
         try:
             evidence = self._current_evidence(env)
             plain_log = archive / STDOUT_LOG_NAME
+            legacy_raw = (archive / CODEX_EVENTS_NAME).read_bytes()
             if evidence.final_message is not None:
                 plain_log.write_text(f"{evidence.final_message.text}\n", encoding="utf-8")
-            elif any(reason.code == INVALID_JSON for reason in evidence.reasons):
-                plain_log.write_bytes((archive / CODEX_EVENTS_NAME).read_bytes())
+            elif any(reason.code == INVALID_JSON for reason in evidence.reasons) and (
+                evidence.thread_id is None and b'"type"' not in legacy_raw
+            ):
+                plain_log.write_bytes(legacy_raw)
         except (AttributeError, OSError):
             pass
 

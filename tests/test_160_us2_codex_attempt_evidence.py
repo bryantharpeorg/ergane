@@ -36,7 +36,7 @@ ATTEMPT = 2
 SESSION_ID = "f8e3d2c1-b4a5-4f80-9c1a-7e6d5b4a3c99"
 MODEL_ALIAS = "ollama-cloud/glm-5.3-flash"
 PROXY_URL = "http://litellm.test:4000"
-VIRTUAL_KEY = "sk-virtual-160-each-codex-attempt-owns-its-evidence-us2-2"
+VIRTUAL_KEY = "virtual-key-160-each-codex-attempt-owns-its-evidence-us2-2"
 PROMPT = "You are the implementer persona.\n\n## Scope\n\nImplement US2.\n"
 
 
@@ -194,6 +194,7 @@ async def test_startup_and_errors_are_not_a_model_turn(
     raw_events = (archive / CODEX_EVENTS_NAME).read_bytes()
     raw_stderr = (archive / CODEX_STDERR_NAME).read_bytes()
     evidence = decode_codex_events(raw_events.splitlines(keepends=True))
+    plain_log = (archive / STDOUT_LOG_NAME).read_bytes()
 
     assert result.termination == Termination.PRE_AGENT_FAILURE
     assert evidence.thread_id == "thread-current"
@@ -204,6 +205,7 @@ async def test_startup_and_errors_are_not_a_model_turn(
         fatal_message in event.message for event in evidence.fatal_events
     )
     assert b"provider diagnostic" in raw_stderr
+    assert plain_log == b""
 
 
 @pytest.mark.parametrize(
