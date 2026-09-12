@@ -14,6 +14,7 @@ from factory.usage.ledger import (
     upsert_codex_usage,
     upsert_record,
 )
+from factory.usage.codex_evidence import normalize_codex_usage
 from factory.usage.models import CodexUsageEvidence, CodexUsageRecord
 from factory.workgraph.codex_events import decode_codex_events
 from factory.activities.usage_activities import (
@@ -24,6 +25,8 @@ from factory.activities.usage_activities import (
 )
 from factory.usage.models import KeyLease, Termination
 from factory.workgraph.adapter import CODEX_EVENTS_NAME, transcript_dir
+from factory.usage.litellm_client import LiteLLMClient
+from factory.env import ERGANE_ROOT_ENV
 from tests.conftest import FakeLiteLLM
 from tests.test_usage_activities import (
     ATTEMPT,
@@ -130,7 +133,7 @@ def test_unobserved_usage_stays_unknown_and_not_complete(
 
     assert usage.complete is False
     assert usage.source == "codex_cli"
-    assert usage.input_tokens is None
+    assert usage.input_tokens == (17 if reason == "partial-usage" else None)
     assert usage.cached_input_tokens is None
     assert usage.output_tokens is None
     assert usage.reasoning_output_tokens is None
@@ -167,7 +170,9 @@ def test_gateway_rollup_does_not_add_codex_corroboration(
 
         totals = rollup(ledger, by="persona")["totals"]
         stored = ledger.execute(
-            "SELECT * FROM codex_usage_evidence WHERE key_alias = ?",
+            "SELECT input_tokens, cached_input_tokens, output_tokens,"
+            " reasoning_output_tokens, complete FROM codex_usage_evidence"
+            " WHERE key_alias = ?",
             (gateway.key_alias,),
         ).fetchone()
 
@@ -179,6 +184,72 @@ def test_gateway_rollup_does_not_add_codex_corroboration(
         assert totals["spend_usd"] == pytest.approx(0.4212)
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize(
+    ("lines", "expected"),
+    [
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+            ],
+            (None, None, None, None, 0, None),
+        ),
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+                '{"type":"turn.completed","usage":{"input_tokens":17}}',
+            ],
+            (17, None, None, None, 0, "partial-usage"),
+        ),
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+                '{"type":"turn.failed","error":{"message":"provider error"}}',
+            ],
+            (None, None, None, None, 0, "turn-failed"),
+        ),
+        (
+            [
+                '{"type":"thread.started","thread_id":"thread-current"}',
+                '{"type":"turn.started"}',
+                '{"type":"turn.failed","error":{"message":"provider error"}}',
+                '{"type":"turn.completed","usage":{"input_tokens":17,'
+                '"output_tokens":23}}',
+            ],
+            (None, None, None, None, 0, "duplicate-terminal"),
+        ),
+    ],
+)
+def test_codex_usage_ledger_keeps_unknowns_not_complete(
+    lines: list[str], expected: tuple[int | None, int | None, int | None, int | None, int, str | None]
+) -> None:
+    usage = normalize_codex_usage(decode(lines))
+    record = CodexUsageRecord(
+        key_alias="epic-7:node-3:2:codex",
+        input_tokens=usage.input_tokens,
+        cached_input_tokens=usage.cached_input_tokens,
+        output_tokens=usage.output_tokens,
+        reasoning_output_tokens=usage.reasoning_output_tokens,
+        source=usage.source,
+        complete=usage.complete,
+        reason=usage.reason,
+    )
+
+    with connect(":memory:") as ledger:
+        stored = upsert_codex_usage(ledger, record)
+        row = ledger.execute(
+            "SELECT input_tokens, cached_input_tokens, output_tokens,"
+            " reasoning_output_tokens, complete, reason"
+            " FROM codex_usage_evidence WHERE key_alias = ?",
+            (record.key_alias,),
+        ).fetchone()
+
+    assert stored.id is not None
+    assert row == expected
 
 
 @pytest.fixture
@@ -193,9 +264,7 @@ def proxy(
     monkeypatch.setenv("ERGANE_LEDGER_PATH", str(ledger_path))
     monkeypatch.setattr(
         "factory.activities.usage_activities.open_client",
-        lambda: __import__(
-            "factory.usage.litellm_client", fromlist=["LiteLLMClient"]
-        ).LiteLLMClient.from_env(transport=litellm_env.transport),
+        lambda: LiteLLMClient.from_env(transport=litellm_env.transport),
     )
     return litellm_env
 
@@ -210,6 +279,7 @@ def archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Path]:
     monkeypatch.setenv("FACTORY_ROOT", str(tmp_path))
+    monkeypatch.setenv(ERGANE_ROOT_ENV, str(tmp_path))
     path = transcript_dir(tmp_path, EPIC, NODE, ATTEMPT)
     path.mkdir(parents=True)
     yield path

@@ -137,7 +137,7 @@ def test_additive_migration_preserves_old_rows_and_readonly_reporting(tmp_path):
         assert ledger.rollup(before, by='epic')['coverage']['totals']['missing_usage_rows'] == 0
         assert 'usage_source' not in {r[1] for r in before.execute('PRAGMA table_info(usage_records)')}
     with ledger.connect(path) as after:
-        assert after.execute('SELECT version FROM schema_version').fetchone()[0] == 3
+        assert after.execute('SELECT version FROM schema_version').fetchone()[0] == 4
         assert {'usage_source','usage_status','cost_basis'} <= {r[1] for r in after.execute('PRAGMA table_info(usage_records)')}
 
 

@@ -166,3 +166,38 @@ class UsageRecord:
     usage_source: str = "legacy"
     usage_status: str = "legacy"
     cost_basis: str = "unknown"
+
+
+@dataclass(frozen=True)
+class CodexUsageEvidence:
+    """Codex's own token counts, normalized for the current attempt.
+
+    `None` always means the count was not observed. `complete` is false for a
+    missing, partial, malformed, failed, or multi-terminal reading, even when
+    some counts were present; `source` names the evidence surface rather than an
+    accounting owner.
+    """
+
+    input_tokens: int | None
+    cached_input_tokens: int | None
+    output_tokens: int | None
+    reasoning_output_tokens: int | None
+    source: str = "codex_cli"
+    complete: bool = False
+    invalid_fields: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CodexUsageRecord:
+    """The separate ledger row for Codex CLI token corroboration."""
+
+    key_alias: str
+    input_tokens: int | None
+    cached_input_tokens: int | None
+    output_tokens: int | None
+    reasoning_output_tokens: int | None
+    source: str
+    complete: bool
+    reason: str | None = None
+    id: int | None = None

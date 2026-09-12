@@ -1,5 +1,5 @@
 -- Ledger schema: the documented direct-SQL surface (FR-012).
--- SQLite, WAL mode. One row per node attempt teardown. Version 2.
+-- SQLite, WAL mode. One row per node attempt teardown. Version 4.
 -- Version 2 adds 'question' to the termination CHECK (008-US1): a QUESTION
 -- attempt is a termination class with a ledger row, not an accounting exemption
 -- (FR-006), so the storage layer admits the value the workflow derives from the
@@ -40,6 +40,18 @@ CREATE INDEX IF NOT EXISTS idx_usage_epic     ON usage_records (epic_id);
 CREATE INDEX IF NOT EXISTS idx_usage_persona  ON usage_records (persona);
 CREATE INDEX IF NOT EXISTS idx_usage_spec_ref ON usage_records (spec_ref);
 CREATE INDEX IF NOT EXISTS idx_usage_attempt  ON usage_records (epic_id, node_id, attempt);
+
+CREATE TABLE IF NOT EXISTS codex_usage_evidence (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_alias                TEXT    NOT NULL UNIQUE,
+    input_tokens             INTEGER,
+    cached_input_tokens      INTEGER,
+    output_tokens            INTEGER,
+    reasoning_output_tokens  INTEGER,
+    source                   TEXT    NOT NULL,
+    complete                 INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    reason                   TEXT
+);
 
 -- Canonical rollup shapes (FR-006). The CLI executes these; direct SQL users may too.
 
