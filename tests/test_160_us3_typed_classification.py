@@ -9,13 +9,14 @@ from dataclasses import fields as dataclass_fields
 from pathlib import Path
 
 from factory.usage.models import Termination
+from factory.usage.models import UsageSnapshot
 from factory.workgraph.adapter import CODEX_EVENTS_NAME, ATTEMPT_ARCHIVE_ENV, CodexAdapter
 from factory.workgraph.adapter import ClaudeCodeAdapter, HostAgentBackend, SUBSCRIPTION_REFUSAL_MARKER
 from factory.workgraph.codex_events import decode_codex_events
 from factory.activities.agent_activities import _classify_auth_failure
 from factory.workgraph.models import AdapterResult, AttemptContext
 from tests.stub_agent import STUB_AGENT_PATH, write_control
-from factory.verify.question import detect_codex_question
+from factory.verify.question import detect_codex_question, detect_operator_question
 import pytest
 from temporalio.testing import ActivityEnvironment
 
@@ -230,6 +231,36 @@ def test_the_final_agent_message_satisfying_the_marker_asks() -> None:
     assert detected.text == "The fork: A or B. I lean A."
 
 
+def test_archived_codex_question_detection_uses_only_the_final_message(
+    tmp_path: Path,
+) -> None:
+    """The archive reader exposes the typed final message, not event prose."""
+
+    marker = "## OPERATOR QUESTION\nWhich option?"
+    archive = tmp_path / "attempt"
+    archive.mkdir()
+    (archive / "stdout.log").write_text("Done.\n")
+    for final_text, expected in [("Done.\n", False), (marker, True)]:
+        events = [
+            {"type": "thread.started", "thread_id": "thread-question"},
+            {"type": "turn.started"},
+            {
+                "type": "item.completed",
+                "item": {"id": "thought", "type": "reasoning", "text": marker},
+            },
+            {
+                "type": "item.completed",
+                "item": {"id": "final", "type": "agent_message", "text": final_text},
+            },
+            {"type": "turn.completed", "usage": {}},
+        ]
+        (archive / "codex-events.jsonl").write_text(
+            "".join(f"{json.dumps(event)}\n" for event in events)
+        )
+        detected = detect_operator_question(archive)
+        assert (detected is not None and detected.is_question) is expected
+
+
 def test_reclassification_preserves_every_current_result_field(
     tmp_path: Path,
 ) -> None:
@@ -248,7 +279,7 @@ def test_reclassification_preserves_every_current_result_field(
     baseline = AdapterResult(
         termination=Termination.AGENT_ERROR,
         transcript_path=str(tmp_path / "attempt"),
-        last_snapshot=None,
+        last_snapshot=UsageSnapshot(spend_usd=0.0, captured_at="2026-09-12T00:00:00Z"),
         detail="the process said this",
         credential_source="gateway",
     )

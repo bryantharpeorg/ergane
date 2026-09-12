@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Sequence
 
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
-from factory.workgraph.codex_events import CodexExecutionEvidence
+from factory.workgraph.codex_events import CodexExecutionEvidence, decode_codex_events
 
 #: The fixed heading the agent writes in its final message (spec § US1). Exactly
 #: two hashes — a level-2 heading, not a mention, not a level-3 subsection. The
@@ -96,6 +96,17 @@ def detect_operator_question(transcript_path: Path) -> QuestionMarker | None:
     common case, because reading silence as "no question" would let a vanished
     archive look like a clean attempt that happened to ask nothing.
     """
+    event_log = transcript_path / "codex-events.jsonl"
+    if event_log.is_file():
+        try:
+            raw = event_log.read_bytes()
+        except OSError as exc:
+            raise TranscriptReadError(
+                f"cannot read transcript {event_log}: {exc}"
+            ) from exc
+        return detect_codex_question(
+            decode_codex_events(raw.splitlines(keepends=True))
+        )
     stdout = _read_stdout(transcript_path)
     return detect_final_message_question(stdout)
 
