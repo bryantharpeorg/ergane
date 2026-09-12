@@ -70,6 +70,13 @@ from factory.env import (
     FACTORY_LEDGER_PATH_ENV,
     resolve_env_path,
 )
+from factory.attestation import (
+    LaunchRecord,
+    RungSelection,
+    link_usage,
+    record_launch,
+    set_launch_outcome,
+)
 from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient, LiteLLMError
 from factory.usage.codex_evidence import read_codex_usage_evidence
 from factory.usage.models import (
@@ -104,9 +111,13 @@ _ATTRIBUTION_FIELDS = ("epic_id", "node_id", "persona", "spec_ref")
 #: resolves the same default, or an operator's `ergane usage` reads an empty
 #: database (contracts/cli.md).
 DEFAULT_LEDGER_PATH = ".factory/ledger.db"
+DEFAULT_ATTESTATION_PATH = ".factory/attestation.db"
 
 LEDGER_PATH_ENV = "FACTORY_LEDGER_PATH"  # legacy re-export
 ERGANE_LEDGER_PATH_ENV = ERGANE_LEDGER_PATH_ENV  # re-export
+
+ATTESTATION_PATH_ENV = "FACTORY_ATTESTATION_DB"  # legacy re-export
+ERGANE_ATTESTATION_PATH_ENV = "ERGANE_ATTESTATION_DB"  # re-export
 
 #: A credential the proxy rejected is a worker-host misconfiguration; retrying
 #: it for ten minutes only delays the diagnosis.
@@ -138,6 +149,18 @@ class IssueKeyInput:
     #: the subscription decision (FR-006); empty means a payload that predates
     #: the field, answered from the `agent` sentinel, then the registry.
     route: str = ""
+    #: 167-US1: identity supplied in deterministic workflow state. Empty fields
+    #: are old payloads and retain the pre-journal behavior.
+    target: str = ""
+    spec_revision: str = ""
+    spec_fingerprint: str = ""
+    epic_workflow_id: str = ""
+    epic_run_id: str = ""
+    invocation_id: str = ""
+    launch_ordinal: int = 0
+    ladder_ordinal: int = 0
+    ladder: tuple[RungSelection, ...] = ()
+    transition_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -156,6 +179,10 @@ class TeardownInput:
     lease: KeyLease
     termination: Termination
     last_snapshot: UsageSnapshot | None = None
+    #: 167-US1: the lifecycle outcome supplied by the workflow. None leaves a
+    #: launch pending; it never invents an ending.
+    launch_outcome: str | None = None
+    launch_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -239,7 +266,14 @@ def _direct_credential() -> str:
     return value
 
 
-def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str:
+def key_alias_for(
+    epic_id: str,
+    node_id: str,
+    attempt: int,
+    persona: str,
+    *,
+    invocation_id: str = "",
+) -> str:
     """The key's identity as the proxy and the ledger both spell it (R1).
 
     All four dimensions, persona included: the judge scores an attempt while
@@ -249,7 +283,8 @@ def key_alias_for(epic_id: str, node_id: str, attempt: int, persona: str) -> str
     an alias without the persona is a failed mint on every scored node, or
     one persona's row silently overwriting the other's.
     """
-    return f"{epic_id}:{node_id}:{attempt}:{persona}"
+    alias = f"{epic_id}:{node_id}:{attempt}:{persona}"
+    return f"{alias}:{invocation_id}" if invocation_id else alias
 
 
 @activity.defn
@@ -274,8 +309,46 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
     gets the workflow's ten-minute retry budget (R4).
     """
     alias = key_alias_for(
-        request.epic_id, request.node_id, request.attempt, request.persona
+        request.epic_id,
+        request.node_id,
+        request.attempt,
+        request.persona,
+        invocation_id=request.invocation_id,
     )
+
+    actual = RungSelection(
+        persona=request.persona,
+        runner=request.agent or "<unresolved>",
+        route=request.route or "<unknown>",
+        model_aliases=tuple(request.models),
+        reason=request.transition_reason,
+    )
+    if request.invocation_id:
+        record_launch(
+            _journal_path(),
+            LaunchRecord(
+                target=request.target,
+                spec_revision=request.spec_revision,
+                spec_fingerprint=request.spec_fingerprint,
+                epic_id=request.epic_id,
+                epic_workflow_id=request.epic_workflow_id,
+                epic_run_id=request.epic_run_id,
+                node_id=request.node_id,
+                invocation_id=request.invocation_id,
+                ladder_ordinal=request.ladder_ordinal or request.attempt,
+                launch_ordinal=request.launch_ordinal,
+                phase="builder" if request.persona != "judge" else "judge",
+                form="launch",
+                scoring_job_id=None,
+                scoring_call_ordinal=None,
+                delivery_id=request.invocation_id,
+                key_alias=alias,
+                usage_id=None,
+                actual_rung=actual,
+                ladder=tuple(request.ladder),
+                transition_reason=request.transition_reason,
+            ),
+        )
 
     # US2 FR-006: subscription-routed personas authenticate through the operator's
     # own credential, not a gateway virtual key. A minted-and-unused key would be
@@ -290,6 +363,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             persona=request.persona,
             spec_ref=request.spec_ref,
             issued_at=_now_iso(),
+            invocation_id=request.invocation_id,
         )
 
     if _is_direct_mode():
@@ -306,6 +380,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
             persona=request.persona,
             spec_ref=request.spec_ref,
             issued_at=_now_iso(),
+            invocation_id=request.invocation_id,
         )
 
     try:
@@ -346,6 +421,7 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
         persona=request.persona,
         spec_ref=request.spec_ref,
         issued_at=_now_iso(),
+        invocation_id=request.invocation_id,
     )
 
 
@@ -501,6 +577,8 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
         with closing(ledger.connect(_ledger_path())) as conn:
             record = ledger.upsert_record(conn, record)
             _store_codex_corroboration(conn, codex_usage, record)
+            _record_launch_usage(request.lease, record.id)
+            _complete_launch(request)
             return record
 
     client: LiteLLMClient | None
@@ -520,6 +598,8 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
         with closing(ledger.connect(_ledger_path())) as conn:
             stored = ledger.upsert_record(conn, record)
             _store_codex_corroboration(conn, codex_usage, stored)
+            _record_launch_usage(request.lease, stored.id)
+            _complete_launch(request)
 
         if client is not None:
             await _revoke_quietly(client, request.lease.key)
@@ -528,6 +608,25 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
             await client.aclose()
 
     return stored
+
+
+def _record_launch_usage(lease: KeyLease, usage_id: int | None) -> None:
+    """Link durable usage to a launch when it carries a supplied identity."""
+    if not lease.invocation_id:
+        return
+    link_usage(_journal_path(), lease.invocation_id, usage_id)
+
+
+def _complete_launch(request: TeardownInput) -> None:
+    lease = request.lease
+    if not lease.invocation_id or request.launch_outcome is None:
+        return
+    set_launch_outcome(
+        _journal_path(),
+        lease.invocation_id,
+        request.launch_outcome,
+        request.launch_reason,
+    )
 
 
 async def _read_final_usage(
@@ -758,6 +857,14 @@ def _ledger_path() -> Path:
         ERGANE_LEDGER_PATH_ENV,
         FACTORY_LEDGER_PATH_ENV,
         DEFAULT_LEDGER_PATH,
+    )
+
+
+def _journal_path() -> Path:
+    return resolve_env_path(
+        ERGANE_ATTESTATION_PATH_ENV,
+        ATTESTATION_PATH_ENV,
+        DEFAULT_ATTESTATION_PATH,
     )
 
 

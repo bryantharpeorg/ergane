@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from factory.attestation.models import RungSelection
+
 
 class Termination(StrEnum):
     """How an attempt ended (FR-008); persisted as the lowercase value.
@@ -91,6 +93,9 @@ class KeyLease:
     persona: str
     spec_ref: str
     issued_at: str
+    #: New invocations carry a stable identity supplied by workflow state. Empty
+    #: preserves old payloads and old ledger rows; it never means "guess one".
+    invocation_id: str = ""
 
 
 @dataclass(frozen=True)
