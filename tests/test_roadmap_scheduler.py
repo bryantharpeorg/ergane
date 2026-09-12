@@ -1710,12 +1710,12 @@ async def test_status_keeps_last_complete_reading_across_continue_as_new(
             on_complete=lambda epic_id: alpha_completed.set()
             if epic_id == "001-alpha"
             else None,
-            ) as handle:
-                await alpha_dispatched.wait()
-                await handle.signal("pause_roadmap")
-                await env.client.get_workflow_handle("epic-001-alpha").signal("release")
-                await alpha_completed.wait()
-                await second_read_held.wait()
+        ) as handle:
+            await alpha_dispatched.wait()
+            await handle.signal("pause_roadmap")
+            await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+            await alpha_completed.wait()
+            await second_read_held.wait()
 
             status = await handle.query("roadmap_status", result_type=RoadmapStatus)
 
@@ -1731,6 +1731,7 @@ async def test_status_keeps_last_complete_reading_across_continue_as_new(
             assert status.max_concurrent_nodes == 1
 
             release_second_read.set()
+            await handle.signal("resume_roadmap")
             final_status = await handle.result()
             assert _status_of(final_status, "002-bravo").landed is True
             assert final_status.paused is True
