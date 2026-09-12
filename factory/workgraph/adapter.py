@@ -93,6 +93,7 @@ from factory.verify.toolchain import (
     system_tree_argv,
 )
 from factory.workgraph.detector import compare_and_report, capture_start
+from factory.workgraph.codex_events import decode_codex_events
 from factory.workgraph.models import AdapterResult, AttemptContext
 from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 
@@ -100,6 +101,9 @@ from factory.workgraph.worktree import SALVAGE_AUTHOR_EMAIL, SALVAGE_AUTHOR_NAME
 #: archive directory. Interleaved as the agent wrote it: two files would put the
 #: burden of reconstructing the order on whoever reads the evidence.
 STDOUT_LOG_NAME = "stdout.log"
+
+CODEX_EVENTS_NAME = "codex-events.jsonl"
+CODEX_STDERR_NAME = "codex-stderr.log"
 
 #: Environment variable names the agent inherits from the worker, on top of the
 #: two the attempt itself supplies. `PATH` is what finds the agent binary and the
@@ -1939,13 +1943,15 @@ class CodexAdapter:
     def _argv(self, context: AttemptContext) -> list[str]:
         """The invocation, as the child receives it (FR-004).
 
-        `exec` for non-interactive, `-` for the stdin prompt, `--model` for
+        `exec` for non-interactive, `--json` for the machine-readable stream,
+        `-` for the stdin prompt, `--model` for
         the persona's alias, the bypass flag because the factory's boundary is
         the confinement, `--skip-git-repo-check` because repository shape is
         not the factory's contract, and `--cd` for the node worktree."""
         return [
             self.executable,
             "exec",
+            "--json",
             "--model",
             context.model_alias,
             CODEX_BYPASS_FLAG,
@@ -2059,19 +2065,43 @@ class CodexAdapter:
         """The session files this CLI writes, as this CLI spells the location.
 
         Codex names its rollouts after ids it generated itself (trap 4,
-        measured), under a date-keyed tree in `CODEX_HOME`. The archive copies
-        every rollout beside the log; the turn probe asks whether any exists."""
-        return _codex_rollouts(env)
+        measured), under a date-keyed tree in `CODEX_HOME`. Only a rollout whose
+        decoded identity matches the current attempt's stream may be archived."""
+        current = self._current_thread(env)
+        if current is None:
+            return []
+        return [
+            path
+            for path in _codex_rollouts(env)
+            if self._rollout_thread(path) == current
+        ]
 
     def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
         """The structural tell that a turn ran (095-US1), as Codex writes it.
 
-        The rollout file's existence is the tell — measured: even a refused run
-        writes one (with `task_complete` carrying the error), so this is "the
-        CLI got far enough to attempt a turn", the same token-existence
-        semantics Claude's probe has. Naming *why* it failed is the refusal
-        marker's job (FR-012)."""
-        return any(path.is_file() for path in self._transcripts(context, worktree, env))
+        The current JSONL stream, not the rollout tree, decides whether model-
+        authored activity occurred. Startup bookkeeping and diagnostic errors
+        do not become evidence of a turn (US2 FR-006)."""
+        return self._current_evidence(env).agent_took_a_turn
+
+    def _current_evidence(self, env: Mapping[str, str]):
+        archive = env.get(ATTEMPT_ARCHIVE_ENV)
+        if not archive:
+            return decode_codex_events(())
+        try:
+            raw = (Path(archive) / CODEX_EVENTS_NAME).read_bytes()
+        except OSError:
+            return decode_codex_events(())
+        return decode_codex_events(raw.splitlines(keepends=True))
+
+    def _current_thread(self, env: Mapping[str, str]) -> str | None:
+        return self._current_evidence(env).thread_id
+
+    def _rollout_thread(self, path: Path) -> str | None:
+        try:
+            return self._current_evidence({"thread": str(path)}).thread_id
+        except OSError:
+            return None
 
     def _refusal_markers(self) -> tuple[str, ...]:
         """Markers that mean this CLI refused rather than merely failed.
