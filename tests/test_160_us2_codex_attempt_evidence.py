@@ -384,7 +384,8 @@ async def test_host_backend_separates_codex_stdout_from_stderr(
 
     assert result.termination == Termination.PRE_AGENT_FAILURE
     assert b"thread-current" in (archive / CODEX_EVENTS_NAME).read_bytes()
-    assert (archive / CODEX_STDERR_NAME).read_bytes() == b"ordinary diagnostic\n"
+    raw_stderr = (archive / CODEX_STDERR_NAME).read_bytes()
+    assert raw_stderr.endswith(b"ordinary diagnostic\n")
     assert b"ordinary diagnostic" not in (archive / CODEX_EVENTS_NAME).read_bytes()
 
 
@@ -589,5 +590,6 @@ async def test_bwrap_backend_separates_codex_stdout_from_stderr(
         await asyncio.wait_for(process.wait(), 20)
 
     assert b"thread-current" in events_path.read_bytes()
-    assert stderr_path.read_bytes() == b"ordinary diagnostic\n"
+    raw_stderr = stderr_path.read_bytes()
+    assert raw_stderr.endswith(b"ordinary diagnostic\n")
     SharedAttemptPolicy,

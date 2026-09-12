@@ -79,6 +79,7 @@ class Control:
     stderr: str = ""
     rollout_text: str | None = None
     interleave_stderr: bool = False
+    json_events: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -89,6 +90,7 @@ class Control:
             "stderr": self.stderr,
             "rollout_text": self.rollout_text,
             "interleave_stderr": self.interleave_stderr,
+            "json_events": self.json_events,
         }
 
 
@@ -205,7 +207,10 @@ def main(argv: list[str]) -> int:
 
     signal.signal(signal.SIGTERM, on_term)
 
-    print(BANNER, flush=True)
+    if "--json" in argv:
+        print(BANNER, file=sys.stderr, flush=True)
+    else:
+        print(BANNER, flush=True)
     if control.interleave_stderr and control.stdout and control.stderr:
         lines = control.stdout.splitlines(keepends=True)
         print(lines[0], flush=True)
@@ -215,6 +220,28 @@ def main(argv: list[str]) -> int:
     else:
         if control.stdout:
             print(control.stdout, flush=True)
+        elif "--json" in argv and control.json_events is not False:
+            thread_id = f"thread-{os.getpid()}"
+            stdout_events = [
+                {"type": "thread.started", "thread_id": thread_id},
+                {"type": "turn.started"},
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "id": "item-default",
+                        "type": "agent_message",
+                        "text": "stub-codex complete",
+                    },
+                },
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                },
+            ]
+            print(
+                "".join(f"{json.dumps(event)}\n" for event in stdout_events),
+                flush=True,
+            )
         if control.stderr:
             sys.stderr.write(control.stderr)
             sys.stderr.flush()
@@ -230,10 +257,23 @@ def main(argv: list[str]) -> int:
         if control.rollout_text is not None:
             path.write_text(control.rollout_text, encoding="utf-8")
         else:
-            path.write_text(
-                json.dumps({"type": "session_meta", "session_id": session_id}) + "\n",
-                encoding="utf-8",
+            thread_id = (
+                f"thread-{os.getpid()}"
+                if "--json" in argv and control.json_events is not False and not control.stdout
+                else ""
             )
+            if thread_id:
+                path.write_text(
+                    json.dumps({"type": "thread.started", "thread_id": thread_id}) + "\n",
+                    encoding="utf-8",
+                )
+            elif control.rollout_text is not None:
+                path.write_text(control.rollout_text, encoding="utf-8")
+            else:
+                path.write_text(
+                    json.dumps({"type": "session_meta", "session_id": session_id}) + "\n",
+                    encoding="utf-8",
+                )
 
     if control.sleep_s:
         time.sleep(control.sleep_s)
