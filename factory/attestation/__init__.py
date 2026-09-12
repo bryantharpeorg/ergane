@@ -1,6 +1,6 @@
 """Typed audit-packet evidence contracts."""
 
-from .journal import (
+from factory.attestation.journal import (
     LaunchRecord,
     RungSelection,
     link_usage,
@@ -10,7 +10,7 @@ from .journal import (
     read_usage_observations,
     record_usage_observation,
 )
-from .usage import UsageEvidence, UsageObservation, read_usage_evidence
+from factory.attestation.usage import UsageEvidence, UsageObservation, read_usage_evidence
 
 __all__ = [
     "LaunchRecord",

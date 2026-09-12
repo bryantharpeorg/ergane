@@ -9,11 +9,11 @@ from dataclasses import dataclass
 class RungSelection:
     """One resolved rung, frozen at dispatch."""
 
-    persona: str
-    runner: str
-    route: str
-    model_aliases: tuple[str, ...]
-    reason: str
+    persona: str = ""
+    runner: str = ""
+    route: str = ""
+    model_aliases: tuple[str, ...] = ()
+    reason: str = ""
 
 
 @dataclass(frozen=True)

@@ -6,8 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .models import LaunchRecord, RungSelection
-from .usage import UsageObservation
+from factory.attestation.models import LaunchRecord, RungSelection
+from factory.attestation.usage import UsageObservation
 
 SCHEMA_VERSION = 1
 

@@ -41,10 +41,10 @@ class UsageEvidence:
     @property
     def complete_total(self) -> float | None:
         spend = self.metrics["spend_usd"]
-        tokens = (self.metrics["prompt_tokens"], self.metrics["completion_tokens"])
         if (
             spend.value is None
-            or any(value is None for value in tokens)
+            or self.metrics["prompt_tokens"].value is None
+            or self.metrics["completion_tokens"].value is None
             or self.usage_status != "complete"
         ):
             return None
