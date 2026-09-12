@@ -44,6 +44,7 @@ from factory.workgraph.codex_credential import (
     MixedGatewayWorkflow,
     admit_codex_owner,
     gateway_credential_tick,
+    release_codex_owner,
 )
 
 
@@ -304,17 +305,22 @@ async def test_owner_payloads_round_trip_with_the_typed_converter(
         operator_uid=None,
     )
     result = CredentialOwnerAdmissionResult(
-        lease=CredentialLease(owner_id=OWNER_ID, host_id=HOST, lease_id="lease-1")
+        lease=CredentialLease(owner_id=OWNER_ID, host_id=HOST, lease_id="lease-1"),
+        operator_uid=None,
     )
     converter = default_data_converter().payload_converter
     payload = encoded
     result_payload = converter.to_payload(result)
+    result_body = json.loads(result_payload.data)
+    del result_body["operator_uid"]
+    result_payload.data = json.dumps(result_body).encode()
     decoded = [
         converter.from_payload(payload, CredentialOwnerAdmissionInput),
         converter.from_payload(result_payload, CredentialOwnerAdmissionResult),
     ]
 
     assert decoded == [old_request, result]
+    assert decoded[1].operator_uid is None
     assert isinstance(decoded[0], CredentialOwnerAdmissionInput)
     assert isinstance(decoded[1], CredentialOwnerAdmissionResult)
 
@@ -358,6 +364,29 @@ async def test_gateway_work_progresses_while_subscription_owner_is_busy(
         await owner_root.release(held, owner_directory=owner)
     finally:
         await environment.shutdown()
+
+
+async def test_owner_activity_release_revalidates_and_allows_readmission(
+    tmp_path: Path,
+) -> None:
+    """The activity bracket, not only the helper, releases the owner."""
+    first = await admit_codex_owner(request(tmp_path))
+    assert first.lease is not None
+
+    await release_codex_owner(first)
+
+    second = await admit_codex_owner(request(tmp_path))
+    assert second.lease is not None
+    assert second.lease.lease_id != first.lease.lease_id
+    assert second.operator_uid == OPERATOR_UID
+    try:
+        await release_codex_owner(second)
+    finally:
+        await CredentialOwnerRoots(
+            root=tmp_path / "operator-state",
+            host_id=HOST,
+            operator_uid=OPERATOR_UID,
+        ).release(second.lease, owner_directory=Path(second.owner_directory or ""))
 
 
 async def test_effective_rung_owns_the_credential_not_the_original_persona(

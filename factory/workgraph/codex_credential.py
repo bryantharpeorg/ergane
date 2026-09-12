@@ -307,6 +307,7 @@ class CredentialOwnerAdmissionResult:
     busy: CredentialBusy | None = None
     refusal: str | None = None
     owner_directory: str | None = None
+    operator_uid: int | None = None
 
 
 @dataclass(frozen=True)
@@ -417,7 +418,11 @@ async def admit_codex_owner(
     )
     try:
         lease = await roots.admit(owner, declaration)
-        return CredentialOwnerAdmissionResult(lease=lease, owner_directory=str(owner))
+        return CredentialOwnerAdmissionResult(
+            lease=lease,
+            owner_directory=str(owner),
+            operator_uid=request.operator_uid,
+        )
     except CredentialOwnerBusy as busy:
         return CredentialOwnerAdmissionResult(busy=CredentialBusy(busy.retry_after_s))
     except ValueError as error:
@@ -432,9 +437,11 @@ async def release_codex_owner(
     if request.lease is None or request.owner_directory is None:
         return
     owner = Path(request.owner_directory)
-    CredentialOwnerRoots(root=owner.parent.parent, host_id=request.lease.host_id).release(
-        request.lease, owner_directory=owner
-    )
+    await CredentialOwnerRoots(
+        root=owner.parent.parent,
+        host_id=request.lease.host_id,
+        operator_uid=request.operator_uid,
+    ).release(request.lease, owner_directory=owner)
 
 
 @activity.defn(name="gateway_credential_tick")
