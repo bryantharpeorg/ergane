@@ -1660,6 +1660,84 @@ async def test_node_bound_survives_continue_as_new(
         assert child_input.max_concurrent_nodes == 3, child_input
 
 
+async def test_status_keeps_last_complete_reading_across_continue_as_new(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """FR-008 / US1-S1/S2: a query during the continued run's first read is complete.
+
+    The regression holds only that first read. The prior run's child is held
+    until the operator has paused the roadmap, then released; its conclusion
+    crosses the quiescent continue-as-new boundary, and the second corpus read
+    is held before its result can replace the carried reading. The query then
+    observes a deterministic initialization gap instead of racing the worker.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+        },
+    )
+    original_read_corpus = factory_roadmap_workflow.read_corpus_activity
+    alpha_dispatched = asyncio.Event()
+    alpha_completed = asyncio.Event()
+    second_read_held = asyncio.Event()
+    release_second_read = asyncio.Event()
+    read_calls: list[str] = []
+
+    @activity.defn(name="read_corpus_activity")
+    async def held_second_read(request: dict) -> Roadmap:
+        typed_request = factory_roadmap_workflow.ReadCorpusInput(
+            specs_root=request["specs_root"]
+        )
+        read_calls.append(typed_request.specs_root)
+        if len(read_calls) == 1:
+            return await original_read_corpus(typed_request)
+        second_read_held.set()
+        await release_second_read.wait()
+        return await original_read_corpus(typed_request)
+
+    factory_roadmap_workflow.read_corpus_activity = held_second_read
+    try:
+        async with run_roadmap(
+            env,
+            RoadmapWorld(),
+            str(specs_root),
+            hold_specs={"001-alpha"},
+            on_dispatch=lambda epic_id: alpha_dispatched.set()
+            if epic_id == "001-alpha"
+            else None,
+            on_complete=lambda epic_id: alpha_completed.set()
+            if epic_id == "001-alpha"
+            else None,
+            ) as handle:
+                await alpha_dispatched.wait()
+                await handle.signal("pause_roadmap")
+                await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+                await alpha_completed.wait()
+                await second_read_held.wait()
+
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+
+            assert [spec.spec_dir for spec in status.specs] == [
+                "001-alpha",
+                "002-bravo",
+            ]
+            assert _status_of(status, "001-alpha").landed is True
+            assert _status_of(status, "002-bravo").dispatchable is True
+            assert status.running == []
+            assert status.paused is True
+            assert status.max_concurrent_epics == 1
+            assert status.max_concurrent_nodes == 1
+
+            release_second_read.set()
+            final_status = await handle.result()
+            assert _status_of(final_status, "002-bravo").landed is True
+            assert final_status.paused is True
+    finally:
+        factory_roadmap_workflow.read_corpus_activity = original_read_corpus
+
+
 # ============================================================================
 # T013 / T014 — US3 idle behaviour (must fail before the field/signal lands)
 # ============================================================================
