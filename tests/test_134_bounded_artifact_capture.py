@@ -240,3 +240,119 @@ def test_mutation_during_capture_is_refused_without_partial_bytes(
     assert capture.bytes is None
     assert capture.digest is None
     assert "changed between observations" in (capture.reason or "")
+
+
+def test_absence_and_the_stored_byte_limit_are_explicit(tmp_path: Path) -> None:
+    """US6-S3: absence, an exact fit and oversize are distinct outcomes."""
+    absent_path = tmp_path / "ergane-us6-absent-control"
+    bounded_path = tmp_path / "ergane-us6-bound-control"
+    bounded_path.write_bytes(b"x" * 16)
+
+    absent = observe_source(tmp_path, absent_path.name, byte_limit=16)
+    bounded = observe_source(tmp_path, bounded_path.name, byte_limit=16)
+
+    assert absent.status.value == "ABSENT"
+    assert absent.bytes is None
+    assert absent.reason == "path does not name a file"
+    assert bounded.status.value == "PERMITTED"
+    assert bounded.bytes == b"x" * 16
+    assert bounded.size == 16
+
+
+def test_an_oversized_file_stops_reading_and_publishes_no_bytes(
+    tmp_path: Path,
+) -> None:
+    """US6-S3: an oversized source is observed, not truncated."""
+    with pytest.MonkeyPatch.context() as patch:
+        reads: list[bytes] = []
+        real_read = os.read
+
+        def counted_read(fd: int, amount: int) -> bytes:
+            chunk = real_read(fd, amount)
+            reads.append(chunk)
+            return chunk
+
+        patch.setattr(os, "read", counted_read)
+        path = tmp_path / "ergane-us6-oversize-control"
+        path.write_bytes(b"y" * 17)
+
+        observation = observe_source(tmp_path, path.name, byte_limit=16)
+
+    assert observation.status.value == "OVERSIZED"
+    assert observation.bytes is None
+    assert observation.size == 17
+    assert sum(len(chunk) for chunk in reads) <= 17
+
+
+def test_capture_bounds_actual_reads_in_both_observation_phases(
+    tmp_path: Path,
+) -> None:
+    """US6-S3: pre-gate and post-gate reads both obey the caller's limit."""
+    from factory.verify.artifact_capture import CaptureProvenance, capture_source
+
+    path = tmp_path / "twice-read.txt"
+    path.write_bytes(b"0123456789abcdefg")
+    relative_path = path.relative_to(tmp_path).as_posix()
+
+    with pytest.MonkeyPatch.context() as patch:
+        real_read = os.read
+        pre_reads: list[bytes] = []
+        post_reads: list[bytes] = []
+
+        def pre_read(fd: int, amount: int) -> bytes:
+            chunk = real_read(fd, amount)
+            pre_reads.append(chunk)
+            return chunk
+
+        def post_read(fd: int, amount: int) -> bytes:
+            chunk = real_read(fd, amount)
+            post_reads.append(chunk)
+            return chunk
+
+        patch.setattr(os, "read", pre_read)
+        before = observe_source(tmp_path, relative_path, byte_limit=16)
+        patch.setattr(os, "read", post_read)
+        capture = capture_source(
+            tmp_path,
+            relative_path,
+            byte_limit=16,
+            baseline=before,
+        )
+
+    assert b"".join(pre_reads) == b"0123456789abcdefg"
+    assert b"".join(post_reads) == b"0123456789abcdefg"
+    assert before.status.value == "OVERSIZED"
+    assert capture.status.value == "OVERSIZED"
+    assert capture.provenance is CaptureProvenance.UNCHANGED
+    assert capture.bytes is None
+
+
+def test_growth_during_reading_is_refused_without_partial_bytes(
+    tmp_path: Path,
+) -> None:
+    """US6-S3: growth during the bounded read is unstable, never partial."""
+    from factory.verify.artifact_capture import CaptureProvenance, capture_source
+
+    path = tmp_path / "growing.txt"
+    path.write_bytes(b"stable bytes\n")
+    relative_path = path.relative_to(tmp_path).as_posix()
+    with pytest.MonkeyPatch.context() as patch:
+        real_read = os.read
+        appended = False
+
+        def grow_after_first_read(fd: int, amount: int) -> bytes:
+            nonlocal appended
+            chunk = real_read(fd, amount)
+            if not appended:
+                with path.open("ab") as growing:
+                    growing.write(b"-more-")
+                appended = True
+            return chunk
+
+        patch.setattr(os, "read", grow_after_first_read)
+        capture = capture_source(tmp_path, relative_path, byte_limit=16)
+
+    assert capture.status.value == "UNSTABLE"
+    assert capture.provenance is CaptureProvenance.UNKNOWN
+    assert capture.bytes is None
+    assert "changed during reading" in (capture.reason or "")
