@@ -137,3 +137,16 @@ def test_attempt_artifacts_stay_scoped_to_one_attempt(
 
     assert [artifact.path for artifact in first] == ["first.xml"]
     assert [artifact.path for artifact in second] == ["second.xml"]
+
+
+def test_an_attempt_without_artifacts_reads_as_empty(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "verification.db"
+    with connect(database) as connection:
+        upsert_result(connection, _result("us4", 1, artifacts=()))
+
+    with connect_readonly(database) as connection:
+        artifacts = attempt_artifacts(connection, "134-epic", "us4", 1)
+
+    assert artifacts == ()
