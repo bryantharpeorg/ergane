@@ -747,7 +747,10 @@ class RoadmapWorkflow:
         if roadmap is None:
             if self._previous_status is not None:
                 return RoadmapStatus(
-                    specs=list(self._previous_status.specs),
+                    specs=[
+                        replace(spec, promoted=spec.spec_dir in self._promotions)
+                        for spec in self._previous_status.specs
+                    ],
                     running=[],
                     parked=[self._parked[d] for d in sorted(self._parked)],
                     max_concurrent_epics=self._max_concurrent_epics,
