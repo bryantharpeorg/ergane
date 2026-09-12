@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import fields
-import shutil
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import Callable
 
@@ -28,7 +29,6 @@ from factory.workgraph.adapter import (
 from factory.workgraph.models import AttemptContext
 from tests.stub_codex import install_as, write_control
 from tests.stub_agent import write_control as write_agent_control
-from tests.stub_codex import rollout_path
 
 EPIC = "160-each-codex-attempt-owns-its-evidence"
 NODE = "us2"
@@ -47,14 +47,10 @@ def codex_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _path() -> str:
-    import os
-
     return os.environ["PATH"]
 
 
 def _bwrap_present() -> bool:
-    import shutil
-
     return shutil.which("bwrap") is not None
 
 
@@ -138,7 +134,6 @@ async def test_a_prior_rollout_is_not_this_attempts_turn_evidence(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """A rollout from a prior attempt cannot make a pre-thread failure current."""
     rollout = node_home / ".codex" / "sessions" / "2026" / "09" / "10"
     rollout.mkdir(parents=True)
     prior_rollout = rollout / "rollout-prior-attempt.jsonl"
@@ -174,7 +169,6 @@ async def test_startup_and_errors_are_not_a_model_turn(
     node_home: Path,
     fatal_message: str,
 ) -> None:
-    """Protocol startup plus errors never becomes model-authored evidence."""
     from factory.workgraph.codex_events import decode_codex_events
 
     stream = [
@@ -220,13 +214,11 @@ async def test_current_thread_archives_one_identity_across_endings(
     codex_bin: None,
     adapter: object,
     attempt: Callable[..., AttemptContext],
-    worktree: Path,
     factory_root: Path,
     node_home: Path,
     timeout_s: int,
     expected: Termination,
 ) -> None:
-    """Normal and timed-out runs keep one current thread in one archive."""
     stream = [
         {"type": "thread.started", "thread_id": "thread-current"},
         {"type": "turn.started"},
@@ -273,7 +265,6 @@ async def test_cancellation_still_archives_the_current_partial_stream(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """A kill after the current thread started cannot lose the stream."""
     stream = [
         {"type": "thread.started", "thread_id": "thread-current"},
         {"type": "turn.started"},
@@ -303,7 +294,6 @@ async def test_finalization_retry_does_not_duplicate_the_current_rollout(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """A redelivered archival call is idempotent, not a second attempt."""
     stream = [{"type": "thread.started", "thread_id": "thread-current"}]
     write_control(
         node_home,
@@ -326,11 +316,9 @@ async def test_codex_and_claude_keep_the_same_plain_adapter_contract(
     adapter: object,
     claude_adapter: object,
     attempt: Callable[..., AttemptContext],
-    worktree: Path,
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """Codex's JSONL stays behind the neutral evidence; consumers see plain text."""
     stream = [
         {"type": "thread.started", "thread_id": "thread-current"},
         {"type": "turn.started"},
@@ -369,7 +357,6 @@ async def test_host_backend_separates_codex_stdout_from_stderr(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """The host launch keeps JSONL and diagnostics in their declared sinks."""
     write_control(
         node_home,
         exit_code=1,
@@ -395,7 +382,6 @@ async def test_claude_retains_combined_logging(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """The control CLI's combined-log contract does not move with Codex."""
     write_agent_control(node_home, stdout="model says done\n", stderr="claude diagnostic\n")
 
     result = await claude_adapter.run_attempt(attempt(), factory_root=factory_root)
@@ -415,7 +401,6 @@ async def test_raw_codex_files_are_private_current_attempt_files(
     factory_root: Path,
     node_home: Path,
 ) -> None:
-    """Both raw files stay private and host-local, never in the worktree."""
     stream = [{"type": "thread.started", "thread_id": "thread-current"}]
     write_control(
         node_home,
@@ -447,7 +432,6 @@ async def test_raw_files_declare_and_record_size_and_retention(
     node_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Declared limits are the limits; crossing one is explicit incompleteness."""
     from factory.workgraph import adapter as adapter_module
 
     monkeypatch.setattr(adapter_module, "CODEX_RAW_MAX_BYTES", 32)
@@ -480,7 +464,6 @@ async def test_raw_files_honor_the_declared_retention_count(
     attempt: Callable[..., AttemptContext],
     factory_root: Path,
 ) -> None:
-    """Retention keeps one raw history file per sink, never silently all of it."""
     from factory.workgraph.adapter import SharedAttemptPolicy
 
     archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
@@ -505,7 +488,6 @@ async def test_raw_codex_files_stay_out_of_git_workflows_and_public_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Raw provenance does not become a payload or a public artifact."""
     from dataclasses import asdict
     from subprocess import run as run_process
 
@@ -538,10 +520,6 @@ async def test_raw_codex_files_stay_out_of_git_workflows_and_public_artifacts(
     assert not any(path.name in public_paths for path in paths)
 
 
-def attempt_env_public_artifacts() -> tuple[str, ...]:
-    return tuple(path.path for path in parse_factory_config((Path.cwd() / "factory.yaml").read_text()).artifacts)
-
-
 @pytest.mark.skipif(not _bwrap_present(), reason="bwrap not installed on this host")
 async def test_bwrap_backend_separates_codex_stdout_from_stderr(
     tmp_path: Path,
@@ -549,7 +527,6 @@ async def test_bwrap_backend_separates_codex_stdout_from_stderr(
     worktree: Path,
     node_home: Path,
 ) -> None:
-    """The sandbox launch honors the same selected two-sink policy."""
     from factory.workgraph.adapter import AgentInvocation, BwrapBackend, InvocationOutputPolicy
     from tests.test_toolchain_discovery import PlantedHost
 
@@ -592,4 +569,3 @@ async def test_bwrap_backend_separates_codex_stdout_from_stderr(
     assert b"thread-current" in events_path.read_bytes()
     raw_stderr = stderr_path.read_bytes()
     assert raw_stderr.endswith(b"ordinary diagnostic\n")
-    SharedAttemptPolicy,
