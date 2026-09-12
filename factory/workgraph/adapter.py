@@ -105,6 +105,10 @@ STDOUT_LOG_NAME = "stdout.log"
 
 CODEX_EVENTS_NAME = "codex-events.jsonl"
 CODEX_STDERR_NAME = "codex-stderr.log"
+CODEX_RAW_STATUS_NAME = "codex-raw-status.json"
+
+CODEX_RAW_MAX_BYTES = 1_048_576
+CODEX_RAW_RETENTION_FILES = 1
 
 
 class InvocationOutputPolicy(StrEnum):
@@ -1346,6 +1350,7 @@ class SharedAttemptPolicy:
                 await self._reclaim(process)
                 self._archive_session(context, worktree, env, archive)
                 _clear_pid_file(pids)
+                self._finish_raw_files(context, archive)
                 self._archive_plain_final(env, archive)
                 if target_repo is not None:
                     compare_and_report(Path(factory_root), target_repo, context)
@@ -1355,6 +1360,7 @@ class SharedAttemptPolicy:
 
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
+        self._finish_raw_files(context, archive)
         self._archive_plain_final(env, archive)
         if target_repo is not None:
             compare_and_report(Path(factory_root), target_repo, context)
@@ -1406,6 +1412,48 @@ class SharedAttemptPolicy:
         if archive_final is not None:
             archive_final(env, archive)
 
+    def _finish_raw_files(self, context: AttemptContext, archive: Path) -> None:
+        """Apply declared raw-file bounds and record their provenance."""
+        if getattr(self._cli, "output_policy", None) is not InvocationOutputPolicy.SEPARATE:
+            return
+        status: dict[str, object] = {}
+        for name in (CODEX_EVENTS_NAME, CODEX_STDERR_NAME):
+            path = archive / name
+            original = path.stat().st_size if path.is_file() else 0
+            if original > CODEX_RAW_MAX_BYTES:
+                path.write_bytes(path.read_bytes()[:CODEX_RAW_MAX_BYTES])
+            retained = path.stat().st_size if path.is_file() else 0
+            truncated = original > CODEX_RAW_MAX_BYTES
+            status[name] = {
+                "original_bytes": original,
+                "retained_bytes": retained,
+                "limit_bytes": CODEX_RAW_MAX_BYTES,
+                "truncated": truncated,
+                "completeness": "incomplete" if truncated else "complete",
+            }
+            os.chmod(path, 0o600)
+        status_path = archive / CODEX_RAW_STATUS_NAME
+        status_path.write_text(json.dumps(status), encoding="utf-8")
+        os.chmod(status_path, 0o600)
+
+    def _rotate_raw_files(self, archive: Path, context: AttemptContext) -> None:
+        """Retain declared raw history for one archive without losing identity."""
+        for name in (CODEX_EVENTS_NAME, CODEX_STDERR_NAME):
+            path = archive / name
+            if path.is_file() and path.stat().st_size > 0:
+                preserved = archive / f"{Path(name).stem}-{context.session_id}{path.suffix}"
+                with contextlib.suppress(OSError):
+                    path.replace(preserved)
+        for prefix in ("codex-events-", "codex-stderr-"):
+            candidates = sorted(
+                archive.glob(f"{prefix}*"),
+                key=lambda path: path.stat().st_mtime_ns,
+                reverse=True,
+            )
+            for path in candidates[CODEX_RAW_RETENTION_FILES:]:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+
     @contextlib.contextmanager
     def _open_invocation(
         self,
@@ -1416,6 +1464,8 @@ class SharedAttemptPolicy:
         archive: Path,
     ):
         """Open the sinks for one launch and close them after it is reaped."""
+        if getattr(self._cli, "output_policy", None) is InvocationOutputPolicy.SEPARATE:
+            self._rotate_raw_files(archive, context)
         with (archive / STDOUT_LOG_NAME).open("wb") as log:
             if getattr(self._cli, "output_policy", None) is InvocationOutputPolicy.SEPARATE:
                 with (archive / CODEX_EVENTS_NAME).open("wb") as event_log, (

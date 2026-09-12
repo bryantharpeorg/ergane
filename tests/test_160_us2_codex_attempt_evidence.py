@@ -12,6 +12,7 @@ from typing import Callable
 import pytest
 
 from factory.usage.models import Termination
+from factory.verify.factory_yaml import parse_factory_config
 from factory.workgraph.models import AdapterResult
 from factory.workgraph.adapter import (
     ATTEMPT_ARCHIVE_ENV,
@@ -21,11 +22,13 @@ from factory.workgraph.adapter import (
     home_path,
     SharedAttemptPolicy,
     STDOUT_LOG_NAME,
+    CODEX_RAW_STATUS_NAME,
     transcript_dir,
 )
 from factory.workgraph.models import AttemptContext
 from tests.stub_codex import install_as, write_control
 from tests.stub_agent import write_control as write_agent_control
+from tests.stub_codex import rollout_path
 
 EPIC = "160-each-codex-attempt-owns-its-evidence"
 NODE = "us2"
@@ -402,6 +405,140 @@ async def test_claude_retains_combined_logging(
     assert result.termination == Termination.COMPLETED
     assert b"model says done" in combined
     assert b"claude diagnostic" in combined
+
+
+async def test_raw_codex_files_are_private_current_attempt_files(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """Both raw files stay private and host-local, never in the worktree."""
+    stream = [{"type": "thread.started", "thread_id": "thread-current"}]
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
+        stderr="ordinary diagnostic\n",
+    )
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT).resolve()
+
+    assert result.termination == Termination.PRE_AGENT_FAILURE
+    for name in (CODEX_EVENTS_NAME, CODEX_STDERR_NAME):
+        path = archive / name
+        assert (path.stat().st_mode & 0o777) == 0o600
+        assert path.is_relative_to(archive)
+        assert not path.is_relative_to(Path(attempt().worktree_path).resolve())
+    status = archive / CODEX_RAW_STATUS_NAME
+    assert status.is_file()
+    assert (status.stat().st_mode & 0o777) == 0o600
+
+
+async def test_raw_files_declare_and_record_size_and_retention(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    node_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Declared limits are the limits; crossing one is explicit incompleteness."""
+    from factory.workgraph import adapter as adapter_module
+
+    monkeypatch.setattr(adapter_module, "CODEX_RAW_MAX_BYTES", 32)
+    stream = [{"type": "thread.started", "thread_id": "thread-current"}]
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
+        stderr="d" * 64,
+    )
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
+    status = json.loads((archive / CODEX_RAW_STATUS_NAME).read_text())
+
+    assert result.termination == Termination.PRE_AGENT_FAILURE
+    assert adapter_module.CODEX_RAW_MAX_BYTES == 32
+    assert adapter_module.CODEX_RAW_RETENTION_FILES == 1
+    assert len((archive / CODEX_EVENTS_NAME).read_bytes()) <= 32
+    assert len((archive / CODEX_STDERR_NAME).read_bytes()) <= 32
+    assert status["codex-events.jsonl"]["truncated"] is True
+    assert status["codex-events.jsonl"]["completeness"] == "incomplete"
+    assert status["codex-stderr.log"]["truncated"] is True
+    assert status["codex-stderr.log"]["completeness"] == "incomplete"
+
+
+async def test_raw_files_honor_the_declared_retention_count(
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+) -> None:
+    """Retention keeps one raw history file per sink, never silently all of it."""
+    from factory.workgraph.adapter import SharedAttemptPolicy
+
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
+    archive.mkdir(parents=True)
+    for index in range(3):
+        (archive / f"codex-events-{index}.jsonl").write_text(str(index))
+        (archive / f"codex-stderr-{index}.log").write_text(str(index))
+
+    SharedAttemptPolicy(adapter)._rotate_raw_files(archive, attempt())
+
+    assert len(list(archive.glob("codex-events-*.jsonl"))) == 1
+    assert len(list(archive.glob("codex-stderr-*.log"))) == 1
+
+
+async def test_raw_codex_files_stay_out_of_git_workflows_and_public_artifacts(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    node_home: Path,
+    worktree: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raw provenance does not become a payload or a public artifact."""
+    from dataclasses import asdict
+    from subprocess import run as run_process
+
+    write_control(node_home, write_rollout=False)
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
+    paths = [
+        archive / name
+        for name in (CODEX_EVENTS_NAME, CODEX_STDERR_NAME, CODEX_RAW_STATUS_NAME)
+    ]
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_process(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / ".gitignore").write_text(".factory/\nworktrees/\n")
+    for path in paths:
+        ignored = run_process(
+            ["git", "check-ignore", "--quiet", path.relative_to(tmp_path)],
+            cwd=repo,
+        ).returncode
+        assert ignored == 0
+    payload = json.dumps(asdict(result))
+    for path in paths:
+        assert str(path) not in payload and str(path.resolve()) not in payload
+    public_paths = tuple(
+        artifact.path for artifact in parse_factory_config(
+            (Path.cwd() / "factory.yaml").read_text()
+        ).artifacts
+    )
+    assert not any(path.name in public_paths for path in paths)
+
+
+def attempt_env_public_artifacts() -> tuple[str, ...]:
+    return tuple(path.path for path in parse_factory_config((Path.cwd() / "factory.yaml").read_text()).artifacts)
 
 
 @pytest.mark.skipif(not _bwrap_present(), reason="bwrap not installed on this host")
