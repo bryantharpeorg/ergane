@@ -898,6 +898,51 @@ def node_history(
     return [_result_from_row(row) for row in rows]
 
 
+def attempt_artifacts(
+    conn: sqlite3.Connection,
+    epic_id: str,
+    node_id: str,
+    attempt: int,
+    *,
+    dispatch: str | None = None,
+    capture_id: str | None = None,
+) -> tuple[GateArtifact, ...]:
+    """Every artifact one attempt's gate results carry, oldest-first.
+
+    Legacy callers select an attempt without naming a dispatch. That spelling
+    stays available only while the stored rows cannot be confused with another
+    dispatch; otherwise the caller must name both halves of a capture's
+    identity so two redispatches are never read as one attempt.
+    """
+    if (dispatch is None) != (capture_id is None):
+        raise ValueError("explicit selection requires both dispatch and capture_id")
+
+    results = [
+        result
+        for result in node_history(conn, epic_id, node_id)
+        if result.attempt == attempt
+    ]
+    if dispatch is None or capture_id is None:
+        if len({result.dispatch for result in results}) > 1:
+            raise ValueError(
+                "old-style selection is ambiguous; pass dispatch and capture_id"
+            )
+        return tuple(
+            artifact
+            for result in results
+            for gate in result.gate_results
+            for artifact in gate.artifacts
+        )
+
+    return tuple(
+        artifact
+        for result in results
+        for gate in result.gate_results
+        for artifact in gate.artifacts
+        if artifact.dispatch == dispatch and artifact.capture_id == capture_id
+    )
+
+
 def epic_history(conn: sqlite3.Connection, epic_id: str) -> list[VerificationResult]:
     """Every verification of one epic, node by node and oldest attempt first.
 
