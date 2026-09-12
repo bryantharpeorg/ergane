@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from typing import Callable
 
@@ -9,10 +11,12 @@ import pytest
 
 from factory.usage.models import Termination
 from factory.workgraph.adapter import (
+    ATTEMPT_ARCHIVE_ENV,
     CODEX_EVENTS_NAME,
     CODEX_STDERR_NAME,
     HostAgentBackend,
     home_path,
+    SharedAttemptPolicy,
     transcript_dir,
 )
 from factory.workgraph.models import AttemptContext
@@ -38,6 +42,15 @@ def _path() -> str:
     import os
 
     return os.environ["PATH"]
+
+
+async def _wait_for_stub(worktree: Path) -> None:
+    marker = worktree / ".stub-codex" / "1" / "stdin.txt"
+    for _ in range(200):
+        if marker.is_file():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("stub codex did not launch")
 
 
 @pytest.fixture
@@ -136,8 +149,6 @@ async def test_startup_and_errors_are_not_a_model_turn(
     fatal_message: str,
 ) -> None:
     """Protocol startup plus errors never becomes model-authored evidence."""
-    import json
-
     from factory.workgraph.codex_events import decode_codex_events
 
     stream = [
@@ -173,3 +184,113 @@ async def test_startup_and_errors_are_not_a_model_turn(
         fatal_message in event.message for event in evidence.fatal_events
     )
     assert b"provider diagnostic" in raw_stderr
+
+
+@pytest.mark.parametrize(
+    ("timeout_s", "expected"),
+    [(60, Termination.COMPLETED), (1, Termination.TIMEOUT)],
+)
+async def test_current_thread_archives_one_identity_across_endings(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    node_home: Path,
+    timeout_s: int,
+    expected: Termination,
+) -> None:
+    """Normal and timed-out runs keep one current thread in one archive."""
+    stream = [
+        {"type": "thread.started", "thread_id": "thread-current"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "item-message",
+                "type": "agent_message",
+                "text": "The answer is ready.",
+            },
+        },
+        {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 2}},
+    ]
+    prior = node_home / ".codex" / "sessions" / "prior"
+    prior.mkdir(parents=True)
+    (prior / "rollout-prior.jsonl").write_text('{"type":"thread.started","thread_id":"old"}\n')
+    write_control(
+        node_home,
+        sleep_s=2.0 if timeout_s == 1 else 0.0,
+        write_rollout=True,
+        rollout_text='{"type":"thread.started","thread_id":"thread-current"}\n',
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
+    )
+
+    result = await adapter.run_attempt(
+        attempt(timeout_s=timeout_s), factory_root=factory_root
+    )
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
+
+    assert result.termination == expected
+    raw_events = (archive / CODEX_EVENTS_NAME).read_bytes()
+    assert b"thread-current" in raw_events
+    assert b"old" not in raw_events
+    rollouts = list(archive.glob("rollout-*.jsonl"))
+    assert len(rollouts) == 1
+    assert b"thread-current" in rollouts[0].read_bytes()
+
+
+async def test_cancellation_still_archives_the_current_partial_stream(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """A kill after the current thread started cannot lose the stream."""
+    stream = [
+        {"type": "thread.started", "thread_id": "thread-current"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {"id": "reason", "type": "reasoning", "text": "working"}},
+    ]
+    write_control(
+        node_home,
+        sleep_s=5.0,
+        write_rollout=False,
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
+    )
+    run = asyncio.create_task(adapter.run_attempt(attempt(), factory_root=factory_root))
+    await _wait_for_stub(worktree)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+    raw = transcript_dir(factory_root, EPIC, NODE, ATTEMPT) / CODEX_EVENTS_NAME
+    assert b"thread-current" in raw.read_bytes()
+
+
+async def test_finalization_retry_does_not_duplicate_the_current_rollout(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """A redelivered archival call is idempotent, not a second attempt."""
+    stream = [{"type": "thread.started", "thread_id": "thread-current"}]
+    write_control(
+        node_home,
+        write_rollout=True,
+        rollout_text='{"type":"thread.started","thread_id":"thread-current"}\n',
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
+    )
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
+
+    SharedAttemptPolicy(adapter)._archive_session(
+        attempt(), worktree, {ATTEMPT_ARCHIVE_ENV: str(archive)}, archive
+    )
+
+    assert len(list(archive.glob("rollout-*.jsonl"))) == 1
+    SharedAttemptPolicy,

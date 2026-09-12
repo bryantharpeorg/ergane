@@ -2174,7 +2174,7 @@ class CodexAdapter:
 
     def _rollout_thread(self, path: Path) -> str | None:
         try:
-            return self._current_evidence({"thread": str(path)}).thread_id
+            return decode_codex_events(path.read_bytes().splitlines(keepends=True)).thread_id
         except OSError:
             return None
 

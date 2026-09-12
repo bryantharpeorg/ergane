@@ -77,6 +77,7 @@ class Control:
     write_rollout: bool = True
     stdout: str = ""
     stderr: str = ""
+    rollout_text: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +86,7 @@ class Control:
             "write_rollout": self.write_rollout,
             "stdout": self.stdout,
             "stderr": self.stderr,
+            "rollout_text": self.rollout_text,
         }
 
 
@@ -215,10 +217,13 @@ def main(argv: list[str]) -> int:
         session_id = flag_value(argv, "--session-id") or ""
         path = rollout_path(Path(codex_home_env), session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"type": "session_meta", "session_id": session_id}) + "\n",
-            encoding="utf-8",
-        )
+        if control.rollout_text is not None:
+            path.write_text(control.rollout_text, encoding="utf-8")
+        else:
+            path.write_text(
+                json.dumps({"type": "session_meta", "session_id": session_id}) + "\n",
+                encoding="utf-8",
+            )
 
     if control.sleep_s:
         time.sleep(control.sleep_s)
