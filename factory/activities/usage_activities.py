@@ -162,6 +162,7 @@ class IssueKeyInput:
     ladder_ordinal: int = 0
     ladder: tuple[RungSelection, ...] = ()
     transition_reason: str = ""
+    scoring_job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -339,9 +340,13 @@ async def issue_attempt_key(request: IssueKeyInput) -> KeyLease:
                 invocation_id=request.invocation_id,
                 ladder_ordinal=request.ladder_ordinal or request.attempt,
                 launch_ordinal=request.launch_ordinal,
-                phase="builder" if request.persona != "judge" else "judge",
+                phase=(
+                    "builder"
+                    if request.scoring_job_id is None and request.persona != "judge"
+                    else "judge"
+                ),
                 form="launch",
-                scoring_job_id=None,
+                scoring_job_id=request.scoring_job_id,
                 scoring_call_ordinal=None,
                 delivery_id=request.invocation_id,
                 key_alias=alias,

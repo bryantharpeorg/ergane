@@ -202,6 +202,7 @@ with workflow.unsafe.imports_passed_through():
         run_judge,
         snapshot_criteria,
     )
+    from factory.attestation import RungSelection
     from factory.mergequeue.classify import classify
     from factory.mergequeue.models import (
         CheckFailure,
@@ -799,6 +800,15 @@ class _LaunchFailed(Exception):
     def __init__(self, message: str, *, fault: str) -> None:
         super().__init__(message)
         self.fault = fault
+
+
+def _launch_outcome(termination: Termination) -> str:
+    """Name a lifecycle ending without confusing it with ladder charging."""
+    if termination == Termination.KILLED:
+        return "cancelled"
+    if termination == Termination.PRE_AGENT_FAILURE:
+        return "pre_agent_failure"
+    return termination.value
 
 
 def _gate_input(
@@ -1913,6 +1923,16 @@ class EpicWorkflow:
             route = routing.route
 
             record.attempt += 1
+            record.launch_ordinal += 1
+            selected = RungSelection(
+                persona=persona,
+                runner=agent or "<unresolved>",
+                route=route or "<unknown>",
+                model_aliases=tuple(routing.models),
+                reason=rung,
+            )
+            if selected not in record.ladder:
+                record.ladder.append(selected)
             # 118 US3 (FR-008): the attempt's standards text is resolved here,
             # per attempt, from the landing branch — a correction the operator
             # lands mid-epic reaches the next attempt, which reading the path
@@ -1972,6 +1992,19 @@ class EpicWorkflow:
                     models=list(routing.models),
                     agent=agent,
                     route=route,
+                    target=graph.target_repo,
+                    spec_revision=criteria.source_path,
+                    spec_fingerprint=criteria.source_sha256,
+                    epic_workflow_id=workflow.info().workflow_id,
+                    epic_run_id=workflow.info().run_id,
+                    invocation_id=(
+                        f"{workflow.info().run_id}:{node.id}:{persona}:"
+                        f"launch:{record.launch_ordinal}"
+                    ),
+                    launch_ordinal=record.launch_ordinal,
+                    ladder_ordinal=record.ladder_ordinal,
+                    ladder=tuple(record.ladder),
+                    transition_reason=rung,
                 ),
                 start_to_close_timeout=_PROXY["start_to_close_timeout"],
                 retry_policy=_ISSUE_KEY_RETRIES,
@@ -2001,6 +2034,10 @@ class EpicWorkflow:
                         target_repo=graph.target_repo,
                         agent=agent,
                         route=route,
+                        invocation_id=(
+                            f"{workflow.info().run_id}:{node.id}:{persona}:"
+                            f"launch:{record.launch_ordinal}"
+                        ),
                     ),
                 )
                 # `None` is the attempt the kill cancelled: the adapter re-raises on
@@ -2147,6 +2184,7 @@ class EpicWorkflow:
                                     model_alias=routing.model_alias,
                                 )
                             )
+                            record.ladder_ordinal += 1
                         else:
                             # The operator answered. Carry the exchange verbatim into
                             # the next attempt's prompt under a dedicated section
@@ -2215,6 +2253,8 @@ class EpicWorkflow:
                         credential_source=adapter_result.credential_source,
                     )
                 )
+                if termination != Termination.PRE_AGENT_FAILURE:
+                    record.ladder_ordinal += 1
 
                 action = next_action(
                     record.history, request.config, escalations=record.escalations
@@ -2890,6 +2930,19 @@ class EpicWorkflow:
                 # The judge is a gateway persona by registry contract; it is
                 # resolved by name, not routed, so agent is not required here.
                 agent="",
+                target=request.graph.target_repo,
+                spec_revision=criteria.source_path,
+                spec_fingerprint=criteria.source_sha256,
+                epic_workflow_id=workflow.info().workflow_id,
+                epic_run_id=workflow.info().run_id,
+                invocation_id=(
+                    f"{workflow.info().run_id}:{node.id}:{JUDGE_PERSONA}:"
+                    f"score:{attempt}"
+                ),
+                launch_ordinal=attempt,
+                ladder_ordinal=attempt,
+                scoring_job_id=f"{node.id}:{attempt}:score",
+                transition_reason="judge scoring job",
             ),
             start_to_close_timeout=_PROXY["start_to_close_timeout"],
             retry_policy=_ISSUE_KEY_RETRIES,

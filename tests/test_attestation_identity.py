@@ -24,6 +24,7 @@ from factory.usage.models import Termination
 from tests.conftest import FakeLiteLLM
 from tests.test_usage_activities import issue_input, tear_down
 from factory.usage.litellm_client import LiteLLMClient
+from tests.test_interpreter import ScriptedWorld, env, passing, run_epic, make_graph, make_node
 
 
 LADDER = (
@@ -192,3 +193,24 @@ async def test_a_frozen_ladder_survives_a_rung_transition(
     assert rows[0].ladder == LADDER
     assert rows[1].transition_reason == "debugger rung"
     assert [row.outcome for row in rows] == ["agent_error", "completed"]
+
+
+async def test_the_workflow_supplies_frozen_identity(
+    env: Any,
+) -> None:
+    script = ScriptedWorld({"us1": [passing()]}, client=env.client)
+    status = await run_epic(env, script, graph=make_graph([make_node("us1", "US1")]))
+
+    assert status.epic_state.value == "COMPLETED"
+    builders = [request for request in script.key_requests if request.persona != "judge"]
+    assert builders
+    request = builders[0]
+    assert request.target == "/srv/factory/targets/library"
+    assert request.spec_fingerprint
+    assert request.epic_workflow_id
+    assert request.epic_run_id
+    assert request.invocation_id
+    assert request.launch_ordinal == 1
+    assert request.ladder_ordinal == 0
+    assert request.ladder
+    assert request.ladder[0].persona == "implementer"

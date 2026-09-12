@@ -49,6 +49,7 @@ from typing import TYPE_CHECKING, Mapping, Sequence
 
 from factory.config import Persona
 from factory.mergequeue.models import Landing
+from factory.attestation import RungSelection
 from factory.usage.models import Termination, UsageSnapshot
 from factory.verify.models import (
     UNRESOLVED_MODEL_ALIAS,
@@ -385,6 +386,11 @@ class NodeRecord:
     #: counted by `_attempts_spent` (FR-005).  Bounded by `max_launch_retries`
     #: (FR-007).
     launch_failures: int = 0
+    #: 167-US1: separate launch and ladder counts. Questions get a new launch
+    #: without moving the charged ladder ordinal.
+    launch_ordinal: int = 0
+    ladder_ordinal: int = 0
+    ladder: list[RungSelection] = field(default_factory=list)
     #: Set only when a node ended for a reason the ladder did not produce (US1):
     #: a crashed node coroutine, or — since 079-US1 — an escalation that could
     #: only be answered with choices nobody offered it. The text is surfaced in
@@ -488,6 +494,9 @@ class AttemptContext:
     #: not the `agent` name; empty means a payload that predates the field,
     #: which `effective_route` answers from the legacy `agent` sentinel.
     route: str = ""
+    #: 167-US1: the launch identity supplied with the key. Carried so adapter
+    #: archives and outcomes are not correlated by path or timestamp.
+    invocation_id: str = ""
 
 
 @dataclass(frozen=True)
