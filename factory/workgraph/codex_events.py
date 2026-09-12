@@ -249,6 +249,8 @@ class CodexEventDecoder:
         return self._evidence()
 
     def _decode_line(self, line: bytes) -> None:
+        if not line.strip():
+            return
         try:
             value = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):

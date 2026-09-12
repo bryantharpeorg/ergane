@@ -83,6 +83,7 @@ from factory.verify.factory_yaml import (
 )
 from factory.workgraph import worktree as worktrees
 from factory.workgraph.adapter import (
+    ATTEMPT_ARCHIVE_ENV,
     CODEX_STDERR_NAME,
     DEFAULT_HEARTBEAT_INTERVAL_S,
     SESSION_ID_REFUSAL_MARKER,
@@ -90,6 +91,10 @@ from factory.workgraph.adapter import (
     AdapterError,
     adapter_for,
     transcript_dir,
+)
+from factory.workgraph.codex_events import (
+    EvidenceCompleteness,
+    FatalSource,
 )
 from factory.workgraph.models import (
     AdapterResult,
@@ -597,16 +602,14 @@ async def run_agent_attempt(context: AttemptContext) -> AdapterResult:
 
 
 def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult:
-    """Reclassify an AGENT_ERROR whose log carries the CLI's refusal marker.
+    """Reclassify a typed or declared combined-log credential refusal.
 
-    The adapter itself classifies only by exit status (FR-012). The one
-    exception is the credential refusal: the CLI exits 1 and prints its refusal
-    — Claude Code on stdout (measured 2026-08-19), Codex on stderr (measured
-    2026-09-08, the inverse) — which a caller watching the other stream reads
-    as a silent success. Which strings read as a refusal is the adapter's
-    declaration (`_refusal_markers`, 154's per-CLI seam); interpreting them is
-    this activity's. Both CLIs write the combined `stdout.log`, so the scan
-    reads that stream whatever the CLI's own stream was.
+    Codex now has typed JSONL evidence. When that evidence identifies a fatal
+    error and its matching `turn.failed` terminal, it is terminal for this
+    decision: a non-authentication body that quotes a marker never falls back to
+    a substring scan, and an authentication body is accepted only as the exact
+    matching pair. Claude has no event stream, so its measured combined-log
+    declaration remains the compatibility path.
 
     No route gate: the refusal is a fact about the CLI's credential, and the
     measured Codex marker appears on every route's 401 (plan trap 2). The
@@ -617,6 +620,15 @@ def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult
         return result
     if not result.transcript_path:
         return result
+
+    evidence = _codex_evidence_for_result(adapter, result)
+    if evidence is not None and (evidence.thread_id or evidence.fatal_events):
+        typed = _typed_codex_auth_outcome(
+            evidence, _declared_refusal_markers(adapter), result.termination
+        )
+        if typed is None:
+            return result
+        return replace(result, termination=typed)
 
     archive = Path(result.transcript_path)
     log_paths = [archive / STDOUT_LOG_NAME]
@@ -633,11 +645,51 @@ def _classify_auth_failure(adapter: Any, result: AdapterResult) -> AdapterResult
     if not any(marker in log_text for marker in markers):
         return result
 
-    return AdapterResult(
-        termination=Termination.AUTH_FAILURE,
-        transcript_path=result.transcript_path,
-        last_snapshot=result.last_snapshot,
-    )
+    return replace(result, termination=Termination.AUTH_FAILURE)
+
+
+def _typed_codex_auth_outcome(
+    evidence: Any, markers: tuple[str, ...], unchanged: Termination
+) -> Termination | None:
+    """Answer from one adjacent typed fatal pair, or None when unconclusive.
+
+    The measured fatal family is two events: the top-level `error` and the
+    `turn.failed` whose error message repeats it. Diagnostic error items are
+    not fatal events, and a later unrelated terminal is not the same failure.
+    A complete pair is enough to decide: a marker match is a refusal, while any
+    other matched fatal pair stays an ordinary failure even when its body quotes
+    a historical refusal.
+    """
+    if evidence.completeness is not EvidenceCompleteness.COMPLETE:
+        return None
+    for index, first in enumerate(evidence.fatal_events):
+        if first.source is not FatalSource.ERROR_EVENT:
+            continue
+        for second in evidence.fatal_events[index + 1 :]:
+            if second.source is not FatalSource.TURN_FAILED:
+                continue
+            if first.message == second.message:
+                return (
+                    Termination.AUTH_FAILURE
+                    if not first.message.startswith("{")
+                    and any(marker in first.message for marker in markers)
+                    else unchanged
+                )
+            return unchanged
+    return None
+
+
+def _codex_evidence_for_result(adapter: Any, result: AdapterResult):
+    """Read the current typed evidence through the adapter's own seam.
+
+    Claude has no event stream and therefore no such seam. Codex's seam already
+    owns the archive path and the decoder; this activity does not duplicate that
+    file contract or scan stderr as event evidence.
+    """
+    read_evidence = getattr(adapter, "_current_evidence", None)
+    if read_evidence is None:
+        return None
+    return read_evidence({ATTEMPT_ARCHIVE_ENV: result.transcript_path})
 
 
 def _declared_refusal_markers(adapter: Any) -> tuple[str, ...]:
@@ -715,10 +767,14 @@ def _attach_pre_agent_detail(result: AdapterResult) -> AdapterResult:
     its context and its general remedy, which is still more than the diffless
     `agent_error` this replaces.
     """
-    if result.termination != Termination.PRE_AGENT_FAILURE:
+    if result.termination not in (Termination.PRE_AGENT_FAILURE, Termination.AUTH_FAILURE):
         return result
     if not result.transcript_path:
         return result
+
+    typed_detail = _codex_typed_detail(result)
+    if typed_detail:
+        return replace(result, detail=typed_detail[:PRE_AGENT_DETAIL_LIMIT])
 
     log_path = Path(result.transcript_path) / STDOUT_LOG_NAME
     try:
@@ -730,6 +786,23 @@ def _attach_pre_agent_detail(result: AdapterResult) -> AdapterResult:
     if not lines:
         return result
     return replace(result, detail=lines[-1][:PRE_AGENT_DETAIL_LIMIT])
+
+
+def _codex_typed_detail(result: AdapterResult) -> str:
+    """The typed fatal message, bounded exactly like the plain-text detail."""
+
+    evidence = _codex_evidence_for_result_from_path(result.transcript_path)
+    if evidence is None or evidence.completeness is not EvidenceCompleteness.COMPLETE:
+        return ""
+    return evidence.fatal_events[-1].message if evidence.fatal_events else ""
+
+
+def _codex_evidence_for_result_from_path(transcript_path: str):
+    from factory.workgraph.adapter import CodexAdapter
+
+    return CodexAdapter()._current_evidence(
+        {ATTEMPT_ARCHIVE_ENV: transcript_path}
+    )
 
 
 # --- read_worktree_diff (what the judge scores) -------------------------------

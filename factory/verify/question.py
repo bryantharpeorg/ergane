@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Sequence
 
 from factory.verify.criteria import HEADER_RE, mask_fences, section_end
+from factory.workgraph.codex_events import CodexExecutionEvidence, decode_codex_events
 
 #: The fixed heading the agent writes in its final message (spec § US1). Exactly
 #: two hashes — a level-2 heading, not a mention, not a level-3 subsection. The
@@ -95,8 +96,28 @@ def detect_operator_question(transcript_path: Path) -> QuestionMarker | None:
     common case, because reading silence as "no question" would let a vanished
     archive look like a clean attempt that happened to ask nothing.
     """
+    event_log = transcript_path / "codex-events.jsonl"
+    if event_log.is_file():
+        try:
+            raw = event_log.read_bytes()
+        except OSError as exc:
+            raise TranscriptReadError(
+                f"cannot read transcript {event_log}: {exc}"
+            ) from exc
+        return detect_codex_question(
+            decode_codex_events(raw.splitlines(keepends=True))
+        )
     stdout = _read_stdout(transcript_path)
-    lines = stdout.splitlines()
+    return detect_final_message_question(stdout)
+
+
+def detect_final_message_question(final_message: str) -> QuestionMarker | None:
+    """Detect the landed marker grammar in one current final agent message.
+
+    This is the pure scan; the archive reader and Codex's typed evidence both
+    end here. Nothing outside this one message can create a marker.
+    """
+    lines = final_message.splitlines()
     in_code = mask_fences(lines)
 
     marker_index = _last_marker(lines, in_code)
@@ -111,6 +132,17 @@ def detect_operator_question(transcript_path: Path) -> QuestionMarker | None:
         # same as a message with no marker at all.
         return None
     return QuestionMarker(is_question=True, text=body)
+
+
+def detect_codex_question(
+    evidence: CodexExecutionEvidence,
+) -> QuestionMarker | None:
+    """Detect a question only from Codex's typed final agent message."""
+
+    final_message = evidence.final_message
+    if final_message is None:
+        return None
+    return detect_final_message_question(final_message.text)
 
 
 # --- the read ----------------------------------------------------------------
