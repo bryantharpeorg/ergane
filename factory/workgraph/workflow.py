@@ -2865,8 +2865,7 @@ class EpicWorkflow:
         if provenance is not None:
             result = replace(result, provenance=provenance)
 
-        # Patched: replay-032 histories were captured before exact Git evidence
-        # collection existed and must not acquire a new activity command.
+        # Replay-032 histories predate Git evidence collection.
         if workflow.patched("attempt-git-evidence"):
             await workflow.execute_activity(
                 capture_attempt_evidence,

@@ -67,7 +67,6 @@ class JudgeEvaluationRecord:
     tested_revision: str
     status: str
     model_alias: str
-    runner: str = "litellm-chat-completions"
     route: str = "gateway"
     backend: str = "litellm-chat-completions"
     scenario_results: tuple[tuple[str, bool, str], ...] = ()
@@ -76,12 +75,7 @@ class JudgeEvaluationRecord:
     deliveries: tuple[JudgeDelivery, ...] = ()
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
-    cache_read_tokens: int | None = None
-    cache_write_tokens: int | None = None
-    request_count: int | None = None
-    spend_usd: float | None = None
     usage_status: str = "unknown"
-    usage_error: str | None = None
     truncated_input: bool = False
     gates_shown: bool = False
 

@@ -777,10 +777,8 @@ class Completion:
 
     content: str
     response_id: str | None = None
-    serving_model: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
-    usage_error: str | None = None
     deliveries: tuple[JudgeDelivery, ...] = ()
 
 
@@ -862,45 +860,22 @@ async def run_judge(
         )
     except JudgeParseError as exc:
         exhausted = judge_attempt >= 1 + max_judge_retries
+        feedback = _malformed_feedback(exc, exhausted=exhausted)
         _record_evaluation(
             evaluation_sink,
-            JudgeEvaluationRecord(
-                evaluation_id=f"{criteria.source_sha256}:parse:{judge_attempt}",
-                scoring_job_id=scoring_job_id,
-                scoring_call_ordinal=judge_attempt,
-                invocation_id=invocation_id,
-                key_alias=virtual_key,
-                criteria_fingerprint=criteria.source_sha256,
-                tested_revision=tested_revision,
-                status="parse_error",
-                model_alias=model_alias,
-                scenario_results=(),
-                feedback=_malformed_feedback(exc, exhausted=exhausted),
-                parse_error=str(exc),
-                deliveries=completion.deliveries,
-                prompt_tokens=completion.prompt_tokens,
-                completion_tokens=completion.completion_tokens,
-                usage_status=(
-                    "partial"
-                    if completion.prompt_tokens is not None
-                    and completion.completion_tokens is not None
-                    else "unknown"
-                ),
-                usage_error=completion.usage_error,
-                truncated_input=prompt.truncated_input,
-                gates_shown=prompt.gates_shown,
+            _evaluation(
+                criteria, virtual_key=virtual_key, model_alias=model_alias,
+                judge_attempt=judge_attempt, completion=completion,
+                scoring_job_id=scoring_job_id, invocation_id=invocation_id,
+                tested_revision=tested_revision, status="parse_error",
+                feedback=feedback, parse_error=str(exc),
+                truncated_input=prompt.truncated_input, gates_shown=prompt.gates_shown,
             ),
         )
         return JudgeVerdict(
             outcome=JudgeOutcome.FAIL if exhausted else JudgeOutcome.RETRY,
-            findings=[],
-            feedback=_malformed_feedback(exc, exhausted=exhausted),
-            judge_attempt=judge_attempt,
-            truncated_input=prompt.truncated_input,
-            model_alias=model_alias,
-            # Recorded on the unreadable-response path too: what the judge was
-            # shown is a fact about the ask, and an ask that produced garbage
-            # was still made with — or without — the measurements in it.
+            findings=[], feedback=feedback, judge_attempt=judge_attempt,
+            truncated_input=prompt.truncated_input, model_alias=model_alias,
             gates_shown=prompt.gates_shown,
         )
 
@@ -909,29 +884,16 @@ async def run_judge(
     _record_evaluation(
         evaluation_sink,
         _evaluation(
-            criteria,
-            virtual_key=virtual_key,
-            model_alias=model_alias,
-            judge_attempt=judge_attempt,
-            verdict=verdict,
-            completion=completion,
-            scoring_job_id=scoring_job_id,
-            invocation_id=invocation_id,
-            tested_revision=tested_revision,
-            status=status,
-            feedback=(
-                _contradiction_feedback(verdict.feedback, contradictions)
-                if contradictions
-                else verdict.feedback
-            ),
+            criteria, virtual_key=virtual_key, model_alias=model_alias,
+            judge_attempt=judge_attempt, verdict=verdict, completion=completion,
+            scoring_job_id=scoring_job_id, invocation_id=invocation_id,
+            tested_revision=tested_revision, status=status,
+            feedback=_contradiction_feedback(verdict.feedback, contradictions)
+            if contradictions
+            else verdict.feedback,
         ),
     )
-    return _reask_on_contradiction(
-        verdict,
-        gate_results or (),
-        judge_attempt=judge_attempt,
-        max_judge_retries=max_judge_retries,
-)
+    return _reask_on_contradiction(verdict, gate_results or (), judge_attempt=judge_attempt, max_judge_retries=max_judge_retries)
 
 
 def _evaluation(
@@ -940,42 +902,29 @@ def _evaluation(
     virtual_key: str,
     model_alias: str,
     judge_attempt: int,
-    verdict: JudgeVerdict,
+    verdict: JudgeVerdict | None = None,
     completion: Completion,
     scoring_job_id: str,
     invocation_id: str,
     tested_revision: str,
     status: str,
     feedback: str,
+    parse_error: str | None = None,
+    truncated_input: bool | None = None,
+    gates_shown: bool | None = None,
 ) -> JudgeEvaluationRecord:
     """Convert one parsed judge answer into bounded durable evidence."""
     return JudgeEvaluationRecord(
-        evaluation_id=f"{scoring_job_id}:{status}:{judge_attempt}",
-        scoring_job_id=scoring_job_id,
-        scoring_call_ordinal=judge_attempt,
-        invocation_id=invocation_id,
-        key_alias=virtual_key,
-        criteria_fingerprint=criteria.source_sha256,
-        tested_revision=tested_revision,
-        status=status,
-        model_alias=model_alias,
-        scenario_results=tuple(
-            (finding.scenario, finding.passed, finding.reasoning)
-            for finding in verdict.findings
-        ),
-        feedback=feedback,
-        deliveries=completion.deliveries,
-        prompt_tokens=completion.prompt_tokens,
-        completion_tokens=completion.completion_tokens,
-        usage_status=(
-            "partial"
-            if completion.prompt_tokens is not None
-            and completion.completion_tokens is not None
-            else "unknown"
-        ),
-        usage_error=completion.usage_error,
-        truncated_input=verdict.truncated_input,
-        gates_shown=verdict.gates_shown,
+        evaluation_id=f"{scoring_job_id}:{status}:{judge_attempt}", scoring_job_id=scoring_job_id,
+        scoring_call_ordinal=judge_attempt, invocation_id=invocation_id, key_alias=virtual_key,
+        criteria_fingerprint=criteria.source_sha256, tested_revision=tested_revision,
+        status=status, model_alias=model_alias,
+        scenario_results=() if verdict is None else tuple((finding.scenario, finding.passed, finding.reasoning) for finding in verdict.findings),
+        feedback=feedback, parse_error=parse_error, deliveries=completion.deliveries,
+        prompt_tokens=completion.prompt_tokens, completion_tokens=completion.completion_tokens,
+        usage_status="partial" if completion.prompt_tokens is not None and completion.completion_tokens is not None else "unknown",
+        truncated_input=verdict.truncated_input if verdict is not None else truncated_input,
+        gates_shown=verdict.gates_shown if verdict is not None else gates_shown,
     )
 
 
@@ -1004,20 +953,12 @@ async def run_scoring_job(
     prior_feedback = None
     for judge_attempt in range(1, max_judge_retries + 2):
         verdict = await run_judge(
-            criteria,
-            diff_text,
-            proxy_url=proxy_url,
-            virtual_key=virtual_key,
-            model_alias=model_alias,
-            prior_feedback=prior_feedback,
-            gate_results=gate_results,
-            judge_attempt=judge_attempt,
-            max_judge_retries=max_judge_retries,
-            scoring_job_id=scoring_job_id,
-            invocation_id=invocation_id,
-            tested_revision=tested_revision,
-            evaluation_sink=evaluation_sink,
-            **kwargs,
+            criteria, diff_text, proxy_url=proxy_url, virtual_key=virtual_key,
+            model_alias=model_alias, prior_feedback=prior_feedback,
+            gate_results=gate_results, judge_attempt=judge_attempt,
+            max_judge_retries=max_judge_retries, scoring_job_id=scoring_job_id,
+            invocation_id=invocation_id, tested_revision=tested_revision,
+            evaluation_sink=evaluation_sink, **kwargs,
         )
         if verdict.outcome != JudgeOutcome.RETRY:
             return verdict
@@ -1061,7 +1002,7 @@ def _reask_on_contradiction(
 
 def _contradiction_feedback(
     feedback: str, contradictions: Sequence[GateContradiction]
-) -> Completion:
+) -> str:
     """What the re-asked judge is told it contradicted.
 
     Quoted back with the recorded status beside it, because the correction is
@@ -1138,25 +1079,10 @@ async def _complete(
             else:
                 if response.status_code < 400:
                     completion = _completion(response)
-                    deliveries.append(
-                        JudgeDelivery(
-                            delivery_ordinal=attempt,
-                            status="delivered",
-                            response_id=completion.response_id,
-                        )
-                    )
-                    return Completion(
-                        deliveries=tuple(deliveries),
-                        **{
-                            field: getattr(completion, field)
-                            for field in completion.__dataclass_fields__
-                            if field != "deliveries"
-                        },
-                    )
+                    deliveries.append(JudgeDelivery(attempt, "delivered", response_id=completion.response_id))
+                    return replace(completion, deliveries=tuple(deliveries))
                 reason = f"HTTP {response.status_code}: {_proxy_message(response, virtual_key)}"
-                deliveries.append(
-                    JudgeDelivery(delivery_ordinal=attempt, status="transport_error", error=reason)
-                )
+                deliveries.append(JudgeDelivery(attempt, "transport_error", error=reason))
                 if response.status_code not in RETRYABLE_STATUSES:
                     break
 
@@ -1203,23 +1129,12 @@ def _completion(response: httpx.Response) -> Completion:
         raise JudgeUnavailableError(
             "the proxy returned a chat completion with no assistant message"
         )
-    payload_usage = payload.get("usage") if isinstance(payload, dict) else None
-    usage_error = None
-    prompt_tokens = completion_tokens = None
-    if isinstance(payload_usage, dict):
-        prompt_tokens = payload_usage.get("prompt_tokens")
-        completion_tokens = payload_usage.get("completion_tokens")
-        if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
-            usage_error = "response usage is incomplete"
-    else:
-        usage_error = "response did not report usage"
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+    completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
     return Completion(
-        content=content,
-        response_id=payload.get("id") if isinstance(payload, dict) else None,
-        serving_model=payload.get("model") if isinstance(payload, dict) else None,
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        usage_error=usage_error,
+        content=content, response_id=payload.get("id") if isinstance(payload, dict) else None,
+        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
     )
 
 

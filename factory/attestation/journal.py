@@ -4,16 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 from pathlib import Path
 
-from factory.attestation.models import (
-    JudgeDelivery,
-    JudgeEvaluationRecord,
-    LaunchRecord,
-    AttemptGitEvidence,
-    GitFileChange,
-    RungSelection,
-)
+from factory.attestation.models import AttemptGitEvidence, GitFileChange, JudgeDelivery, JudgeEvaluationRecord, LaunchRecord, RungSelection
 from factory.attestation.usage import UsageObservation
 
 SCHEMA_VERSION = 1
@@ -59,50 +53,10 @@ CREATE TABLE IF NOT EXISTS usage_observations (
     request_count INTEGER,
     spend_usd REAL
 );
-CREATE TABLE IF NOT EXISTS judge_evaluations (
-    evaluation_id TEXT PRIMARY KEY,
-    scoring_job_id TEXT NOT NULL,
-    scoring_call_ordinal INTEGER NOT NULL,
-    invocation_id TEXT NOT NULL,
-    key_alias TEXT NOT NULL,
-    criteria_fingerprint TEXT NOT NULL,
-    tested_revision TEXT NOT NULL,
-    status TEXT NOT NULL,
-    model_alias TEXT NOT NULL,
-    runner TEXT NOT NULL,
-    route TEXT NOT NULL,
-    backend TEXT NOT NULL,
-    scenario_results TEXT NOT NULL,
-    feedback TEXT NOT NULL,
-    parse_error TEXT,
-    deliveries TEXT NOT NULL,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    cache_read_tokens INTEGER,
-    cache_write_tokens INTEGER,
-    request_count INTEGER,
-    spend_usd REAL,
-    usage_status TEXT NOT NULL,
-    usage_error TEXT,
-    truncated_input INTEGER NOT NULL,
-    gates_shown INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_judge_evaluations_job
-    ON judge_evaluations (scoring_job_id, scoring_call_ordinal);
-CREATE TABLE IF NOT EXISTS attempt_git_evidence (
-    evidence_id TEXT PRIMARY KEY,
-    epic_id TEXT NOT NULL,
-    node_id TEXT NOT NULL,
-    attempt INTEGER NOT NULL,
-    dispatch TEXT NOT NULL,
-    base_commit TEXT NOT NULL,
-    attempted_commit TEXT NOT NULL,
-    verified_commit TEXT NOT NULL,
-    files TEXT NOT NULL,
-    log_tail TEXT NOT NULL,
-    log_truncated INTEGER NOT NULL,
-    tests_executed TEXT NOT NULL,
-    coverage_status TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS evidence_records (
+    evidence_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY(evidence_id)
 );
 """
 
@@ -265,188 +219,59 @@ def read_usage_observations(path: str | Path) -> tuple[UsageObservation, ...]:
     return tuple(UsageObservation(**dict(zip(columns, row))) for row in rows)
 
 
+def _record(path: str | Path, record: object, evidence_id: str) -> None:
+    with connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT INTO evidence_records (evidence_id, payload) VALUES (?, ?)"
+            " ON CONFLICT(evidence_id) DO UPDATE SET payload = excluded.payload",
+            (evidence_id, json.dumps(asdict(record), sort_keys=True, separators=(",", ":"))),
+        )
+        connection.commit()
+
+
+def _decode(
+    payload: str,
+    model: type[JudgeEvaluationRecord | AttemptGitEvidence],
+    nested: str,
+) -> JudgeEvaluationRecord | AttemptGitEvidence:
+    data = json.loads(payload)
+    data[nested] = tuple((JudgeDelivery if nested == "deliveries" else GitFileChange)(**item) for item in data[nested])
+    return model(**data)
+
+
+def _read(
+    path: str | Path,
+    model: type[JudgeEvaluationRecord | AttemptGitEvidence],
+    nested: str,
+) -> tuple:
+    with connect(path) as connection:
+        rows = connection.execute("SELECT payload FROM evidence_records ORDER BY evidence_id")
+        return tuple(_decode(row[0], model, nested) for row in rows)
+
+
 def record_scoring_evaluation(
     path: str | Path, record: JudgeEvaluationRecord
 ) -> JudgeEvaluationRecord:
     """Persist one scoring result idempotently by its evaluation identity."""
-    with connect(path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        values = {
-            **{
-                field.name: getattr(record, field.name)
-                for field in record.__dataclass_fields__.values()
-            },
-            "scenario_results": json.dumps(
-                [list(result) for result in record.scenario_results],
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            "deliveries": json.dumps(
-                [
-                    {
-                        "delivery_ordinal": delivery.delivery_ordinal,
-                        "status": delivery.status,
-                        "error": delivery.error,
-                        "response_id": delivery.response_id,
-                    }
-                    for delivery in record.deliveries
-                ],
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            "truncated_input": int(record.truncated_input),
-            "gates_shown": int(record.gates_shown),
-        }
-        columns = tuple(values)
-        connection.execute(
-            f"INSERT INTO judge_evaluations ({', '.join(columns)}) VALUES "
-            f"({', '.join(':' + name for name in columns)}) "
-            "ON CONFLICT(evaluation_id) DO UPDATE SET "
-            + ", ".join(
-                f"{name} = excluded.{name}" for name in columns if name != "evaluation_id"
-            ),
-            values,
-        )
-        connection.commit()
+    _record(path, record, record.evaluation_id)
     return record
 
 
-def read_scoring_evaluations(
-    path: str | Path, scoring_job_id: str | None = None
-) -> tuple[JudgeEvaluationRecord, ...]:
+def read_scoring_evaluations(path: str | Path) -> tuple[JudgeEvaluationRecord, ...]:
     """Read persisted evaluations, oldest scoring call first."""
-    with connect(path) as connection:
-        connection.row_factory = sqlite3.Row
-        where = "" if scoring_job_id is None else "WHERE scoring_job_id = ?"
-        arguments: tuple[Any, ...] = ()
-        if scoring_job_id is not None:
-            arguments = (scoring_job_id,)
-        rows = connection.execute(
-            "SELECT * FROM judge_evaluations "
-            f"{where} ORDER BY scoring_call_ordinal, evaluation_id",
-            arguments,
-        ).fetchall()
-
-    records: list[JudgeEvaluationRecord] = []
-    for row in rows:
-        results = tuple(
-            (item[0], bool(item[1]), item[2])
-            for item in json.loads(row["scenario_results"])
-        )
-        deliveries = tuple(
-            JudgeDelivery(
-                delivery_ordinal=item["delivery_ordinal"],
-                status=item["status"],
-                error=item["error"],
-                response_id=item["response_id"],
-            )
-            for item in json.loads(row["deliveries"])
-        )
-        records.append(
-            JudgeEvaluationRecord(
-                evaluation_id=row["evaluation_id"],
-                scoring_job_id=row["scoring_job_id"],
-                scoring_call_ordinal=row["scoring_call_ordinal"],
-                invocation_id=row["invocation_id"],
-                key_alias=row["key_alias"],
-                criteria_fingerprint=row["criteria_fingerprint"],
-                tested_revision=row["tested_revision"],
-                status=row["status"],
-                model_alias=row["model_alias"],
-                runner=row["runner"],
-                route=row["route"],
-                backend=row["backend"],
-                scenario_results=results,
-                feedback=row["feedback"],
-                parse_error=row["parse_error"],
-                deliveries=deliveries,
-                prompt_tokens=row["prompt_tokens"],
-                completion_tokens=row["completion_tokens"],
-                cache_read_tokens=row["cache_read_tokens"],
-                cache_write_tokens=row["cache_write_tokens"],
-                request_count=row["request_count"],
-                spend_usd=row["spend_usd"],
-                usage_status=row["usage_status"],
-                usage_error=row["usage_error"],
-                truncated_input=bool(row["truncated_input"]),
-                gates_shown=bool(row["gates_shown"]),
-            )
-        )
-    return tuple(records)
+    records = _read(path, JudgeEvaluationRecord, "deliveries")
+    return tuple(sorted(records, key=lambda item: (item.scoring_call_ordinal, item.evaluation_id)))
 
 
 def record_attempt_evidence(
     path: str | Path, record: AttemptGitEvidence
 ) -> AttemptGitEvidence:
     """Persist one exact Git snapshot by its evidence identity."""
-    with connect(path) as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        values = {
-            **{
-                field.name: getattr(record, field.name)
-                for field in record.__dataclass_fields__.values()
-            },
-            "files": json.dumps(
-                [
-                    {
-                        "path": item.path,
-                        "status": item.status,
-                        "old_path": item.old_path,
-                        "binary": item.binary,
-                    }
-                    for item in record.files
-                ],
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            "log_truncated": int(record.log_truncated),
-            "tests_executed": json.dumps(list(record.tests_executed), separators=(",", ":")),
-        }
-        columns = tuple(values)
-        connection.execute(
-            f"INSERT INTO attempt_git_evidence ({', '.join(columns)}) VALUES "
-            f"({', '.join(':' + name for name in columns)}) "
-            "ON CONFLICT(evidence_id) DO UPDATE SET "
-            + ", ".join(f"{name} = excluded.{name}" for name in columns if name != "evidence_id"),
-            values,
-        )
-        connection.commit()
+    _record(path, record, record.evidence_id)
     return record
 
 
 def read_attempt_evidence(path: str | Path) -> tuple[AttemptGitEvidence, ...]:
     """Read retained Git evidence, evidence-id ordered for stable reports."""
-    with connect(path) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            "SELECT * FROM attempt_git_evidence ORDER BY evidence_id"
-        ).fetchall()
-    records: list[AttemptGitEvidence] = []
-    for row in rows:
-        files = tuple(
-            GitFileChange(
-                path=item["path"],
-                status=item["status"],
-                old_path=item["old_path"],
-                binary=item["binary"],
-            )
-            for item in json.loads(row["files"])
-        )
-        records.append(
-            AttemptGitEvidence(
-                evidence_id=row["evidence_id"],
-                epic_id=row["epic_id"],
-                node_id=row["node_id"],
-                attempt=row["attempt"],
-                dispatch=row["dispatch"],
-                base_commit=row["base_commit"],
-                attempted_commit=row["attempted_commit"],
-                verified_commit=row["verified_commit"],
-                files=files,
-                log_tail=row["log_tail"],
-                log_truncated=bool(row["log_truncated"]),
-                tests_executed=tuple(json.loads(row["tests_executed"])),
-                coverage_status=row["coverage_status"],
-            )
-        )
-    return tuple(records)
+    return tuple(_read(path, AttemptGitEvidence, "files"))
