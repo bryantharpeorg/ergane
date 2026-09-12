@@ -1926,20 +1926,23 @@ async def test_idle_roadmap_waits_and_consumes_no_activity(
 
     # Patch activities through the same seam `RoadmapWorld` already handles.
     world.apply()
-    factory_roadmap_workflow.read_corpus_activity = counting_read_corpus
-    roadmap_activities.count_open_epics = counting_count_open
+    try:
+        factory_roadmap_workflow.read_corpus_activity = counting_read_corpus
+        roadmap_activities.count_open_epics = counting_count_open
 
-    async with run_roadmap(
-        env, world, str(specs_root), idle_rescan_s=3600
-    ) as handle:
-        # Sleep partway through the idle interval: no timeout has fired and no
-        # signal has arrived, so the workflow should still be parked and no
-        # new activity should have run.
-        await env.sleep(timedelta(seconds=1800))
-        # The workflow must still be running; it has idled, not returned.
-        assert await handle.query("roadmap_status", result_type=RoadmapStatus)
-
-    world.restore()
+        async with run_roadmap(
+            env, world, str(specs_root), idle_rescan_s=3600
+        ) as handle:
+            # Sleep partway through the idle interval: no timeout has fired and
+            # no signal has arrived, so the workflow should still be parked and
+            # no new activity should have run.
+            await env.sleep(timedelta(seconds=1800))
+            # The workflow must still be running; it has idled, not returned.
+            assert await handle.query("roadmap_status", result_type=RoadmapStatus)
+    finally:
+        factory_roadmap_workflow.read_corpus_activity = original_read_corpus
+        roadmap_activities.count_open_epics = original_count_open
+        world.restore()
 
     # Only the initial read happened; the idle period added no activity calls.
     assert activity_calls == ["read_corpus"]
