@@ -1789,6 +1789,7 @@ def publish_artifact_capture(
             "path": path,
             "type": artifact_type.value,
             "digest": digest,
+            "size": len(payload),
             "status": status,
             "provenance": provenance,
             "reason": reason,
