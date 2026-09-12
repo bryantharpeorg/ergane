@@ -1746,7 +1746,7 @@ def _collect_artifacts(
                 stored_path=str(stored_path) if stored_path is not None else None,
                 status=capture.status.value,
                 provenance=capture.provenance.value,
-                dispatch=published.dispatch if published is not None else "",
+                dispatch=capture_dispatch,
                 capture_id=capture_id,
                 digest=published.digest if published is not None else capture.digest,
                 reason=capture.reason,
