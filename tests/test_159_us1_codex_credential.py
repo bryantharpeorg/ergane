@@ -204,3 +204,65 @@ def test_explicit_missing_source_never_falls_back_interactively(
     assert discover_codex_credential(
         operator_home=tmp_path / "operator-home", environ=environ
     ) == (codex_home / "auth.json")
+
+
+def test_expired_access_with_refresh_data_is_eligible_to_attempt_refresh(
+    tmp_path: Path,
+) -> None:
+    source = declaration(
+        tmp_path,
+        managed_payload(expires_at=NOW - timedelta(seconds=1)),
+    )
+    credential = validate_codex_credential(source, now=NOW)
+
+    assert credential.admitted is True
+    assert credential.readiness.state == (
+        CredentialReadinessState.ELIGIBLE_TO_ATTEMPT_REFRESH
+    )
+    assert credential.readiness.access_expires_at == NOW - timedelta(seconds=1)
+    assert "expired access" in credential.readiness.reason
+    assert "structurally present refresh data" in credential.readiness.reason
+
+
+def test_locally_missing_and_malformed_refresh_data_are_refused_locally(
+    tmp_path: Path,
+) -> None:
+    missing = managed_payload()
+    missing["tokens"] = {  # type: ignore[assignment]
+        "id_token": _encode_expiry(NOW),
+        "access_token": "synthetic-access-token",
+    }
+    malformed = managed_payload(refresh_token=123)  # type: ignore[arg-type]
+
+    for source_payload in (missing, malformed):
+        credential = validate_codex_credential(
+            declaration(tmp_path, source_payload), now=NOW
+        )
+        assert credential.admitted is False
+        assert credential.failure == CredentialFailure.MISSING_REFRESH
+        assert credential.readiness.state == (
+            CredentialReadinessState.LOCALLY_INELIGIBLE
+        )
+
+
+def test_only_a_recorded_provider_result_is_called_revoked(tmp_path: Path) -> None:
+    valid = CredentialDeclaration(
+        owner_id=OWNER_ID,
+        source_path=declaration(tmp_path, managed_payload()).source_path,
+        generation=GENERATION + 1,
+    )
+    revoked = CredentialDeclaration(
+        owner_id=OWNER_ID,
+        source_path=valid.source_path,
+        generation=GENERATION,
+        provider_result=CredentialProviderResult.REVOKED,
+    )
+
+    assert validate_codex_credential(valid, now=NOW).readiness.state == (
+        CredentialReadinessState.ELIGIBLE
+    )
+    revoked_credential = validate_codex_credential(revoked, now=NOW)
+    assert revoked_credential.admitted is False
+    assert revoked_credential.failure == CredentialFailure.PROVIDER_REVOKED
+    assert revoked_credential.readiness.state == CredentialReadinessState.REVOKED
+    assert "recorded Codex provider result" in revoked_credential.refusal
