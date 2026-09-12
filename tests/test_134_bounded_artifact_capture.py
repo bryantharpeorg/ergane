@@ -120,3 +120,123 @@ def test_the_regular_control_reads_the_exact_bounded_bytes(tmp_path: Path) -> No
     assert observation.size == 16
     assert observation.digest == hashlib.sha256(b"0123456789abcdef").hexdigest()
     assert b"".join(reads) == b"0123456789abcdef"
+
+
+def test_unchanged_and_new_files_have_honest_provenance(tmp_path: Path) -> None:
+    """US6-S2: identity comes from the baseline, never from presence alone."""
+    from factory.verify.artifact_capture import CaptureProvenance, capture_source
+
+    existing = _regular_file(tmp_path, "unchanged.txt")
+    relative_path = existing.relative_to(tmp_path).as_posix()
+    before_existing = observe_source(tmp_path, relative_path, byte_limit=16)
+    capture_existing = capture_source(
+        tmp_path,
+        relative_path,
+        byte_limit=16,
+        baseline=before_existing,
+    )
+
+    before_new = observe_source(tmp_path, "new.txt", byte_limit=16)
+    new = tmp_path / "new.txt"
+    new.write_bytes(b"fresh report\n")
+    capture_new = capture_source(
+        tmp_path,
+        "new.txt",
+        byte_limit=16,
+        baseline=before_new,
+    )
+
+    assert before_existing.status.value == "PERMITTED"
+    assert capture_existing.status.value == "PERMITTED"
+    assert capture_existing.provenance is CaptureProvenance.UNCHANGED
+    assert capture_existing.bytes == existing.read_bytes()
+    assert before_new.status.value == "ABSENT"
+    assert capture_new.status.value == "PERMITTED"
+    assert capture_new.provenance is CaptureProvenance.NEW
+    assert capture_new.bytes == b"fresh report\n"
+
+
+def test_oversized_rewrites_are_changed_and_refuse_bytes(tmp_path: Path) -> None:
+    """US6-S2: observable rewrites cannot become publishable snapshots.
+
+    PR #528 returned the smaller rewrite as permitted.  The 17-to-8-byte case
+    at a 16-byte limit is the regression control for that transition.
+    """
+    from factory.verify.artifact_capture import CaptureProvenance, capture_source
+
+    cases = [(b"y" * 17, b"small"), (b"y" * 17, b"z" * 19)]
+    for index, (before_bytes, after_bytes) in enumerate(cases):
+        path = tmp_path / f"rewrite-{index}.txt"
+        path.write_bytes(before_bytes)
+        relative_path = path.relative_to(tmp_path).as_posix()
+        before = observe_source(tmp_path, relative_path, byte_limit=16)
+        assert before.status.value == "OVERSIZED"
+        path.write_bytes(after_bytes)
+
+        capture = capture_source(
+            tmp_path,
+            relative_path,
+            byte_limit=16,
+            baseline=before,
+        )
+
+        assert capture.status.value == "UNSTABLE"
+        assert capture.provenance is CaptureProvenance.CHANGED
+        assert capture.bytes is None
+        assert capture.size == len(after_bytes)
+        assert capture.digest is None
+
+
+def test_a_baseline_unavailable_during_capture_does_not_certify_newness(
+    tmp_path: Path,
+) -> None:
+    """US6-S2: an unusable baseline cannot upgrade unsafe freshness to new."""
+    from factory.verify.artifact_capture import CaptureProvenance, capture_source
+
+    outside_root = tmp_path / "outside-root"
+    outside_root.mkdir()
+    outside = outside_root / "unavailable"
+    outside.write_bytes(b"UNRELATED OUTSIDE BYTES\n")
+    relative_path = _escaping_symlink(tmp_path, outside)
+    before = observe_source(tmp_path, relative_path, byte_limit=16)
+    os.unlink(tmp_path / relative_path)
+    path = tmp_path / relative_path
+    path.write_bytes(b"new report\n")
+
+    capture = capture_source(
+        tmp_path,
+        relative_path,
+        byte_limit=16,
+        baseline=before,
+    )
+
+    assert before.status.value == "UNSAFE"
+    assert capture.status.value == "PERMITTED"
+    assert capture.provenance is CaptureProvenance.UNKNOWN
+    assert capture.bytes == b"new report\n"
+
+
+def test_mutation_during_capture_is_refused_without_partial_bytes(
+    tmp_path: Path,
+) -> None:
+    """US6-S2: an unstable comparison is not published as a snapshot."""
+    from factory.verify.artifact_capture import CaptureProvenance, capture_source
+
+    path = _regular_file(tmp_path, "changing.txt")
+    relative_path = path.relative_to(tmp_path).as_posix()
+    before = observe_source(tmp_path, relative_path, byte_limit=16)
+    path.write_bytes(b"COMPLETELY DIFFERENT")
+
+    capture = capture_source(
+        tmp_path,
+        relative_path,
+        byte_limit=16,
+        baseline=before,
+    )
+
+    assert before.status.value == "PERMITTED"
+    assert capture.status.value == "UNSTABLE"
+    assert capture.provenance is CaptureProvenance.CHANGED
+    assert capture.bytes is None
+    assert capture.digest is None
+    assert "changed between observations" in (capture.reason or "")
