@@ -663,6 +663,9 @@ class RoadmapWorkflow:
         self._paused = False
         self._promotions: dict[str, None] = {}
         self._rescan_requested = False
+        #: The last complete status, restored from the carry-over at CAN and
+        #: spent by the first fresh corpus read. It is never a scheduling input.
+        self._previous_status: RoadmapStatus | None = None
 
     # --- signals and query (FR-008) -------------------------------------------
 
@@ -743,12 +746,25 @@ class RoadmapWorkflow:
         """
         roadmap = self._roadmap
         if roadmap is None:
-            # Before the first corpus read the roadmap has no specs to report,
-            # but it does already know its bounds, so both are named here. The
-            # record now defaults them, and leaning on that default instead
-            # would report one node in flight for a run configured for four —
-            # a query that answers wrongly, which is worse than the one that
-            # used to raise (052 US2).
+            # Before the first fresh read, the last complete reading is the
+            # query fallback. Its spec rows are stale observation, but its
+            # controls are overlaid live here so a resume or unpark cannot be
+            # resurrected from the boundary snapshot.
+            if self._previous_status is not None:
+                return RoadmapStatus(
+                    specs=[
+                        replace(spec, promoted=spec.spec_dir in self._promotions)
+                        for spec in self._previous_status.specs
+                    ],
+                    running=sorted(self._children),
+                    parked=[self._parked[d] for d in sorted(self._parked)],
+                    max_concurrent_epics=self._max_concurrent_epics,
+                    max_concurrent_nodes=self._max_concurrent_nodes,
+                    paused=self._paused,
+                )
+            # With no prior complete reading, the same bounds are the only
+            # facts known. Leaning on record defaults instead would report one
+            # node in flight for a run configured for four (052 US2).
             return RoadmapStatus(
                 specs=[],
                 running=[],
@@ -892,6 +908,7 @@ class RoadmapWorkflow:
         # receives the previous run's landings, parked findings, promotions,
         # and pause flag so it does not re-dispatch work already done.
         if request.carry_over is not None:
+            self._previous_status = request.carry_over.previous_status
             self._landed = request.carry_over.landed_map()
             self._parked = request.carry_over.parked_map()
             self._promotions = {d: None for d in request.carry_over.promotion_set()}
@@ -912,6 +929,7 @@ class RoadmapWorkflow:
                 ReadCorpusInput(specs_root=request.specs_root),
                 **_FAST,
             )
+            self._previous_status = None
             # Per-spec text is read lazily by `_spec_text` and cached in
             # `_roadmap_text` so drift detection and derivation see the same text
             # without adding a batch read activity to every pass (SC-003).
@@ -1088,6 +1106,7 @@ class RoadmapWorkflow:
             max_concurrent_nodes=self._max_concurrent_nodes,
             idle_rescan_s=request.idle_rescan_s,
         )
+        carry = replace(carry, previous_status=self.roadmap_status())
         return await workflow.continue_as_new(
             RoadmapInput(
                 specs_root=request.specs_root,

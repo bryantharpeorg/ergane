@@ -207,6 +207,49 @@ class _BootRevisionInterceptor(Interceptor):
         return _Inbound
 
 
+class _HeldCorpusReadInterceptor(Interceptor):
+    """Hold the Nth `read_corpus_activity` execution until the test releases it."""
+
+    def __init__(
+        self,
+        *,
+        read_calls: list[str],
+        hold_on_call: int,
+        held: asyncio.Event,
+        release: threading.Event,
+        test_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        self._read_calls = read_calls
+        self._hold_on_call = hold_on_call
+        self._held = held
+        self._release = release
+        self._test_loop = test_loop
+
+    def intercept_activity(self, next):
+        read_calls = self._read_calls
+        hold_on_call = self._hold_on_call
+        held = self._held
+        release = self._release
+        test_loop = self._test_loop
+
+        class _Inbound:
+            def __init__(self, next):
+                self.next = next
+
+            def init(self, outbound):
+                self.next.init(outbound)
+
+            async def execute_activity(self, input):
+                if getattr(input.fn, "__name__", "") == "read_corpus_activity":
+                    read_calls.append(input.args[0].specs_root)
+                    if len(read_calls) == hold_on_call:
+                        test_loop.call_soon_threadsafe(held.set)
+                        await asyncio.to_thread(release.wait)
+                return await self.next.execute_activity(input)
+
+        return _Inbound(next)
+
+
 # --- the corpus a roadmap reads ---------------------------------------------
 
 
@@ -818,25 +861,12 @@ async def test_status_survives_the_continued_run_first_corpus_read(
         },
     )
     world = RoadmapWorld()
-    original_read_corpus = factory_roadmap_workflow.read_corpus_activity
     test_loop = asyncio.get_running_loop()
     read_calls: list[str] = []
     alpha_dispatched = asyncio.Event()
     continued_read_held = asyncio.Event()
     release_continued_read = threading.Event()
 
-    @activity.defn(name="read_corpus_activity")
-    async def held_read_corpus(request: dict) -> Roadmap:
-        read_calls.append(request["specs_root"])
-        if len(read_calls) == 2:
-            test_loop.call_soon_threadsafe(continued_read_held.set)
-            await asyncio.to_thread(release_continued_read.wait)
-        return await original_read_corpus(
-            factory_roadmap_workflow.ReadCorpusInput(specs_root=request["specs_root"])
-        )
-
-    world.apply()
-    factory_roadmap_workflow.read_corpus_activity = held_read_corpus
     try:
         async with run_roadmap(
             env,
@@ -844,6 +874,15 @@ async def test_status_survives_the_continued_run_first_corpus_read(
             str(specs_root),
             hold_specs={"001-alpha"},
             on_dispatch=lambda _spec_dir: alpha_dispatched.set(),
+            interceptors=[
+                _HeldCorpusReadInterceptor(
+                    read_calls=read_calls,
+                    hold_on_call=2,
+                    held=continued_read_held,
+                    release=release_continued_read,
+                    test_loop=test_loop,
+                )
+            ],
         ) as handle:
             await asyncio.wait_for(alpha_dispatched.wait(), timeout=30)
             await handle.signal(RoadmapWorkflow.pause_roadmap)
@@ -865,7 +904,126 @@ async def test_status_survives_the_continued_run_first_corpus_read(
             assert status.max_concurrent_nodes == 1
     finally:
         release_continued_read.set()
-        factory_roadmap_workflow.read_corpus_activity = original_read_corpus
+
+
+async def test_carried_status_uses_live_controls_during_the_first_read(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S3: signals restored in the new run override the carried snapshot."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.READY),
+            "003-draft": dict(state=SpecState.DRAFT),
+        },
+    )
+    world = RoadmapWorld()
+    test_loop = asyncio.get_running_loop()
+    read_calls: list[str] = []
+    alpha_started = asyncio.Event()
+    continued_read_held = asyncio.Event()
+    release_continued_read = threading.Event()
+
+    def on_dispatch(spec_dir: str) -> None:
+        if spec_dir == "001-alpha":
+            alpha_started.set()
+    handle = None
+    try:
+        async with run_roadmap(
+            env,
+            world,
+            str(specs_root),
+            hold_specs={"001-alpha"},
+            on_dispatch=on_dispatch,
+            interceptors=[
+                _HeldCorpusReadInterceptor(
+                    read_calls=read_calls,
+                    hold_on_call=2,
+                    held=continued_read_held,
+                    release=release_continued_read,
+                    test_loop=test_loop,
+                )
+            ],
+        ) as context_handle:
+            handle = context_handle
+            await asyncio.wait_for(alpha_started.wait(), timeout=30)
+            await handle.signal(RoadmapWorkflow.pause_roadmap)
+            await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+            await asyncio.wait_for(continued_read_held.wait(), timeout=30)
+            await handle.signal(RoadmapWorkflow.resume_roadmap)
+            await handle.signal("promote_spec", "003-draft")
+
+            status = await handle.query("roadmap_status", result_type=RoadmapStatus)
+
+            assert status.paused is False
+            assert status.parked == []
+            assert _status_of(status, "001-alpha").landed is True
+            assert _status_of(status, "002-bravo").promoted is False
+            assert _status_of(status, "003-draft").promoted is True
+    finally:
+        release_continued_read.set()
+        if handle is not None:
+            await handle.cancel()
+
+
+async def test_fresh_corpus_replaces_the_snapshot_and_controls_dispatch(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """US1-S4: the first completed fresh read becomes the sole authority."""
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-bravo": dict(state=SpecState.DRAFT),
+        },
+    )
+    world = RoadmapWorld()
+    test_loop = asyncio.get_running_loop()
+    read_calls: list[str] = []
+    alpha_started = asyncio.Event()
+    continued_read_held = asyncio.Event()
+    release_continued_read = threading.Event()
+
+    def on_dispatch(spec_dir: str) -> None:
+        if spec_dir == "001-alpha":
+            alpha_started.set()
+
+    async with run_roadmap(
+        env,
+        world,
+        str(specs_root),
+        hold_specs={"001-alpha"},
+        on_dispatch=on_dispatch,
+        interceptors=[
+            _HeldCorpusReadInterceptor(
+                read_calls=read_calls,
+                hold_on_call=2,
+                held=continued_read_held,
+                release=release_continued_read,
+                test_loop=test_loop,
+            )
+        ],
+    ) as handle:
+        await asyncio.wait_for(alpha_started.wait(), timeout=30)
+        await handle.signal(RoadmapWorkflow.pause_roadmap)
+        await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+        await asyncio.wait_for(continued_read_held.wait(), timeout=30)
+
+        before_read = await handle.query(
+            "roadmap_status", result_type=RoadmapStatus
+        )
+        assert _status_of(before_read, "002-bravo").state is SpecState.DRAFT
+        assert _status_of(before_read, "002-bravo").dispatchable is False
+
+        _write_spec(specs_root / "002-bravo", state=SpecState.READY)
+        await handle.signal(RoadmapWorkflow.resume_roadmap)
+        release_continued_read.set()
+        final = await handle.result()
+
+    assert _status_of(final, "001-alpha").landed is True
+    assert _status_of(final, "002-bravo").state is SpecState.READY
+    assert _status_of(final, "002-bravo").landed is True
 
 
 # ============================================================================
