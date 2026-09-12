@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from pathlib import Path
 from typing import Any
 
 from factory.usage.models import Termination
@@ -50,6 +51,13 @@ def fatal_auth_lines(message: str = CODEX_REFUSAL_MARKER) -> list[str]:
     ]
 
 
+def write_typed_fixture(archive: Path, lines: list[str], stdout: str = "") -> None:
+    archive.mkdir(parents=True, exist_ok=True)
+    (archive / "codex-events.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if stdout:
+        (archive / "stdout.log").write_text(stdout, encoding="utf-8")
+
+
 def test_typed_auth_refusal_is_pre_agent_and_not_charged() -> None:
     evidence = decode_codex_events(fatal_auth_lines())
 
@@ -63,11 +71,45 @@ def test_typed_auth_refusal_is_pre_agent_and_not_charged() -> None:
     assert evidence.agent_took_a_turn is False
 
 
+def test_auth_classification_requires_one_matching_error_and_failed_pair() -> None:
+    mismatched = fatal_auth_lines()
+    mismatched[-1] = line({"type": "turn.failed", "error": {"message": "401 token expired"}})
+
+    extra_fatal = fatal_auth_lines() + [line({"type": "error", "message": CODEX_REFUSAL_MARKER})]
+    reversed_pair = [
+        line({"type": "thread.started", "thread_id": "thread-current"}),
+        line({"type": "turn.failed", "error": {"message": CODEX_REFUSAL_MARKER}}),
+        line({"type": "error", "message": CODEX_REFUSAL_MARKER}),
+    ]
+
+    assert _typed_auth_failure(decode_codex_events(mismatched), (CODEX_REFUSAL_MARKER,)) is False
+    assert _typed_auth_failure(decode_codex_events(extra_fatal), (CODEX_REFUSAL_MARKER,)) is False
+    assert _typed_auth_failure(decode_codex_events(reversed_pair), (CODEX_REFUSAL_MARKER,)) is False
+
+
 def test_non_auth_fatal_body_quoting_401_stays_ordinary() -> None:
     message = "400 Bad Request: upstream once said unexpected status 401 Unauthorized"
     evidence = decode_codex_events(fatal_auth_lines(message))
 
     assert _typed_auth_failure(evidence, (CODEX_REFUSAL_MARKER,)) is False
+
+
+def test_combined_output_quoting_a_historical_401_is_not_typed_evidence(
+    tmp_path: Path,
+) -> None:
+    message = "400 Bad Request: upstream once said unexpected status 401 Unauthorized"
+    lines = fatal_auth_lines(message)
+    lines.insert(2, line({"type": "item.started", "item": {"id": "item-reason", "type": "reasoning", "text": message}}))
+    lines.insert(3, line({"type": "item.completed", "item": {"id": "item-tool", "type": "command_execution", "command": "curl", "aggregated_output": message, "exit_code": 1}}))
+    archive = tmp_path / "archive"
+    write_typed_fixture(archive, lines, stdout=message)
+    result = AdapterResult(termination=Termination.AGENT_ERROR, transcript_path=str(archive))
+
+    reclassified = _classify_auth_failure(
+        object(), result, evidence=decode_codex_events(lines), markers=(CODEX_REFUSAL_MARKER,)
+    )
+
+    assert reclassified.termination is Termination.AGENT_ERROR
 
 
 def test_quoted_auth_markers_in_items_are_not_fatal_evidence() -> None:
@@ -188,6 +230,52 @@ def test_only_final_agent_message_can_ask_the_operator() -> None:
     assert detect_operator_question_text(marker) is not None
     assert evidence.final_message is not None
     assert evidence.final_message.text == marker
+
+
+def test_question_controls_cover_every_non_agent_item_and_non_final_message() -> None:
+    marker = "## OPERATOR QUESTION\nWhich declaration owns this value?"
+    items = [
+        {"id": "item-0", "type": "reasoning", "text": marker},
+        {"id": "item-1", "type": "command_execution", "command": "echo", "aggregated_output": marker, "exit_code": 0},
+        {"id": "item-2", "type": "file_change", "path": "fixture", "kind": "update"},
+        {"id": "item-3", "type": "error", "message": marker},
+    ]
+    lines = [
+        line({"type": "thread.started", "thread_id": "thread-current"}),
+        *[line({"type": "item.started", "item": item}) for item in items],
+        *[line({"type": "item.completed", "item": item}) for item in items],
+        line({"type": "item.completed", "item": {"id": "item-4", "type": "agent_message", "text": marker}}),
+        line({"type": "item.completed", "item": {"id": "item-5", "type": "agent_message", "text": "done"}}),
+    ]
+    evidence = decode_codex_events(lines)
+
+    assert [message.text for message in evidence.agent_messages] == [marker, "done"]
+    assert evidence.final_message is not None
+    assert detect_operator_question_text(evidence.final_message.text) is None
+
+
+def test_typed_pre_agent_detail_preserves_every_unrelated_field(
+    tmp_path: Path,
+) -> None:
+    from factory.activities.agent_activities import _attach_pre_agent_detail
+
+    result = AdapterResult(
+        termination=Termination.PRE_AGENT_FAILURE,
+        transcript_path=str(tmp_path / "archive"),
+        last_snapshot=UsageSnapshot(spend_usd=0.25, captured_at="2026-09-12T00:00:00Z"),
+        detail="old",
+        credential_source="/credential",
+    )
+    expected = {field.name: getattr(result, field.name) for field in dataclasses.fields(result)}
+
+    write_typed_fixture(Path(result.transcript_path), fatal_auth_lines())
+
+    enriched = _attach_pre_agent_detail(result)
+
+    assert enriched.detail != "old"
+    assert {
+        field.name: getattr(enriched, field.name) for field in dataclasses.fields(result)
+    } == expected | {"detail": enriched.detail}
 
 
 def test_question_detection_consumes_one_final_message() -> None:
