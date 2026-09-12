@@ -52,6 +52,7 @@ from factory.roadmap.workflow import (
     RoadmapWorkflow,
     roadmap_workflow_id,
 )
+from factory.workgraph.preflight import PreflightFinding
 from factory.workgraph.workflow import EpicStatus
 
 from tests.target_repo import git
@@ -1734,7 +1735,94 @@ async def test_status_keeps_last_complete_reading_across_continue_as_new(
             await handle.signal("resume_roadmap")
             final_status = await handle.result()
             assert _status_of(final_status, "002-bravo").landed is True
-            assert final_status.paused is True
+            assert final_status.paused is False
+    finally:
+        factory_roadmap_workflow.read_corpus_activity = original_read_corpus
+
+
+async def test_quiescent_query_overlays_signals_received_during_the_held_read(
+    env: WorkflowEnvironment, tmp_path: Path
+) -> None:
+    """FR-007 / US1-S3: live controls win while the fresh read is pending.
+
+    The snapshot is captured after alpha lands. It contains a promotion that
+    the new run must not lose, a park the operator may spend, and a paused
+    flag the operator may reverse — all before the second corpus read answers.
+    The query therefore overlays those maps and flag on the carried rows
+    instead of returning the old object verbatim.
+    """
+    specs_root = build_corpus(
+        tmp_path,
+        {
+            "001-alpha": dict(state=SpecState.READY),
+            "002-draft": dict(state=SpecState.DRAFT),
+            "003-parked": dict(state=SpecState.READY),
+        },
+    )
+    original_read_corpus = factory_roadmap_workflow.read_corpus_activity
+    alpha_dispatched = asyncio.Event()
+    alpha_completed = asyncio.Event()
+    second_read_held = asyncio.Event()
+    release_second_read = asyncio.Event()
+    read_calls: list[str] = []
+
+    @activity.defn(name="read_corpus_activity")
+    async def held_second_read(request: dict) -> Roadmap:
+        typed_request = factory_roadmap_workflow.ReadCorpusInput(
+            specs_root=request["specs_root"]
+        )
+        read_calls.append(typed_request.specs_root)
+        if len(read_calls) == 1:
+            return await original_read_corpus(typed_request)
+        second_read_held.set()
+        await release_second_read.wait()
+        return await original_read_corpus(typed_request)
+
+    factory_roadmap_workflow.read_corpus_activity = held_second_read
+    try:
+        async with run_roadmap(
+            env,
+            RoadmapWorld(
+                preflight=lambda epic_id: []
+                if epic_id == "001-alpha"
+                else [
+                    PreflightFinding(
+                        check="prompt-assembly",
+                        passed=False,
+                        detail="aliases missing",
+                    )
+                ],
+            ),
+            str(specs_root),
+            max_concurrent_epics=2,
+            hold_specs={"001-alpha"},
+            on_dispatch=lambda epic_id: alpha_dispatched.set()
+            if epic_id == "001-alpha"
+            else None,
+            on_complete=lambda epic_id: alpha_completed.set()
+            if epic_id == "001-alpha"
+            else None,
+        ) as handle:
+            await alpha_dispatched.wait()
+            await handle.signal("pause_roadmap")
+            await env.client.get_workflow_handle("epic-001-alpha").signal("release")
+            await alpha_completed.wait()
+            await second_read_held.wait()
+
+            carried = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            assert carried.paused is True
+            assert [parked.spec_dir for parked in carried.parked] == ["003-parked"]
+
+            await handle.signal("resume_roadmap")
+            await handle.signal("promote_spec", "002-draft")
+            await handle.signal("unpark_spec", "003-parked")
+            live = await handle.query("roadmap_status", result_type=RoadmapStatus)
+            assert live.paused is False
+            assert live.parked == []
+            assert _status_of(live, "002-draft").promoted is True
+
+            release_second_read.set()
+            await handle.result()
     finally:
         factory_roadmap_workflow.read_corpus_activity = original_read_corpus
 
