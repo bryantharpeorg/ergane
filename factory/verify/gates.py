@@ -1384,6 +1384,8 @@ def run_gates(
         timeout_overrides=timeout_overrides,
         concurrency_limiter=concurrency_limiter,
         artifact_destination=artifact_destination,
+        capture_ids=capture_ids,
+        capture_dispatch=capture_dispatch,
     )
 
 
