@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import fields
+import shutil
 import json
 from pathlib import Path
 from typing import Callable
@@ -46,6 +47,12 @@ def _path() -> str:
     import os
 
     return os.environ["PATH"]
+
+
+def _bwrap_present() -> bool:
+    import shutil
+
+    return shutil.which("bwrap") is not None
 
 
 async def _wait_for_stub(worktree: Path) -> None:
@@ -332,6 +339,7 @@ async def test_codex_and_claude_keep_the_same_plain_adapter_contract(
     ]
     write_control(
         node_home,
+        exit_code=1,
         write_rollout=False,
         stdout="".join(f"{json.dumps(event)}\n" for event in stream),
     )
@@ -349,4 +357,100 @@ async def test_codex_and_claude_keep_the_same_plain_adapter_contract(
     assert tuple(field.name for field in fields(type(claude_result))) == codex_fields
     assert codex_plain_log == "Done.\n"
     assert '"type": "agent_message"' not in codex_plain_log
+
+
+async def test_host_backend_separates_codex_stdout_from_stderr(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """The host launch keeps JSONL and diagnostics in their declared sinks."""
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout='{"type":"thread.started","thread_id":"thread-current"}\n',
+        stderr="ordinary diagnostic\n",
+        interleave_stderr=True,
+    )
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
+
+    assert result.termination == Termination.PRE_AGENT_FAILURE
+    assert b"thread-current" in (archive / CODEX_EVENTS_NAME).read_bytes()
+    assert (archive / CODEX_STDERR_NAME).read_bytes() == b"ordinary diagnostic\n"
+    assert b"ordinary diagnostic" not in (archive / CODEX_EVENTS_NAME).read_bytes()
+
+
+async def test_claude_retains_combined_logging(
+    claude_adapter: object,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """The control CLI's combined-log contract does not move with Codex."""
+    write_agent_control(node_home, stdout="model says done\n", stderr="claude diagnostic\n")
+
+    result = await claude_adapter.run_attempt(attempt(), factory_root=factory_root)
+    combined = (
+        transcript_dir(factory_root, EPIC, NODE, ATTEMPT) / STDOUT_LOG_NAME
+    ).read_bytes()
+
+    assert result.termination == Termination.COMPLETED
+    assert b"model says done" in combined
+    assert b"claude diagnostic" in combined
+
+
+@pytest.mark.skipif(not _bwrap_present(), reason="bwrap not installed on this host")
+async def test_bwrap_backend_separates_codex_stdout_from_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    worktree: Path,
+    node_home: Path,
+) -> None:
+    """The sandbox launch honors the same selected two-sink policy."""
+    from factory.workgraph.adapter import AgentInvocation, BwrapBackend, InvocationOutputPolicy
+    from tests.test_toolchain_discovery import PlantedHost
+
+    host = PlantedHost(tmp_path / "host")
+    for name in ("uv", "node", "git", "claude"):
+        host.plant(name)
+    bin_dir = tmp_path / "bin"
+    install_as(bin_dir, "codex")
+    host.activate(monkeypatch, host.bin_dir, bin_dir)
+    events_path = transcript_dir(tmp_path, EPIC, NODE, ATTEMPT) / CODEX_EVENTS_NAME
+    stderr_path = events_path.parent / CODEX_STDERR_NAME
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    write_control(
+        node_home,
+        write_rollout=False,
+        stdout='{"type":"thread.started","thread_id":"thread-current"}\n',
+        stderr="ordinary diagnostic\n",
+        interleave_stderr=True,
+    )
+
+    with events_path.open("wb") as events, stderr_path.open("wb") as stderr:
+        invocation = AgentInvocation(
+            argv=[str(bin_dir / "codex"), "exec", "-"],
+            prompt=PROMPT,
+            worktree=worktree,
+            env={
+                "PATH": str(host.bin_dir),
+                "HOME": str(node_home),
+            },
+            log=events,
+            stderr_log=stderr,
+            output_policy=InvocationOutputPolicy.SEPARATE,
+            standards_path=None,
+            model_alias=MODEL_ALIAS,
+        )
+        process = await BwrapBackend(executable=str(bin_dir / "codex")).launch(invocation)
+        process.stdin.close()
+        await asyncio.wait_for(process.wait(), 20)
+
+    assert b"thread-current" in events_path.read_bytes()
+    assert stderr_path.read_bytes() == b"ordinary diagnostic\n"
     SharedAttemptPolicy,

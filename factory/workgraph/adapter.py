@@ -371,7 +371,16 @@ def _inside_system_tree(path: Path, system_root: Path) -> bool:
     return str(path).startswith(str(system_root / "usr") + "/")
 
 
-class HostAgentBackend:
+class AgentBackendBase:
+    def _stderr_sink(self, invocation: AgentInvocation) -> Any:
+        if invocation.output_policy is InvocationOutputPolicy.COMBINED:
+            return asyncio.subprocess.STDOUT
+        if invocation.stderr_log is None:
+            raise AdapterError("separate output policy requires an stderr sink")
+        return invocation.stderr_log
+
+
+class HostAgentBackend(AgentBackendBase):
     """Today's direct host launch, now one implementation behind the seam.
 
     Selectable only explicitly — the default path resolves the backend from the
@@ -402,15 +411,7 @@ class HostAgentBackend:
                 f"{invocation.argv}: {error}"
             ) from error
 
-    def _stderr_sink(self, invocation: AgentInvocation) -> Any:
-        if invocation.output_policy is InvocationOutputPolicy.COMBINED:
-            return asyncio.subprocess.STDOUT
-        if invocation.stderr_log is None:
-            raise AdapterError("separate output policy requires an stderr sink")
-        return invocation.stderr_log
-
-
-class BwrapBackend:
+class BwrapBackend(AgentBackendBase):
     """Bubblewrap containment: the agent's filesystem is its worktree, not the host.
 
     The mount set is deliberately minimal (US3). `/usr` is read-only, and each

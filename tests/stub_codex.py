@@ -78,6 +78,7 @@ class Control:
     stdout: str = ""
     stderr: str = ""
     rollout_text: str | None = None
+    interleave_stderr: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -87,6 +88,7 @@ class Control:
             "stdout": self.stdout,
             "stderr": self.stderr,
             "rollout_text": self.rollout_text,
+            "interleave_stderr": self.interleave_stderr,
         }
 
 
@@ -204,10 +206,18 @@ def main(argv: list[str]) -> int:
     signal.signal(signal.SIGTERM, on_term)
 
     print(BANNER, flush=True)
-    if control.stdout:
-        print(control.stdout, flush=True)
-    if control.stderr:
-        print(control.stderr, file=sys.stderr, flush=True)
+    if control.interleave_stderr and control.stdout and control.stderr:
+        lines = control.stdout.splitlines(keepends=True)
+        print(lines[0], flush=True)
+        sys.stderr.write(control.stderr)
+        sys.stderr.flush()
+        print("".join(lines[1:]), flush=True)
+    else:
+        if control.stdout:
+            print(control.stdout, flush=True)
+        if control.stderr:
+            sys.stderr.write(control.stderr)
+            sys.stderr.flush()
 
     # A turn happened: write the rollout file under the CODEX_HOME the
     # adapter seeded (measured: CODEX_HOME wins over $HOME/.codex) — the
