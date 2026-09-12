@@ -73,6 +73,7 @@ import shutil
 import signal
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
@@ -104,6 +105,13 @@ STDOUT_LOG_NAME = "stdout.log"
 
 CODEX_EVENTS_NAME = "codex-events.jsonl"
 CODEX_STDERR_NAME = "codex-stderr.log"
+
+
+class InvocationOutputPolicy(StrEnum):
+    """How a backend routes the two process output streams."""
+
+    COMBINED = "combined"
+    SEPARATE = "separate"
 
 #: Environment variable names the agent inherits from the worker, on top of the
 #: two the attempt itself supplies. `PATH` is what finds the agent binary and the
@@ -317,6 +325,11 @@ class AgentInvocation:
     log: Any
     standards_path: str | None
     model_alias: str
+    #: The adapter's policy, not a backend's guess. Combined is the default so
+    #: every existing invocation keeps today's contract; a separate invocation
+    #: must also supply the second sink before it can launch.
+    output_policy: InvocationOutputPolicy = InvocationOutputPolicy.COMBINED
+    stderr_log: Any | None = None
 
 
 class AgentBackend(Protocol):
@@ -372,12 +385,14 @@ class HostAgentBackend:
         self.executable = executable
 
     async def launch(self, invocation: AgentInvocation) -> asyncio.subprocess.Process:
+        stderr = self._stderr_sink(invocation)
         try:
+            stderr = self._stderr_sink(invocation)
             return await asyncio.create_subprocess_exec(
                 *invocation.argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=invocation.log,
-                stderr=asyncio.subprocess.STDOUT,
+                stderr=stderr,
                 cwd=str(invocation.worktree),
                 env=invocation.env,
                 start_new_session=True,
@@ -387,6 +402,13 @@ class HostAgentBackend:
                 f"could not launch agent '{self.executable}' for "
                 f"{invocation.argv}: {error}"
             ) from error
+
+    def _stderr_sink(self, invocation: AgentInvocation) -> Any:
+        if invocation.output_policy is InvocationOutputPolicy.COMBINED:
+            return asyncio.subprocess.STDOUT
+        if invocation.stderr_log is None:
+            raise AdapterError("separate output policy requires an stderr sink")
+        return invocation.stderr_log
 
 
 class BwrapBackend:
@@ -764,7 +786,7 @@ class BwrapBackend:
                 *argv,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=invocation.log,
-                stderr=asyncio.subprocess.STDOUT,
+                stderr=stderr,
                 # cwd is still the worktree on the host side; the real chdir is
                 # the `--chdir` inside the mount namespace.
                 cwd=str(invocation.worktree),
@@ -1288,17 +1310,10 @@ class SharedAttemptPolicy:
 
         _preserve_previous_stdout(archive, context)
 
-        with (archive / STDOUT_LOG_NAME).open("wb") as log:
+        with self._open_invocation(
+            context, worktree, target_repo, env, archive
+        ) as invocation:
             backend = self._resolve_backend(worktree, target_repo)
-            invocation = AgentInvocation(
-                argv=self._cli._argv(context),
-                prompt=context.prompt,
-                worktree=worktree,
-                env=env,
-                log=log,
-                standards_path=self._standards_path(worktree, target_repo),
-                model_alias=context.model_alias,
-            )
             process = await backend.launch(invocation)
             _write_pid_file(pids, process.pid)
             feeder = asyncio.ensure_future(
@@ -1316,11 +1331,8 @@ class SharedAttemptPolicy:
                     send_ferry_question=send_ferry_question,
                     read_ferry_answer=read_ferry_answer,
                     ferry_interval_s=ferry_interval_s,
-                    # 095-US1: the structural tell, as a probe rather than as a
-                    # path — the monitor asks "did a turn happen" and the answer
-                    # is read at the moment the process ends, from the one
-                    # definition of where a session transcript lives that the
-                    # archive step also uses.
+                    # The JSONL stream is the structural tell; startup bookkeeping
+                    # and diagnostic errors never become a model turn (US2).
                     agent_took_a_turn=lambda: self._cli._turn_happened(
                         context, worktree, env
                     ),
@@ -1384,6 +1396,67 @@ class SharedAttemptPolicy:
                 f"(known: {known})"
             )
         return backend_class(executable=self._cli.executable)
+
+    @contextlib.contextmanager
+    def _open_invocation(
+        self,
+        context: AttemptContext,
+        worktree: Path,
+        target_repo: Path | None,
+        env: dict[str, str],
+        archive: Path,
+    ):
+        """Open the sinks for one launch and close them after it is reaped."""
+        with (archive / STDOUT_LOG_NAME).open("wb") as log:
+            if getattr(self._cli, "output_policy", None) is InvocationOutputPolicy.SEPARATE:
+                with (archive / CODEX_EVENTS_NAME).open("wb") as event_log, (
+                    archive / CODEX_STDERR_NAME
+                ).open("wb") as stderr_log:
+                    os.chmod(archive / CODEX_EVENTS_NAME, 0o600)
+                    os.chmod(archive / CODEX_STDERR_NAME, 0o600)
+                    yield self._invocation(
+                        context, worktree, target_repo, env, log,
+                        event_log, stderr_log, InvocationOutputPolicy.SEPARATE,
+                    )
+                return
+            yield self._invocation(
+                context, worktree, target_repo, env, log,
+                None, None, InvocationOutputPolicy.COMBINED,
+            )
+
+    def _invocation(
+        self,
+        context: AttemptContext,
+        worktree: Path,
+        target_repo: Path | None,
+        env: dict[str, str],
+        log: Any,
+        event_log: Any,
+        stderr_log: Any,
+        output_policy: InvocationOutputPolicy,
+    ) -> AgentInvocation:
+        if output_policy is InvocationOutputPolicy.SEPARATE:
+            return AgentInvocation(
+                argv=self._cli._argv(context),
+                prompt=context.prompt,
+                worktree=worktree,
+                env=env,
+                log=event_log,
+                stderr_log=stderr_log,
+                output_policy=output_policy,
+                standards_path=self._standards_path(worktree, target_repo),
+                model_alias=context.model_alias,
+            )
+        return AgentInvocation(
+            argv=self._cli._argv(context),
+            prompt=context.prompt,
+            worktree=worktree,
+            env=env,
+            log=log,
+            output_policy=output_policy,
+            standards_path=self._standards_path(worktree, target_repo),
+            model_alias=context.model_alias,
+        )
 
     def _standards_path(
         self,
@@ -1896,6 +1969,8 @@ class CodexAdapter:
     """
 
     name = "codex"
+
+    output_policy = InvocationOutputPolicy.SEPARATE
 
     def __init__(
         self,

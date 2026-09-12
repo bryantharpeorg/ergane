@@ -9,6 +9,8 @@ import pytest
 
 from factory.usage.models import Termination
 from factory.workgraph.adapter import (
+    CODEX_EVENTS_NAME,
+    CODEX_STDERR_NAME,
     HostAgentBackend,
     home_path,
     transcript_dir,
@@ -116,3 +118,58 @@ async def test_a_prior_rollout_is_not_this_attempts_turn_evidence(
     assert evidence is False
     current_archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
     assert list(current_archive.glob("rollout-*.jsonl")) == []
+
+
+@pytest.mark.parametrize(
+    "fatal_message",
+    [
+        "unexpected status 401 Unauthorized",
+        "missing CODEX_GATEWAY_KEY provider configuration",
+    ],
+)
+async def test_startup_and_errors_are_not_a_model_turn(
+    codex_bin: None,
+    adapter: object,
+    attempt: Callable[..., AttemptContext],
+    factory_root: Path,
+    node_home: Path,
+    fatal_message: str,
+) -> None:
+    """Protocol startup plus errors never becomes model-authored evidence."""
+    import json
+
+    from factory.workgraph.codex_events import decode_codex_events
+
+    stream = [
+        {"type": "thread.started", "thread_id": "thread-current"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"id": "item-error", "type": "error", "message": "diagnostic"},
+        },
+        {"type": "error", "message": fatal_message},
+        {"type": "turn.failed", "error": {"message": fatal_message}},
+    ]
+    write_control(
+        node_home,
+        exit_code=1,
+        write_rollout=False,
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
+        stderr="provider diagnostic\n",
+    )
+
+    result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    archive = transcript_dir(factory_root, EPIC, NODE, ATTEMPT)
+    raw_events = (archive / CODEX_EVENTS_NAME).read_bytes()
+    raw_stderr = (archive / CODEX_STDERR_NAME).read_bytes()
+    evidence = decode_codex_events(raw_events.splitlines(keepends=True))
+
+    assert result.termination == Termination.PRE_AGENT_FAILURE
+    assert evidence.thread_id == "thread-current"
+    assert evidence.turn_started is True
+    assert evidence.agent_took_a_turn is False
+    assert evidence.final_message is None
+    assert any(
+        fatal_message in event.message for event in evidence.fatal_events
+    )
+    assert b"provider diagnostic" in raw_stderr
