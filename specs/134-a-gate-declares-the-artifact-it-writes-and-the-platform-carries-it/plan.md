@@ -29,6 +29,16 @@ becomes a claim that the report was newly produced. Caller-supplied observations
 and capture results must distinguish absent, permitted, oversized, unsafe and
 unstable outcomes without inferring a producer from presence.
 
+**Freshness transition trap — oversized is still an observation.** A pre-gate
+oversized result carries size and descriptor metadata even though it carries no
+payload bytes. If the post-gate file becomes within-bound, or remains oversized
+with different metadata, that is an observable rewrite: classify it
+`changed`/`unstable` and publish no bytes. `unknown` is for a baseline whose
+identity could not be compared, not for a known oversized file whose metadata
+changed. PR #528's otherwise-green candidate returned the rewritten smaller
+file as `permitted` with publishable bytes; the 17-byte-before/8-byte-after case
+at a 16-byte limit is the required regression control.
+
 US3 keeps `GateArtifact`, the `GateResult.artifacts` field, destination plumbing,
 and integration in `_run_watched`. It calls the US6 boundary before and after
 the gate, applies the existing named stored-byte bound, and publishes only a
@@ -123,12 +133,12 @@ the first refinement.** The `expected_artifacts` call the hand-over placed at li
 2314, and a later re-measurement placed at 2433, is really inside `_verify`
 (`factory/workgraph/workflow.py:2714` — `_verify`). The 2026-09-03 draft told the
 implementer to hang the new declaration on `VerificationConfig`
-(`factory/verify/models.py:1224` — `VerificationConfig`), which is the
+(`factory/verify/models.py:1251` — `VerificationConfig`), which is the
 **retry-ladder** configuration and carries no gate at all; the class that carries
 `gates`, `timeouts` and `writes` is `FactoryConfig`
-(`factory/verify/models.py:291` — `FactoryConfig`). And the refined spec cited
-`worktree_writes` at `factory/verify/models.py:415` — `GateResult`, which is in
-fact `output_tail`'s line; the field is at `factory/verify/models.py:417` —
+(`factory/verify/models.py:314` — `FactoryConfig`). And the refined spec cited
+`worktree_writes` at `factory/verify/models.py:442` — `GateResult`, which is in
+fact `output_tail`'s line; the field is at `factory/verify/models.py:444` —
 `GateResult`. All three resolved green through `ergane spec validate` the whole
 time, which is the point: a citation that lands on a real symbol, or inside the
 right class, is not a citation that means what it says.
@@ -143,7 +153,7 @@ one that moved a story boundary.
 ## What already exists, and where
 
 **The decoy.** `expected_artifacts` / `artifacts_present`
-(`factory/verify/models.py:563` — `OutputCheck`) live on the output check, and
+(`factory/verify/models.py:591` — `OutputCheck`) live on the output check, and
 their one production caller passes an empty list literally
 (`factory/workgraph/workflow.py:2714` — `_verify`):
 
@@ -152,13 +162,13 @@ their one production caller passes an empty list literally
                 expected_artifacts=[],
 ```
 
-Their docstring (`factory/verify/models.py:527` — `OutputCheck`) says what they
+Their docstring (`factory/verify/models.py:548` — `OutputCheck`) says what they
 are for: "Read scopes have nothing to diff, so they are judged on
 `expected_artifacts` existing and being non-empty instead". That is the
 anti-rubber-stamp check for read-scope nodes, not this feature.
 
 **The manifest's gate grammar cannot hold a path.** `_read_gates`
-(`factory/verify/factory_yaml.py:340` — `_read_gates`) requires each gate's value
+(`factory/verify/factory_yaml.py:351` — `_read_gates`) requires each gate's value
 to be a non-empty **string** — the command. So a sibling top-level key is the only
 shape that does not break every existing manifest, and it must be added to
 `_V2_TOP_LEVEL_KEYS` (`factory/verify/factory_yaml.py:144`) or
@@ -172,7 +182,7 @@ _V2_TOP_LEVEL_KEYS = _TOP_LEVEL_KEYS + ("ladder", "verify", "boundary_only_gates
 
 **There is already a sibling key of exactly this shape, and it is the model to
 copy.** `caches:` (101 FR-004) is a list of mappings with a fixed key set, read by
-`_read_caches` (`factory/verify/factory_yaml.py:761` — `_read_caches`) into
+`_read_caches` (`factory/verify/factory_yaml.py:772` — `_read_caches`) into
 `CacheDeclaration` (`factory/verify/models.py:241` — `CacheDeclaration`). Read
 that reader before writing US1: it does the entry-is-a-mapping refusal, the
 unknown-key-inside-an-entry refusal, the empty-list refusal and — the part US1
@@ -188,24 +198,24 @@ and the departure is deliberate" — from a module of pure functions over text.
 FR-012 wants the mirror image: repo-relative required, absolute refused, escape
 judged against the repository root. Do not reach for `.resolve()` to judge it. The
 manifest parser runs wherever the candidate CLI is invoked (`_main`,
-`factory/verify/factory_yaml.py:1216` — `_main`), so a resolved comparison decides
+`factory/verify/factory_yaml.py:1361` — `_main`), so a resolved comparison decides
 the escape against whatever directory the reading process happens to sit in —
 parse-time host-dependence a tmp-dir test cannot see, in a module whose other
 readers are pure. Refuse an absolute path, and refuse any path whose normalised
 segments leave the repository root, with no filesystem call at all. The names,
 `artifacts:` and the closed type set, are US1's to define — see § Sizing.
 
-**Where the declaration lands.** `FactoryConfig` (`factory/verify/models.py:291` —
+**Where the declaration lands.** `FactoryConfig` (`factory/verify/models.py:314` —
 `FactoryConfig`) is the parsed manifest: `gates`, `timeouts`, `writes: dict[str,
 bool]`, `standards`, `landing_branch`, `roadmap`, `forge`, `ladder`,
 `verify_order`, `diff_refusal_bytes`, `caches`. This is where an `artifacts` field
-belongs. `VerificationConfig` (`factory/verify/models.py:1224` —
+belongs. `VerificationConfig` (`factory/verify/models.py:1251` —
 `VerificationConfig`) is the retry ladder and is the wrong class.
 
 **`writes:` is a per-gate boolean, not a path allow-list.** `_read_writes`
-(`factory/verify/factory_yaml.py:443` — `_read_writes`) returns `dict[str, bool]`
+(`factory/verify/factory_yaml.py:454` — `_read_writes`) returns `dict[str, bool]`
 — "the gates this repo declares as legitimate writers" — and the demotion is one
-line in `_to_result` (`factory/verify/gates.py:1583` — `_to_result`):
+line in `_to_result` (`factory/verify/gates.py:1634` — `_to_result`):
 
 ```python
     elif snapshot_error:
@@ -214,7 +224,7 @@ line in `_to_result` (`factory/verify/gates.py:1583` — `_to_result`):
         status, exit_code = GateStatus.DIRTIED_WORKTREE, 0
 ```
 
-That branch is `factory/verify/gates.py:1629` — `_to_result`. There is no set of
+That branch is `factory/verify/gates.py:1681` — `_to_result`. There is no set of
 paths to add one to; US2 is a **per-path
 exemption** inside this decision, and it must sit below the `snapshot_error`
 branch, not above it.
@@ -225,16 +235,16 @@ through `git add -A` into a throwaway index and `changes_between`
 (`factory/verify/worktree_snapshot.py:100` — `changes_between`) diffs two of those
 trees, so `worktree_writes` is "tracked content and unignored new paths only — the
 same set `worktree.diff` puts in front of the judge"
-(`factory/verify/models.py:395` — `GateResult`). A repository that git-ignores its
+(`factory/verify/models.py:422` — `GateResult`). A repository that git-ignores its
 `coverage.xml` — most do — never triggers the demotion at all.
 
 **Two runners reach one watched body, and one snapshot is handed forward.**
-`_run_watched` (`factory/verify/gates.py:1511` — `_run_watched`) is where the
+`_run_watched` (`factory/verify/gates.py:1560` — `_run_watched`) is where the
 snapshot, the change comparison and `_to_result` all happen, and it is called by
-exactly two callers: `_run_gate_list` (`factory/verify/gates.py:1416` —
+exactly two callers: `_run_gate_list` (`factory/verify/gates.py:1444` —
 `_run_gate_list`), which runs from a JSON view, and `_run_gate_list_from_config`
-(`factory/verify/gates.py:1467` — `_run_gate_list_from_config`), which runs from an
-in-process `FactoryConfig`. `run_gates` (`factory/verify/gates.py:1225` —
+(`factory/verify/gates.py:1508` — `_run_gate_list_from_config`), which runs from an
+in-process `FactoryConfig`. `run_gates` (`factory/verify/gates.py:1251` —
 `run_gates`) chooses between them by whether the worktree carries its own manifest
 parser — every Ergane node does. The closing snapshot is the next gate's opening
 one:
@@ -244,17 +254,17 @@ one:
     change = changes_between(invocation.cwd, before, after, env=env)
 ```
 
-`factory/verify/gates.py:1553` — `_run_watched`, returning `result, after` at
-`factory/verify/gates.py:1566` — `_run_watched`, because "the 'after' snapshot is
+`factory/verify/gates.py:1603` — `_run_watched`, returning `result, after` at
+`factory/verify/gates.py:1617` — `_run_watched`, because "the 'after' snapshot is
 returned so it becomes the next gate's 'before': N gates cost N+1 snapshots, not
 2N, and every path is attributed to exactly one gate". Anything written into the
 worktree between those two lines and the next gate's start is attributed to the
 next gate. See trap 9.
 
 **The JSON route drops any field it was not told to lift.** `_interpret_candidate`
-(`factory/verify/gates.py:1045` — `_interpret_candidate`) reads `gates`,
+(`factory/verify/gates.py:1048` — `_interpret_candidate`) reads `gates`,
 `timeouts` and `writes` out of the candidate's stdout into `_AcceptedConfig`
-(`factory/verify/gates.py:205` — `_AcceptedConfig`), whose docstring is the whole
+(`factory/verify/gates.py:207` — `_AcceptedConfig`), whose docstring is the whole
 warning:
 
 ```python
@@ -263,15 +273,15 @@ warning:
     it is named. `writes` is carried for that reason (084 FR-012)
 ```
 
-The emitter half needs nothing: `_main` (`factory/verify/factory_yaml.py:1216` —
+The emitter half needs nothing: `_main` (`factory/verify/factory_yaml.py:1361` —
 `_main`) prints `json.dumps(dataclasses.asdict(config))` at
-`factory/verify/factory_yaml.py:1239` — `_main`. The reader half is an allow-list.
+`factory/verify/factory_yaml.py:1384` — `_main`. The reader half is an allow-list.
 
 **The per-gate result shape, and the boundary it crosses.** `GateResult`
-(`factory/verify/models.py:374` — `GateResult`) has nine fields; `output_tail`
-(`factory/verify/models.py:415` — `GateResult`) is bounded at 32 KiB, as its
-docstring says at `factory/verify/models.py:379` — `GateResult`, and
-`worktree_writes` is the field below it at `factory/verify/models.py:417` —
+(`factory/verify/models.py:401` — `GateResult`) has nine fields; `output_tail`
+(`factory/verify/models.py:442` — `GateResult`) is bounded at 32 KiB, as its
+docstring says at `factory/verify/models.py:406` — `GateResult`, and
+`worktree_writes` is the field below it at `factory/verify/models.py:444` —
 `GateResult`. A list of these is what the `run_gates` **activity** returns
 (`factory/activities/verify_activities.py:263` — `run_gates`), so every field on
 it is serialised into a Temporal payload. Its input dataclass is `RunGatesInput`
@@ -354,7 +364,7 @@ platform collector can take them unchanged.
 
 **Trap 1 — `expected_artifacts` IS A DECOY WITH EXACTLY THE RIGHT NAME.** It is
 the first thing an implementer will find and the obvious thing to extend. Its
-docstring (`factory/verify/models.py:527` — `OutputCheck`) is explicit that it is
+docstring (`factory/verify/models.py:548` — `OutputCheck`) is explicit that it is
 the anti-rubber-stamp check for read-scope nodes, and its one production caller
 passes `[]` inside `_verify` (`factory/workgraph/workflow.py:2714` —
 `_verify`). **Reusing it produces a spec
@@ -363,19 +373,19 @@ call site. FR-006 names a new carrier — `GateResult.artifacts` — for that re
 
 **Trap 2 — THE CONFIG WITH THE RIGHT-SOUNDING NAME IS THE WRONG CLASS, AND THE
 PREVIOUS DRAFT OF THIS PLAN FELL FOR IT.** `VerificationConfig`
-(`factory/verify/models.py:1224` — `VerificationConfig`) is "per-deployment caps
+(`factory/verify/models.py:1251` — `VerificationConfig`) is "per-deployment caps
 for the retry ladder" — `max_attempts`, `max_judge_retries`, `gate_timeout_s`. It
 holds no gate names and reaches no gate runner. The parsed manifest, with `gates`,
-`timeouts` and `writes` on it, is `FactoryConfig` (`factory/verify/models.py:291` —
+`timeouts` and `writes` on it, is `FactoryConfig` (`factory/verify/models.py:314` —
 `FactoryConfig`). FR-001 lands there. A declaration parked on `VerificationConfig`
 would parse, store, round-trip and never be read by anything that runs a gate.
 
 **Trap 3 — `writes:` IS A BOOLEAN PER GATE, NOT A LIST OF PATHS, AND THE BLANKET
 FIX PASSES EVERY OBVIOUS TEST.** FR-004, FR-005. An implementer reading "reaches
 the gate's write allow-list" will go looking for a path set to append to and will
-not find one: `_read_writes` (`factory/verify/factory_yaml.py:443` —
+not find one: `_read_writes` (`factory/verify/factory_yaml.py:454` —
 `_read_writes`) returns `dict[str, bool]` and the decision is `worktree_writes and
-not writes_declared` (`factory/verify/gates.py:1629` — `_to_result`). Two wrong
+not writes_declared` (`factory/verify/gates.py:1681` — `_to_result`). Two wrong
 moves are within reach and **both are green under every scenario except one**:
 setting `writes_declared` true for a gate that declared an artifact, and writing
 the branch as `elif worktree_writes and not writes_declared and not
@@ -408,7 +418,7 @@ the manifest never named, which is the first wrong move wearing a different hat.
 PRODUCTION CODE AT ALL.** `snapshot_tree`
 (`factory/verify/worktree_snapshot.py:83` — `snapshot_tree`) runs `git add -A`, so
 ignored paths never enter the tree it hashes, and `worktree_writes` is "tracked
-content and unignored new paths only" (`factory/verify/models.py:395` —
+content and unignored new paths only" (`factory/verify/models.py:422` —
 `GateResult`). Most repositories git-ignore `coverage.xml`. Write US2's fixture
 over an **unignored** path or the story's headline test is green before it starts.
 The same fact points the other way for US3: collection must **read the declared
@@ -416,13 +426,13 @@ path from disk**, never from `worktree_writes`, or every git-ignored artifact �
 the common case — silently collects nothing.
 
 **Trap 5 — THE DECLARATION REACHES THE RUNNER THROUGH JSON, AND THE READER IS AN
-ALLOW-LIST.** FR-013, FR-014. `_main` (`factory/verify/factory_yaml.py:1216` —
+ALLOW-LIST.** FR-013, FR-014. `_main` (`factory/verify/factory_yaml.py:1361` —
 `_main`) emits the whole config with `dataclasses.asdict`, so the emitter needs no
 change — but two things follow. First, `_interpret_candidate`
-(`factory/verify/gates.py:1045` — `_interpret_candidate`) lifts only the fields it
-names into `_AcceptedConfig` (`factory/verify/gates.py:205` — `_AcceptedConfig`),
+(`factory/verify/gates.py:1048` — `_interpret_candidate`) lifts only the fields it
+names into `_AcceptedConfig` (`factory/verify/gates.py:207` — `_AcceptedConfig`),
 so a field added to `FactoryConfig` and threaded only through
-`_run_gate_list_from_config` (`factory/verify/gates.py:1467` —
+`_run_gate_list_from_config` (`factory/verify/gates.py:1508` —
 `_run_gate_list_from_config`) is parsed, emitted and never read on the route every
 Ergane node actually takes; the unit tests still pass. Second, whatever the
 declaration is made of must survive `json.dumps`: `CacheDeclaration.path`
@@ -476,12 +486,12 @@ the absolute location (US5-S3).
 
 **Trap 8 — A DESTINATION PARAMETER ADDED ONLY WHERE IT IS USED NEVER ARRIVES.**
 FR-017, FR-018. `_run_watched` is four frames below the activity. The destination
-has to cross `run_gates` (`factory/verify/gates.py:1225` — `run_gates`), then
+has to cross `run_gates` (`factory/verify/gates.py:1251` — `run_gates`), then
 whichever runner that call chose — `_run_gate_list`
-(`factory/verify/gates.py:1416` — `_run_gate_list`) or
-`_run_gate_list_from_config` (`factory/verify/gates.py:1467` —
+(`factory/verify/gates.py:1444` — `_run_gate_list`) or
+`_run_gate_list_from_config` (`factory/verify/gates.py:1508` —
 `_run_gate_list_from_config`) — and only then `_run_watched`
-(`factory/verify/gates.py:1511` — `_run_watched`), the way `writes_declared`
+(`factory/verify/gates.py:1560` — `_run_watched`), the way `writes_declared`
 already does: "decided by the two runners, which is where the manifest is, and
 passed down rather than looked up here". A parameter added to `_run_watched` alone
 compiles, unit-tests green and collects nothing in production. US3 threads all
@@ -490,8 +500,8 @@ caller written before this spec passes; US5 is the story that supplies a value.
 
 **Trap 9 — THE COLLECTOR MUST NOT WRITE INSIDE THE WORKTREE IT IS WATCHING.**
 FR-018. `_run_watched` takes its closing snapshot at
-`factory/verify/gates.py:1553` — `_run_watched` and hands it forward as the next
-gate's opening snapshot (`factory/verify/gates.py:1566` — `_run_watched`). Copy an
+`factory/verify/gates.py:1603` — `_run_watched` and hands it forward as the next
+gate's opening snapshot (`factory/verify/gates.py:1617` — `_run_watched`). Copy an
 artifact's bytes into a directory under the worktree after that line and the next
 gate is charged with the write and demoted to `DIRTIED_WORKTREE` — this spec's own
 recurring hazard, a feature that adds evidence becoming one that breaks builds, in
@@ -512,7 +522,7 @@ did not emit it" indistinguishable from "nobody declared it".
 
 **Trap 12 — An oversized artifact is recorded, not truncated.** FR-015. The
 tempting symmetry is `output_tail`, which keeps the last 32 KiB
-(`factory/verify/models.py:379` — `GateResult`) — correct for a log and wrong for
+(`factory/verify/models.py:406` — `GateResult`) — correct for a log and wrong for
 an artifact, because half an SBOM is not a smaller SBOM, it is a corrupt one. Above
 the bound, record present, record the true size, store nothing.
 
@@ -569,7 +579,7 @@ code. PR #523's first US1 candidate checked unknown keys and then read
 `entry["gate"]`, `entry["type"]`, and `entry["path"]` directly. A valid-YAML
 entry missing any one of those fields therefore escaped as raw `KeyError`, exit
 1 and a traceback even though every declared test passed. Follow `_read_caches`
-(`factory/verify/factory_yaml.py:761` — `_read_caches`): read a required field
+(`factory/verify/factory_yaml.py:772` — `_read_caches`): read a required field
 with `.get`, validate its presence/type, and raise the typed refusal naming the
 entry and field before any later gate, type or path check. T066 must exercise the
 library and CLI faces so catching the exception in only one caller cannot pass.

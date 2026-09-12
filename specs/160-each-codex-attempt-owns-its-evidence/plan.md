@@ -20,6 +20,15 @@ missing provider key still emits thread/turn starts without model-authored
 activity; an invalid provider configuration exits before any JSONL. Protocol
 startup and Ergane's `agent_took_a_turn` are distinct facts.
 
+The first US1 candidate, PR 529 at
+`729272cac2462ae4dd0535acf918f74be61bf807`, passed its factory gate and judge
+but failed two exact-head qualification probes on 2026-09-12. An otherwise
+valid stream containing `{"type":"item.completed","item":"bad"}` completed
+with no diagnostic, and `{"input_tokens":true,"output_tokens":2}` published
+`True` as the input-token count. Those are retry requirements, not merely review
+notes: the decoder must validate the body of every known event and must interpret
+JSON types rather than Python's `bool`-is-an-`int` inheritance.
+
 The measured top-level error and matching `turn.failed.error` contain a
 `message`, not a separate numeric HTTP status. Normalize only recognized fatal
 message forms inside current typed error evidence; do not invent a required
@@ -102,6 +111,8 @@ derive dollar value from subscription tokens.
 14. **Stderr is not JSONL.** Both production backends currently combine it with stdout, so the invocation seam must change before decoding.
 15. **Protocol startup is not model activity.** A current thread/turn start can precede a local missing-key failure with zero HTTP requests; retain identity without setting `agent_took_a_turn`.
 16. **A typed error can quote another error.** A non-authentication fatal body containing401 remains non-authentication; recognizing the event family is necessary but not sufficient.
+17. **A known envelope does not validate its body.** `item.started` and `item.completed` with a non-object `item` are malformed current events, not no-ops; retain them raw, emit a stable diagnostic, and mark evidence incomplete/invalid.
+18. **JSON booleans are not token counts.** Python accepts `isinstance(True, int)`, so usage validation must require an actual non-negative JSON integer (`type(value) is int` or an equivalent strict check) before publishing any count. Wrong-shaped, negative, or fractional counts remain unknown and make completeness false with a stable reason.
 
 ## Verification
 

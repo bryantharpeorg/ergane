@@ -32,8 +32,9 @@ to the thread and turn that this process started.
 **Acceptance Scenarios**:
 
 1. **Given** a valid stream containing `thread.started`, turn events, reasoning, command output, file changes, agent messages, usage, and errors, **When** it is decoded, **Then** the result carries the current thread id, turn outcome, ordered agent messages, typed fatal events, and usage separately from every diagnostic item — proven by official-shape fixture tests.
-2. **Given** malformed JSON, unknown future event types, a missing thread start, duplicate terminal events, or events for a different thread, **When** decoding completes, **Then** raw lines remain archived, known evidence is retained, and the decoder reports a stable incomplete/invalid reason without fabricating a turn or message — proven by parameterized tests.
+2. **Given** malformed JSON, a known item event whose `item` body is not an object (including `{"type":"item.completed","item":"bad"}`), an unknown future event type, a missing thread start, duplicate terminal events, or events for a different thread, **When** decoding completes, **Then** raw lines remain archived, known evidence is retained, and the decoder reports a stable incomplete/invalid reason without silently ignoring the malformed known event or fabricating a turn or message — proven by parameterized tests.
 3. **Given** token-shaped text appears in any event, **When** the neutral evidence is serialized or logged, **Then** the raw archive remains host-local while every orchestration-facing field is redacted and bounded — proven by credential-sweep tests.
+4. **Given** a documented usage field contains a JSON boolean, negative number, fraction, string, object, or list rather than a non-negative integer, **When** the stream is decoded, **Then** that field is not published as usage and the decoder reports a stable incomplete/invalid malformed-usage reason — proven specifically with `{"input_tokens":true,"output_tokens":2}` and parameterized controls.
 
 **Why this priority**: Every later classification is only as accurate as the event identity it consumes.
 
@@ -92,7 +93,7 @@ provenance and completeness, while dollar cost remains unavailable on subscripti
 
 - **FR-001**: Codex automation MUST use its JSONL event stream as the current-execution evidence source.
 - **FR-002**: The decoder MUST separate thread identity, turn outcome, agent messages, diagnostics/tools, fatal errors, and usage.
-- **FR-003**: Unknown or malformed events MUST remain in the raw archive and MUST NOT fabricate a turn, message, refusal, question, or usage value.
+- **FR-003**: Unknown or malformed events MUST remain in the raw archive and MUST NOT fabricate a turn, message, refusal, question, or usage value. A known item event with a non-object `item` body MUST be diagnosed rather than ignored, and usage counts MUST accept only JSON non-negative integers (never booleans, despite Python's `bool`/`int` relationship).
 - **FR-004**: Orchestration-facing event evidence MUST be redacted and bounded; raw events MUST remain host-local.
 - **FR-005**: Rollout files predating the current process MUST NOT count as current-attempt evidence or be copied as such.
 - **FR-006**: Error-only execution MUST NOT set `agent_took_a_turn` or fabricate a final message; thread/turn startup bookkeeping and diagnostic error items alone MUST NOT prove model-authored activity.
