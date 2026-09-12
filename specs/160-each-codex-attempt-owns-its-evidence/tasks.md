@@ -24,11 +24,12 @@ not a dependency. Write tests first; no real model turn is part of this epic.
 
 ## Phase 3: User Story 3 — Refusals and questions come from typed current events
 
-- [ ] [US3-S1] Add failing non-auth exits quoting401 in reasoning, tool output, fixtures, and the measured400 fatal error body.
-- [ ] [US3-S2] Add the measured typed fatal-auth error/turn.failed pair with surrounding diagnostics and assert exactly one pre-agent refusal without rung charge; do not fabricate numeric status fields absent from the measured events.
+- [ ] [US3-S1] Add failing non-auth exits quoting401 in reasoning, tool output, fixtures, and the measured400 fatal error body. Prove a typed non-authentication verdict containing quoted `401` text cannot fall through to or be overridden by the legacy combined-text scan.
+- [ ] [US3-S2] Add the measured typed fatal-auth error/turn.failed pair with surrounding diagnostics and assert exactly one pre-agent refusal without rung charge; do not fabricate numeric status fields absent from the measured events. Add the negative control where the auth error is followed by an unrelated `turn.failed` terminal and require an ordinary agent failure.
 - [ ] [US3-S3] Add failing question-marker controls for every non-agent item and non-final agent-message position.
 - [ ] [US3-S4] Add a field-enumerating preservation test over every current `AdapterResult` field so new fields enter the assertion automatically; do not require future spec 159 fields.
-- [ ] [US3] Refactor `_classify_auth_failure`, pre-agent detail, and question detection in `factory/activities/agent_activities.py` to consume typed evidence and preserve fields.
+- [ ] [US3-S5] Add a production-real Claude authentication-refusal control built from the existing Claude adapter's combined-log `AdapterResult`, with no Codex evidence injected; require the same `AUTH_FAILURE` pre-agent classification as the landed behavior.
+- [ ] [US3] Refactor `_classify_auth_failure`, pre-agent detail, and question detection in `factory/activities/agent_activities.py` so Codex consumes typed evidence without deleting Claude's landed combined-log compatibility path, and preserve every unrelated result field.
 
 ## Phase 4: User Story 4 — Codex usage evidence is recorded without inventing subscription cost
 

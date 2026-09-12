@@ -1,5 +1,8 @@
 ---
-state: ready
+state: landed
+# Attested landed 2026-09-12. Observed on ergane-buildout by exact merge:
+# US1 41af222 (#532), US2 d3e6f7c (#534), US3 a54a6df (#537),
+# US4 ed67af7 (#536). US3's final recovery passed gate and judge on attempt 1.
 ---
 
 # Feature Specification: each Codex attempt owns its evidence
@@ -65,10 +68,11 @@ agent messages from the current attempt.
 
 **Acceptance Scenarios**:
 
-1. **Given** a non-authentication nonzero exit whose reasoning, tool output, or non-authentication fatal error body quotes a historical 401 refusal, **When** classification runs, **Then** it remains an ordinary agent failure and retains all credential provenance — proven by quoted-marker controls.
-2. **Given** a current fatal authentication event with surrounding diagnostics, **When** classification runs, **Then** it becomes the stable pre-agent authentication refusal once, with the typed event retained and no coding rung charged — proven by an actual-event fixture.
+1. **Given** a non-authentication nonzero exit whose reasoning, tool output, or non-authentication fatal error body quotes a historical 401 refusal, including a typed Codex `400` fatal body that contains the text `401`, **When** classification runs, **Then** it remains an ordinary agent failure and retains all credential provenance; a legacy combined-text fallback MUST NOT override the typed non-authentication verdict — proven by quoted-marker and fallback-precedence controls.
+2. **Given** a current fatal authentication event with surrounding diagnostics and its matching `turn.failed` terminal, **When** classification runs, **Then** it becomes the stable pre-agent authentication refusal once, with the typed event retained and no coding rung charged; an authentication error followed by an unrelated failed terminal MUST remain an ordinary agent failure — proven by matching-pair and unrelated-terminal fixtures.
 3. **Given** an operator-question marker appears in reasoning, tool output, a test fixture, or an agent message that does not end with the marker contract, **When** question detection runs, **Then** the node does not park; only the current final agent message satisfying the landed marker grammar can ask — proven by controls for every item type.
 4. **Given** classification reconstructs an `AdapterResult`, **When** any failure class changes, **Then** every unrelated field, including existing session identity, credential source, usage, archive path, final message, and raw-event provenance, remains byte-equivalent and newly added fields are covered automatically — proven by a field-enumerating preservation test.
+5. **Given** the landed Claude adapter reports a real current-attempt authentication refusal through its existing combined-log result and has no Codex JSONL evidence, **When** shared classification runs, **Then** it retains the same `AUTH_FAILURE` pre-agent outcome as before this epic; the conformance test MUST construct the production-real Claude result and MUST NOT inject synthetic Codex error or `turn.failed` events to make the control pass.
 
 **Why this priority**: A quoted error or marker must not change node state.
 
@@ -108,6 +112,7 @@ provenance and completeness, while dollar cost remains unavailable on subscripti
 - **FR-015**: Gateway ledger usage MUST remain authoritative; CLI usage MUST NOT be added to it.
 - **FR-016**: `AgentInvocation`, `HostAgentBackend`, and `BwrapBackend` MUST support an adapter-selected output policy that separates Codex stdout JSONL from stderr diagnostics while preserving Claude's combined log.
 - **FR-017**: Raw `codex-events.jsonl` and `codex-stderr.log` MUST be current-attempt, host-local, mode `0600`, governed by declared size/retention values with explicit incompleteness, and MUST NOT enter git, workflow payloads, or public qualification artifacts.
+- **FR-018**: Shared classification MUST preserve the landed Claude authentication-refusal behavior from its production-real combined-log result without requiring or synthesizing Codex JSONL evidence.
 
 ## Work Graph
 
@@ -122,7 +127,7 @@ US2:
 US3:
   depends_on: []
   depends_on_merged: [US2]
-  implements: [FR-009, FR-010, FR-011, FR-012]
+  implements: [FR-009, FR-010, FR-011, FR-012, FR-018]
 US4:
   depends_on: []
   depends_on_merged: [US2]
