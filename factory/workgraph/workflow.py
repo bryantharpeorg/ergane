@@ -252,6 +252,13 @@ with workflow.unsafe.imports_passed_through():
         route_of,
     )
     from factory.workgraph.adapter import home_path
+    from factory.workgraph.codex_credential import (
+        CodexOwnerDeclaration,
+        CredentialOwnerAdmissionInput,
+        CredentialOwnerAdmissionResult,
+        admit_codex_owner,
+        release_codex_owner,
+    )
     from factory.config import (
         Persona,
         ROUTE_SUBSCRIPTION,
@@ -639,6 +646,13 @@ class EpicInput:
     #: dispatched by hand — and every payload written before this story — runs
     #: today's ceiling.
     diff_refusal_bytes: int = DIFF_REFUSAL_THRESHOLD
+    #: US2: the one host-global credential owner this epic may use. Absent
+    #: means today's behaviour; present, only an effective subscription rung
+    #: may acquire it.
+    codex_owner: CodexOwnerDeclaration | None = None
+    #: US2: the deployment shape this epic's nodes run in, only used to prove
+    #: that callers with different shapes resolve the same owner.
+    deployment_shape: str = ""
 
 
 @dataclass(frozen=True)
@@ -850,6 +864,8 @@ class EpicWorkflow:
         #: defaults would report a configuration nobody is running on. `None`
         #: until then.
         self._ladder_config: VerificationConfig | None = None
+        #: 159-US2: the credential owner declaration pinned at dispatch.
+        self._codex_owner: CodexOwnerDeclaration | None = None
         #: 109-US3: whether this epic halts at PASSED. Recorded with the other
         #: dispatch flags so a status query answers it without holding the request.
         self._halt_after_pass: bool = False
@@ -1020,6 +1036,7 @@ class EpicWorkflow:
         # operator reads are the dials the ladder is running on and cannot drift
         # from them.
         self._ladder_config = request.config
+        self._codex_owner = request.codex_owner
         # 109-US3 (FR-012): record the halting mode alongside the other dispatch
         # flags so every status/query answer carries it.
         self._halt_after_pass = request.halt_after_pass
@@ -1889,6 +1906,16 @@ class EpicWorkflow:
                 action = NextAction.KILLED
                 break
 
+            # 159-US2: admission is the rung's boundary. It follows the effective
+            # snapshot route and returns before the attempt number is charged.
+            owner = await self._acquire_codex_owner(
+                request,
+                graph,
+                node.id,
+                record,
+                persona,
+            )
+
             # The one entry this attempt is routed by — the persona the *rung*
             # selected, not the node's (075-US1 FR-001). Key issuance and the
             # adapter read the same object, so the agent that runs and the alias
@@ -1982,27 +2009,30 @@ class EpicWorkflow:
             record.last_snapshot = None
             teardown_done = False
             try:
-                adapter_result = await self._attempt(
-                    record,
-                    lease,
-                    AttemptContext(
-                        epic_id=graph.epic_id,
-                        node_id=node.id,
-                        attempt=record.attempt,
-                        prompt=prompt,
-                        worktree_path=prepared.path,
-                        home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
-                        proxy_url=request.proxy_url,
-                        virtual_key=lease.key,
-                        model_alias=routing.model_alias,
-                        session_id=str(workflow.uuid4()),
-                        timeout_s=resolved.timeout_s,
-                        context_window=resolved.context_window,
-                        target_repo=graph.target_repo,
-                        agent=agent,
-                        route=route,
-                    ),
-                )
+                try:
+                    adapter_result = await self._attempt(
+                        record,
+                        lease,
+                        AttemptContext(
+                            epic_id=graph.epic_id,
+                            node_id=node.id,
+                            attempt=record.attempt,
+                            prompt=prompt,
+                            worktree_path=prepared.path,
+                            home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
+                            proxy_url=request.proxy_url,
+                            virtual_key=lease.key,
+                            model_alias=routing.model_alias,
+                            session_id=str(workflow.uuid4()),
+                            timeout_s=resolved.timeout_s,
+                            context_window=resolved.context_window,
+                            target_repo=graph.target_repo,
+                            agent=agent,
+                            route=route,
+                        ),
+                    )
+                finally:
+                    await self._release_codex_owner(owner)
                 # `None` is the attempt the kill cancelled: the adapter re-raises on
                 # its KILLED path rather than reporting a termination the workflow
                 # could mistake for an ending (R2), so the classification is the
@@ -2486,6 +2516,62 @@ class EpicWorkflow:
         else:
             state = NodeState.KILLED
             await self._close_out(graph, node, record, termination, state=state)
+
+    async def _acquire_codex_owner(
+        self,
+        request: EpicInput,
+        graph: WorkGraph,
+        node_id: str,
+        record: NodeRecord,
+        persona: str,
+    ) -> CredentialOwnerAdmissionResult | None:
+        """Acquire the Codex owner at the effective rung before charging it."""
+        if self._codex_owner is None or not self._is_subscription_node(persona):
+            return None
+        declaration = self._codex_owner
+        owner_input = CredentialOwnerAdmissionInput(
+            epic_id=graph.epic_id,
+            node_id=node_id,
+            target_repo=graph.target_repo,
+            deployment_shape=request.deployment_shape,
+            owner_id=declaration.owner_id,
+            source_path=declaration.source_path,
+            generation=declaration.generation,
+            host_id=declaration.host_id,
+            operator_state_root=declaration.operator_state_root,
+            operator_uid=declaration.operator_uid,
+        )
+        while True:
+            if self._kill_requested:
+                return None
+            result = await workflow.execute_activity(
+                admit_codex_owner,
+                owner_input,
+                start_to_close_timeout=_PROXY["start_to_close_timeout"],
+                retry_policy=_ISSUE_KEY_RETRIES,
+            )
+            if result.lease is not None or result.refusal is not None:
+                if result.refusal is not None:
+                    raise ApplicationError(
+                        result.refusal,
+                        type=GRAPH_INVALID,
+                        non_retryable=True,
+                    )
+                return result
+            await workflow.sleep(timedelta(seconds=result.busy.retry_after_s))
+
+    async def _release_codex_owner(
+        self, result: CredentialOwnerAdmissionResult | None
+    ) -> None:
+        """Close the owner bracket on every attempt termination path."""
+        if result is None or result.lease is None:
+            return
+        await workflow.execute_activity(
+            release_codex_owner,
+            result,
+            start_to_close_timeout=_PROXY["start_to_close_timeout"],
+            retry_policy=_ISSUE_KEY_RETRIES,
+        )
 
     async def _attempt(
         self,
@@ -4069,6 +4155,16 @@ class EpicWorkflow:
         record = self._nodes[node.id]
         landing = record.landing
 
+        # 159-US2: recovery follows the current effective rung before it
+        # increments the attempt boundary or mints a key.
+        owner = await self._acquire_codex_owner(
+            request,
+            graph,
+            node.id,
+            record,
+            persona,
+        )
+
         record.attempt += 1
         # 118 US3: a recovery is an attempt too, and its standards are resolved
         # the same way the ladder's are — per attempt, from the landing branch,
@@ -4143,27 +4239,30 @@ class EpicWorkflow:
         # `UnboundLocalError` that leaks the lease.
         termination = Termination.KILLED
         try:
-            adapter_result = await self._attempt(
-                record,
-                lease,
-                AttemptContext(
-                    epic_id=graph.epic_id,
-                    node_id=node.id,
-                    attempt=record.attempt,
-                    prompt=prompt,
-                    worktree_path=prepared.path,
-                    home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
-                    proxy_url=request.proxy_url,
-                    virtual_key=lease.key,
-                    model_alias=routing.model_alias,
-                    session_id=str(workflow.uuid4()),
-                    timeout_s=resolved.timeout_s,
-                    context_window=resolved.context_window,
-                    target_repo=graph.target_repo,
-                    agent=recovery_agent,
-                    route=recovery_route,
-                ),
-            )
+            try:
+                adapter_result = await self._attempt(
+                    record,
+                    lease,
+                    AttemptContext(
+                        epic_id=graph.epic_id,
+                        node_id=node.id,
+                        attempt=record.attempt,
+                        prompt=prompt,
+                        worktree_path=prepared.path,
+                        home_path=str(home_path(DEFAULT_FACTORY_ROOT, graph.epic_id, node.id)),
+                        proxy_url=request.proxy_url,
+                        virtual_key=lease.key,
+                        model_alias=routing.model_alias,
+                        session_id=str(workflow.uuid4()),
+                        timeout_s=resolved.timeout_s,
+                        context_window=resolved.context_window,
+                        target_repo=graph.target_repo,
+                        agent=recovery_agent,
+                        route=recovery_route,
+                    ),
+                )
+            finally:
+                await self._release_codex_owner(owner)
             if adapter_result is None or self._kill_requested:
                 termination = (
                     adapter_result.termination
