@@ -385,7 +385,6 @@ class HostAgentBackend:
         self.executable = executable
 
     async def launch(self, invocation: AgentInvocation) -> asyncio.subprocess.Process:
-        stderr = self._stderr_sink(invocation)
         try:
             stderr = self._stderr_sink(invocation)
             return await asyncio.create_subprocess_exec(
@@ -781,6 +780,7 @@ class BwrapBackend:
         except ToolchainError as error:
             raise AdapterError(str(error)) from error
 
+        stderr = self._stderr_sink(invocation)
         try:
             return await asyncio.create_subprocess_exec(
                 *argv,
@@ -1345,6 +1345,7 @@ class SharedAttemptPolicy:
                 await self._reclaim(process)
                 self._archive_session(context, worktree, env, archive)
                 _clear_pid_file(pids)
+                self._archive_plain_final(env, archive)
                 if target_repo is not None:
                     compare_and_report(Path(factory_root), target_repo, context)
                 raise
@@ -1353,6 +1354,7 @@ class SharedAttemptPolicy:
 
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
+        self._archive_plain_final(env, archive)
         if target_repo is not None:
             compare_and_report(Path(factory_root), target_repo, context)
         return AdapterResult(
@@ -1396,6 +1398,12 @@ class SharedAttemptPolicy:
                 f"(known: {known})"
             )
         return backend_class(executable=self._cli.executable)
+
+    def _archive_plain_final(self, env: Mapping[str, str], archive: Path) -> None:
+        """Let per-CLI evidence provide the plain compatibility value."""
+        archive_final = getattr(self._cli, "_archive_final_message", None)
+        if archive_final is not None:
+            archive_final(env, archive)
 
     @contextlib.contextmanager
     def _open_invocation(
@@ -2150,6 +2158,19 @@ class CodexAdapter:
             for path in _codex_rollouts(env)
             if self._rollout_thread(path) == current
         ]
+
+    def _archive_final_message(
+        self, env: Mapping[str, str], archive: Path
+    ) -> None:
+        """Keep neutral consumers on plain text: the last agent message only."""
+        try:
+            plain_log = archive / STDOUT_LOG_NAME
+            plain_log.write_text(
+                f"{self._current_evidence(env).final_message.text}\n",
+                encoding="utf-8",
+            )
+        except (AttributeError, OSError):
+            pass
 
     def _turn_happened(self, context: AttemptContext, worktree: Path, env: Mapping[str, str]) -> bool:
         """The structural tell that a turn ran (095-US1), as Codex writes it.

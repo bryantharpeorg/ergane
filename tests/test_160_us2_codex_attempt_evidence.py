@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import fields
 import json
 from pathlib import Path
 from typing import Callable
@@ -10,6 +11,7 @@ from typing import Callable
 import pytest
 
 from factory.usage.models import Termination
+from factory.workgraph.models import AdapterResult
 from factory.workgraph.adapter import (
     ATTEMPT_ARCHIVE_ENV,
     CODEX_EVENTS_NAME,
@@ -17,10 +19,12 @@ from factory.workgraph.adapter import (
     HostAgentBackend,
     home_path,
     SharedAttemptPolicy,
+    STDOUT_LOG_NAME,
     transcript_dir,
 )
 from factory.workgraph.models import AttemptContext
 from tests.stub_codex import install_as, write_control
+from tests.stub_agent import write_control as write_agent_control
 
 EPIC = "160-each-codex-attempt-owns-its-evidence"
 NODE = "us2"
@@ -101,6 +105,18 @@ def adapter(node_home: Path) -> object:
         executable="codex",
         grace_s=0.4,
         backend=HostAgentBackend(executable="codex"),
+    )
+
+
+@pytest.fixture
+def claude_adapter(node_home: Path) -> object:
+    from factory.workgraph.adapter import ClaudeCodeAdapter
+    from tests.stub_agent import STUB_AGENT_PATH
+
+    return ClaudeCodeAdapter(
+        executable=str(STUB_AGENT_PATH),
+        grace_s=0.4,
+        backend=HostAgentBackend(executable=str(STUB_AGENT_PATH)),
     )
 
 
@@ -293,4 +309,44 @@ async def test_finalization_retry_does_not_duplicate_the_current_rollout(
     )
 
     assert len(list(archive.glob("rollout-*.jsonl"))) == 1
+
+
+async def test_codex_and_claude_keep_the_same_plain_adapter_contract(
+    codex_bin: None,
+    adapter: object,
+    claude_adapter: object,
+    attempt: Callable[..., AttemptContext],
+    worktree: Path,
+    factory_root: Path,
+    node_home: Path,
+) -> None:
+    """Codex's JSONL stays behind the neutral evidence; consumers see plain text."""
+    stream = [
+        {"type": "thread.started", "thread_id": "thread-current"},
+        {"type": "turn.started"},
+        {
+            "type": "item.completed",
+            "item": {"id": "item-message", "type": "agent_message", "text": "Done."},
+        },
+        {"type": "turn.completed", "usage": {"input_tokens": 1, "output_tokens": 2}},
+    ]
+    write_control(
+        node_home,
+        write_rollout=False,
+        stdout="".join(f"{json.dumps(event)}\n" for event in stream),
+    )
+    codex_result = await adapter.run_attempt(attempt(), factory_root=factory_root)
+    codex_plain_log = (
+        transcript_dir(factory_root, EPIC, NODE, ATTEMPT) / STDOUT_LOG_NAME
+    ).read_text()
+    write_agent_control(node_home, stdout="Done.")
+    claude_result = await claude_adapter.run_attempt(
+        attempt(agent="claude-code", route="gateway"), factory_root=factory_root
+    )
+
+    codex_fields = tuple(field.name for field in fields(AdapterResult))
+    assert tuple(field.name for field in fields(type(codex_result))) == codex_fields
+    assert tuple(field.name for field in fields(type(claude_result))) == codex_fields
+    assert codex_plain_log == "Done.\n"
+    assert '"type": "agent_message"' not in codex_plain_log
     SharedAttemptPolicy,
