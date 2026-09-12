@@ -396,6 +396,11 @@ class RoadmapCarryOver:
     max_concurrent_epics: int = 1
     max_concurrent_nodes: int = 1
     idle_rescan_s: int | None = None
+    #: The last complete query answer, captured at quiescence. It is read-only
+    #: state for a query that arrives before the new run's corpus read; the
+    #: fresh read remains the only scheduling authority. Defaulted so payloads
+    #: written before it existed decode unchanged.
+    previous_status: "RoadmapStatus | None" = None
 
     @classmethod
     def from_state(
