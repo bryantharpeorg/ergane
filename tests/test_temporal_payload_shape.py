@@ -549,6 +549,14 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.verify.models.RefConflictInfo": (
         "ref", "tip", "archived", "clearing_command"
     ),
+    # 134-US3: `gate` and `path` are kind 1 (they address the declaration);
+    # `type`, `present`, `size`, `stored_path`, `status` and `provenance` are
+    # the record's substance and measurement. A default would read an unsafe
+    # capture as a permitted one, or absence as a zero-byte artifact.
+    "factory.verify.models.GateArtifact": (
+        "gate", "path", "type", "present", "size", "stored_path",
+        "status", "provenance"
+    ),
     "factory.verify.models.JudgeVerdict": (
         "outcome", "findings", "feedback", "judge_attempt", "truncated_input",
         "model_alias"
