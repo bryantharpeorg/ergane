@@ -238,7 +238,7 @@ def test_key_alias_carries_a_unique_index(ledger: sqlite3.Connection) -> None:
 def test_the_schema_version_is_recorded_once(ledger: sqlite3.Connection) -> None:
     versions = [row[0] for row in ledger.execute("SELECT version FROM schema_version")]
 
-    assert SCHEMA_VERSION == 3
+    assert SCHEMA_VERSION == 4
     assert versions == [SCHEMA_VERSION]
 
 

@@ -54,6 +54,7 @@ from __future__ import annotations
 import asyncio
 import math
 import os
+import sqlite3
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -70,8 +71,11 @@ from factory.env import (
     resolve_env_path,
 )
 from factory.usage.litellm_client import DEFAULT_KEY_TTL, LiteLLMClient, LiteLLMError
+from factory.usage.codex_evidence import read_codex_usage_evidence
 from factory.usage.models import (
     AggregatedUsage,
+    CodexUsageEvidence,
+    CodexUsageRecord,
     KeyLease,
     Termination,
     UsageRecord,
@@ -478,19 +482,26 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
     on `key_alias`, so a teardown Temporal ran twice lands on the first run's
     row, and revoking an already-absent key is a normal outcome.
     """
+    from factory.activities.agent_activities import factory_root
+
+    codex_usage = read_codex_usage_evidence(factory_root(), request.lease)
     if _is_subscription_lease(request.lease):
-        from factory.activities.agent_activities import factory_root
         from factory.usage.runner import read_attempt_usage
 
-        measured = read_attempt_usage(factory_root(), request.lease)
-        reading = None if measured is None else _ConfirmedUsage(
-            spend_usd=None, aggregate=measured.aggregate, status=measured.status,
-            source=measured.source, cost_basis="unknown",
-        )
+        if codex_usage is not None:
+            reading = _codex_reading(codex_usage)
+        else:
+            measured = read_attempt_usage(factory_root(), request.lease)
+            reading = None if measured is None else _ConfirmedUsage(
+                spend_usd=None, aggregate=measured.aggregate, status=measured.status,
+                source=measured.source, cost_basis="unknown",
+            )
         record = _record_for(request, reading)
         _require_attribution(record)
         with closing(ledger.connect(_ledger_path())) as conn:
-            return ledger.upsert_record(conn, record)
+            record = ledger.upsert_record(conn, record)
+            _store_codex_corroboration(conn, codex_usage, record)
+            return record
 
     client: LiteLLMClient | None
     try:
@@ -508,6 +519,7 @@ async def teardown_attempt(request: TeardownInput) -> UsageRecord:
         # attempt's usage still readable from the proxy (R3).
         with closing(ledger.connect(_ledger_path())) as conn:
             stored = ledger.upsert_record(conn, record)
+            _store_codex_corroboration(conn, codex_usage, stored)
 
         if client is not None:
             await _revoke_quietly(client, request.lease.key)
@@ -565,6 +577,56 @@ def _measurement_quality(value: AggregatedUsage) -> tuple[int, int, int]:
         int(value.prompt_tokens is not None) + int(value.completion_tokens is not None),
         value.request_count or 0,
         int(value.cache_read_tokens is not None) + int(value.cache_write_tokens is not None),
+    )
+
+
+def _codex_reading(usage: CodexUsageEvidence) -> _ConfirmedUsage:
+    """Map CLI counts to the accounting model without inventing a request."""
+
+    aggregate = AggregatedUsage(
+        prompt_tokens=usage.input_tokens,
+        completion_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cached_input_tokens,
+        cache_write_tokens=None,
+        request_count=None,
+        spend_usd=0.0,
+    )
+    if usage.complete:
+        status = "complete"
+    elif usage.input_tokens is not None or usage.output_tokens is not None:
+        status = "partial"
+    else:
+        status = "unknown"
+    return _ConfirmedUsage(
+        spend_usd=None,
+        aggregate=aggregate,
+        status=status,
+        source="codex_cli",
+        cost_basis="unknown",
+    )
+
+
+def _store_codex_corroboration(
+    conn: sqlite3.Connection,
+    usage: CodexUsageEvidence | None,
+    record: UsageRecord,
+) -> None:
+    """Store CLI counts beside, never inside, the authoritative row."""
+
+    if usage is None:
+        return
+    ledger.upsert_codex_usage(
+        conn,
+        CodexUsageRecord(
+            key_alias=record.key_alias,
+            input_tokens=usage.input_tokens,
+            cached_input_tokens=usage.cached_input_tokens,
+            output_tokens=usage.output_tokens,
+            reasoning_output_tokens=usage.reasoning_output_tokens,
+            source=usage.source,
+            complete=usage.complete,
+            reason=usage.reason,
+        ),
     )
 
 

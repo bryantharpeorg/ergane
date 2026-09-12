@@ -41,11 +41,11 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from factory.usage.models import Termination, UsageRecord
+from factory.usage.models import CodexUsageRecord, Termination, UsageRecord
 
 #: Bumping this means the DDL below changed shape and existing ledgers need a
 #: migration path. Recorded in the database so a reader can tell.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 #: R6: how long a writer waits out another writer's lock before giving up. Long
 #: enough to absorb a concurrent teardown, short enough that a genuinely wedged
@@ -88,6 +88,18 @@ CREATE INDEX IF NOT EXISTS idx_usage_epic     ON usage_records (epic_id);
 CREATE INDEX IF NOT EXISTS idx_usage_persona  ON usage_records (persona);
 CREATE INDEX IF NOT EXISTS idx_usage_spec_ref ON usage_records (spec_ref);
 CREATE INDEX IF NOT EXISTS idx_usage_attempt  ON usage_records (epic_id, node_id, attempt);
+
+CREATE TABLE IF NOT EXISTS codex_usage_evidence (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    key_alias                TEXT    NOT NULL UNIQUE,
+    input_tokens             INTEGER,
+    cached_input_tokens      INTEGER,
+    output_tokens            INTEGER,
+    reasoning_output_tokens  INTEGER,
+    source                   TEXT    NOT NULL,
+    complete                 INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    reason                   TEXT
+);
 """
 
 #: The columns `upsert_record` writes, in DDL order. `id` is SQLite's to assign,
@@ -123,6 +135,28 @@ _UPSERT_SQL = (
     + ", ".join(
         f"{column} = excluded.{column}"
         for column in _WRITABLE_COLUMNS
+        if column != "key_alias"
+    )
+)
+
+_CODEX_WRITABLE_COLUMNS = (
+    "key_alias",
+    "input_tokens",
+    "cached_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+    "source",
+    "complete",
+    "reason",
+)
+
+_CODEX_UPSERT_SQL = (
+    f"INSERT INTO codex_usage_evidence ({', '.join(_CODEX_WRITABLE_COLUMNS)}) "
+    f"VALUES ({', '.join(f':{column}' for column in _CODEX_WRITABLE_COLUMNS)}) "
+    "ON CONFLICT (key_alias) DO UPDATE SET "
+    + ", ".join(
+        f"{column} = excluded.{column}"
+        for column in _CODEX_WRITABLE_COLUMNS
         if column != "key_alias"
     )
 )
@@ -291,6 +325,38 @@ def _quality(record: UsageRecord) -> int:
     if record.usage_status == "complete":
         return 2
     return int(record.prompt_tokens is not None or record.completion_tokens is not None)
+
+
+def upsert_codex_usage(
+    conn: sqlite3.Connection, record: CodexUsageRecord
+) -> CodexUsageRecord:
+    """Write one attempt's separate CLI corroboration row.
+
+    This table is not in `rollup`: it is evidence about the CLI's view, never a
+    second amount to add to the gateway or subscription accounting row.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    columns = ("id", *_CODEX_WRITABLE_COLUMNS)
+    previous = conn.execute(
+        f"SELECT {', '.join(columns)} FROM codex_usage_evidence WHERE key_alias = ?",
+        (record.key_alias,),
+    ).fetchone()
+    if previous is not None:
+        old = CodexUsageRecord(**dict(zip(columns, previous)))
+        if old.complete and not record.complete:
+            record = replace(record, **{
+                field: getattr(old, field)
+                for field in _CODEX_WRITABLE_COLUMNS[1:]
+            })
+    values = {column: getattr(record, column) for column in _CODEX_WRITABLE_COLUMNS}
+    values["complete"] = int(record.complete)
+    conn.execute(_CODEX_UPSERT_SQL, values)
+    row = conn.execute(
+        "SELECT id FROM codex_usage_evidence WHERE key_alias = ?", (record.key_alias,)
+    ).fetchone()
+    conn.commit()
+    return replace(record, id=row[0])
 
 
 

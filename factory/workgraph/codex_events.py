@@ -108,7 +108,9 @@ class CodexFatalEvent:
 @dataclass(frozen=True)
 class UsageEvidence:
     input_tokens: int | None
+    cached_input_tokens: int | None
     output_tokens: int | None
+    reasoning_output_tokens: int | None
     invalid_fields: tuple[str, ...]
     reason: str | None = None
 
@@ -148,7 +150,9 @@ class CodexExecutionEvidence:
         if self.usage is not None:
             usage = {
                 "input_tokens": self.usage.input_tokens,
+                "cached_input_tokens": self.usage.cached_input_tokens,
                 "output_tokens": self.usage.output_tokens,
+                "reasoning_output_tokens": self.usage.reasoning_output_tokens,
                 "invalid_fields": list(self.usage.invalid_fields),
                 "reason": self.usage.reason,
             }
@@ -366,7 +370,12 @@ class CodexEventDecoder:
     def _decode_usage(self, usage: dict[str, object]) -> None:
         fields: dict[str, int | None] = {}
         invalid: list[str] = []
-        for field in ("input_tokens", "output_tokens"):
+        for field in (
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+        ):
             value = usage.get(field)
             if value is None:
                 fields[field] = value
@@ -375,10 +384,21 @@ class CodexEventDecoder:
             else:
                 fields[field] = None
                 invalid.append(field)
-        self._usage = UsageEvidence(fields["input_tokens"], fields["output_tokens"], tuple(invalid))
+        self._usage = UsageEvidence(
+            fields["input_tokens"],
+            fields["cached_input_tokens"],
+            fields["output_tokens"],
+            fields["reasoning_output_tokens"],
+            tuple(invalid),
+        )
         if invalid:
             self._usage = UsageEvidence(
-                fields["input_tokens"], fields["output_tokens"], tuple(invalid), MALFORMED_USAGE
+                fields["input_tokens"],
+                fields["cached_input_tokens"],
+                fields["output_tokens"],
+                fields["reasoning_output_tokens"],
+                tuple(invalid),
+                MALFORMED_USAGE,
             )
             self._reason(MALFORMED_USAGE, line_number=self._line_number)
 
