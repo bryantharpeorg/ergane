@@ -55,12 +55,12 @@ def _socket(root: Path) -> str:
 @pytest.mark.parametrize(
     ("make_source", "expected_status", "payload_marker"),
     [
-        (_regular_file, "PERMITTED", None),
-        (_escaping_symlink, "UNSAFE", b"UNRELATED OUTSIDE BYTES"),
-        (_substituted_symlink, "UNSAFE", b"UNRELATED WORKTREE BYTES"),
-        (_hardlink_alias, "UNSAFE", None),
-        (_fifo, "UNSAFE", None),
-        (_socket, "UNSAFE", None),
+        (_regular_file, "permitted", None),
+        (_escaping_symlink, "unsafe", b"UNRELATED OUTSIDE BYTES"),
+        (_substituted_symlink, "unsafe", b"UNRELATED WORKTREE BYTES"),
+        (_hardlink_alias, "unsafe", None),
+        (_fifo, "unsafe", None),
+        (_socket, "unsafe", None),
     ],
 )
 def test_regular_files_are_read_and_unsafe_sources_are_refused(
@@ -88,7 +88,7 @@ def test_regular_files_are_read_and_unsafe_sources_are_refused(
     observation = observe_source(tmp_path, relative_path, byte_limit=16)
 
     assert observation.status.value == expected_status
-    if expected_status == "PERMITTED":
+    if expected_status == "permitted":
         assert observation.bytes == b"stable bytes\n"
         assert observation.reason is None
     else:
@@ -115,7 +115,7 @@ def test_the_regular_control_reads_the_exact_bounded_bytes(tmp_path: Path) -> No
 
         observation = observe_source(tmp_path, path.name, byte_limit=16)
 
-    assert observation.status.value == "PERMITTED"
+    assert observation.status.value == "permitted"
     assert observation.bytes == b"0123456789abcdef"
     assert observation.size == 16
     assert observation.digest == hashlib.sha256(b"0123456789abcdef").hexdigest()
@@ -146,12 +146,12 @@ def test_unchanged_and_new_files_have_honest_provenance(tmp_path: Path) -> None:
         baseline=before_new,
     )
 
-    assert before_existing.status.value == "PERMITTED"
-    assert capture_existing.status.value == "PERMITTED"
+    assert before_existing.status.value == "permitted"
+    assert capture_existing.status.value == "permitted"
     assert capture_existing.provenance is CaptureProvenance.UNCHANGED
     assert capture_existing.bytes == existing.read_bytes()
-    assert before_new.status.value == "ABSENT"
-    assert capture_new.status.value == "PERMITTED"
+    assert before_new.status.value == "absent"
+    assert capture_new.status.value == "permitted"
     assert capture_new.provenance is CaptureProvenance.NEW
     assert capture_new.bytes == b"fresh report\n"
 
@@ -170,7 +170,7 @@ def test_oversized_rewrites_are_changed_and_refuse_bytes(tmp_path: Path) -> None
         path.write_bytes(before_bytes)
         relative_path = path.relative_to(tmp_path).as_posix()
         before = observe_source(tmp_path, relative_path, byte_limit=16)
-        assert before.status.value == "OVERSIZED"
+        assert before.status.value == "oversized"
         path.write_bytes(after_bytes)
 
         capture = capture_source(
@@ -180,7 +180,7 @@ def test_oversized_rewrites_are_changed_and_refuse_bytes(tmp_path: Path) -> None
             baseline=before,
         )
 
-        assert capture.status.value == "UNSTABLE"
+        assert capture.status.value == "unstable"
         assert capture.provenance is CaptureProvenance.CHANGED
         assert capture.bytes is None
         assert capture.size == len(after_bytes)
@@ -210,8 +210,8 @@ def test_a_baseline_unavailable_during_capture_does_not_certify_newness(
         baseline=before,
     )
 
-    assert before.status.value == "UNSAFE"
-    assert capture.status.value == "PERMITTED"
+    assert before.status.value == "unsafe"
+    assert capture.status.value == "permitted"
     assert capture.provenance is CaptureProvenance.UNKNOWN
     assert capture.bytes == b"new report\n"
 
@@ -234,8 +234,8 @@ def test_mutation_during_capture_is_refused_without_partial_bytes(
         baseline=before,
     )
 
-    assert before.status.value == "PERMITTED"
-    assert capture.status.value == "UNSTABLE"
+    assert before.status.value == "permitted"
+    assert capture.status.value == "unstable"
     assert capture.provenance is CaptureProvenance.CHANGED
     assert capture.bytes is None
     assert capture.digest is None
@@ -251,10 +251,10 @@ def test_absence_and_the_stored_byte_limit_are_explicit(tmp_path: Path) -> None:
     absent = observe_source(tmp_path, absent_path.name, byte_limit=16)
     bounded = observe_source(tmp_path, bounded_path.name, byte_limit=16)
 
-    assert absent.status.value == "ABSENT"
+    assert absent.status.value == "absent"
     assert absent.bytes is None
     assert absent.reason == "path does not name a file"
-    assert bounded.status.value == "PERMITTED"
+    assert bounded.status.value == "permitted"
     assert bounded.bytes == b"x" * 16
     assert bounded.size == 16
 
@@ -278,7 +278,7 @@ def test_an_oversized_file_stops_reading_and_publishes_no_bytes(
 
         observation = observe_source(tmp_path, path.name, byte_limit=16)
 
-    assert observation.status.value == "OVERSIZED"
+    assert observation.status.value == "oversized"
     assert observation.bytes is None
     assert observation.size == 17
     assert sum(len(chunk) for chunk in reads) <= 17
@@ -321,8 +321,8 @@ def test_capture_bounds_actual_reads_in_both_observation_phases(
 
     assert b"".join(pre_reads) == b"0123456789abcdefg"
     assert b"".join(post_reads) == b"0123456789abcdefg"
-    assert before.status.value == "OVERSIZED"
-    assert capture.status.value == "OVERSIZED"
+    assert before.status.value == "oversized"
+    assert capture.status.value == "oversized"
     assert capture.provenance is CaptureProvenance.UNCHANGED
     assert capture.bytes is None
 
@@ -352,7 +352,7 @@ def test_growth_during_reading_is_refused_without_partial_bytes(
         patch.setattr(os, "read", grow_after_first_read)
         capture = capture_source(tmp_path, relative_path, byte_limit=16)
 
-    assert capture.status.value == "UNSTABLE"
+    assert capture.status.value == "unstable"
     assert capture.provenance is CaptureProvenance.UNKNOWN
     assert capture.bytes is None
     assert "changed during reading" in (capture.reason or "")
