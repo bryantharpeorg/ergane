@@ -70,7 +70,7 @@ from factory.workgraph.models import (
 from factory.workgraph.workflow import TASK_QUEUE, EpicInput, EpicStatus, EpicWorkflow, NodeStatus
 from factory.workgraph.worktree import branch_name
 from factory.escalation.workflow import EscalationWorkflow
-from tests.test_ergane_build import Run, _invoke, env, run, temporal_env
+from tests.test_ergane_build import Run, _invoke, capture_attempt_evidence, env, run, temporal_env
 
 EPIC_ID = "external_completion"
 WORKFLOW_ID = f"epic-{EPIC_ID}"
@@ -437,6 +437,7 @@ class ConfigurableScript:
         return [
             validate_target_repo, resolve_graph, resolve_persona, load_prompt_sources,
             resolve_standards, snapshot_criteria, prepare_worktree, issue_attempt_key,
+            capture_attempt_evidence,
             run_agent_attempt, poll_usage, run_gates, check_output, record_verification,
             record_external_completion, teardown_attempt, salvage_worktree,
             remove_worktree, prepare_landing_pr, open_landing_pr, enqueue_landing,

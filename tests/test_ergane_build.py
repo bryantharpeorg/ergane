@@ -303,6 +303,11 @@ def wrote_something() -> OutputCheck:
     )
 
 
+@activity.defn(name="capture_attempt_evidence")
+async def capture_attempt_evidence(_: Any) -> Any:
+    return None
+
+
 class ScriptedEpic:
     """Same scripted world as test_epic_cli.py, narrowed to the happy path."""
 
@@ -559,6 +564,7 @@ class ScriptedEpic:
             snapshot_criteria,
             prepare_worktree,
             issue_attempt_key,
+            capture_attempt_evidence,
             run_agent_attempt,
             poll_usage,
             run_gates,

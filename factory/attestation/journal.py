@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import asdict
 from pathlib import Path
 
-from factory.attestation.models import LaunchRecord, RungSelection
+from factory.attestation.models import AttemptGitEvidence, GitFileChange, JudgeDelivery, JudgeEvaluationRecord, LaunchRecord, RungSelection
+from factory.env import resolve_env_path
 from factory.attestation.usage import UsageObservation
 
 SCHEMA_VERSION = 1
+DEFAULT_JOURNAL_PATH = ".factory/attestation.db"
+FACTORY_JOURNAL_PATH_ENV = "FACTORY_ATTESTATION_DB"
+ERGANE_JOURNAL_PATH_ENV = "ERGANE_ATTESTATION_DB"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -52,6 +57,11 @@ CREATE TABLE IF NOT EXISTS usage_observations (
     request_count INTEGER,
     spend_usd REAL
 );
+CREATE TABLE IF NOT EXISTS evidence_records (
+    evidence_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    PRIMARY KEY(evidence_id)
+);
 """
 
 
@@ -67,6 +77,10 @@ def connect(path: str | Path) -> sqlite3.Connection:
         connection.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     connection.commit()
     return connection
+
+
+def journal_path() -> Path:
+    return resolve_env_path(ERGANE_JOURNAL_PATH_ENV, FACTORY_JOURNAL_PATH_ENV, DEFAULT_JOURNAL_PATH)
 
 
 def _selection_json(value: RungSelection) -> str:
@@ -164,6 +178,7 @@ def set_launch_outcome(
 
 def read_launches(path: str | Path) -> tuple[LaunchRecord, ...]:
     with connect(path) as connection:
+        connection.row_factory = sqlite3.Row
         rows = connection.execute(
             "SELECT * FROM launches ORDER BY launch_ordinal, invocation_id"
         ).fetchall()
@@ -210,3 +225,53 @@ def read_usage_observations(path: str | Path) -> tuple[UsageObservation, ...]:
             ).description
         ]
     return tuple(UsageObservation(**dict(zip(columns, row))) for row in rows)
+
+
+def _record(path: str | Path, record: object, evidence_id: str) -> None:
+    with connect(path) as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "INSERT INTO evidence_records (evidence_id, payload) VALUES (?, ?)"
+            " ON CONFLICT(evidence_id) DO UPDATE SET payload = excluded.payload",
+            (evidence_id, json.dumps(asdict(record), sort_keys=True, separators=(",", ":"))),
+        )
+        connection.commit()
+
+
+def _decode(payload: str, model: type[JudgeEvaluationRecord | AttemptGitEvidence]) -> JudgeEvaluationRecord | AttemptGitEvidence:
+    data = json.loads(payload)
+    nested_values = ("deliveries",) if model is JudgeEvaluationRecord else ("attempted_files", "verified_files")
+    for nested in nested_values:
+        model_item = JudgeDelivery if nested == "deliveries" else GitFileChange
+        data[nested] = tuple(model_item(**item) for item in data[nested])
+    if model is AttemptGitEvidence:
+        data["tests_executed"] = tuple(data["tests_executed"])
+    return model(**data)
+
+
+def _read(path: str | Path, model: type[JudgeEvaluationRecord | AttemptGitEvidence]) -> tuple:
+    with connect(path) as connection:
+        rows = connection.execute("SELECT payload FROM evidence_records ORDER BY evidence_id")
+        return tuple(_decode(row[0], model) for row in rows if (model is JudgeEvaluationRecord) == ('"deliveries"' in row[0]))
+
+
+def record_scoring_evaluation(
+    path: str | Path, record: JudgeEvaluationRecord
+) -> JudgeEvaluationRecord:
+    _record(path, record, record.evaluation_id)
+    return record
+
+
+def read_scoring_evaluations(path: str | Path) -> tuple[JudgeEvaluationRecord, ...]:
+    return tuple(sorted(_read(path, JudgeEvaluationRecord), key=lambda item: (item.scoring_call_ordinal, item.evaluation_id)))
+
+
+def record_attempt_evidence(
+    path: str | Path, record: AttemptGitEvidence
+) -> AttemptGitEvidence:
+    _record(path, record, record.evidence_id)
+    return record
+
+
+def read_attempt_evidence(path: str | Path) -> tuple[AttemptGitEvidence, ...]:
+    return tuple(_read(path, AttemptGitEvidence))

@@ -137,6 +137,7 @@ ACTIVITIES = [
     verify_activities.run_gates,
     verify_activities.check_output,
     verify_activities.run_judge,
+    verify_activities.capture_attempt_evidence,
     verify_activities.record_verification,
     # 035-US1: external completion signal decisions are recorded by the epic.
     verify_activities.record_external_completion,

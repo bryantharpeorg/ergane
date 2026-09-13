@@ -65,6 +65,7 @@ from factory.verify.diffbounds import (
     file_listing as _file_listing,
     split_sections as _split_sections,
 )
+from factory.attestation.models import JudgeDelivery, JudgeEvaluationRecord
 from factory.verify.models import (
     CriteriaSet,
     GateContradiction,
@@ -269,13 +270,11 @@ class JudgeParseError(ValueError):
 
 
 class JudgeUnavailableError(RuntimeError):
-    """The judge could not be reached — an outage, not a verdict.
+    """An outage; its deliveries are retained for the packet."""
 
-    Deliberately not a FAIL: charging a node's attempt to someone else's downtime
-    is the mirror image of the false PASS this component exists to prevent. The
-    caller maps it to `JUDGE_UNAVAILABLE` and composes a gates-only verdict with
-    the flag set (contracts/judge.md).
-    """
+    def __init__(self, message: str, *, deliveries: tuple[JudgeDelivery, ...] = ()):
+        super().__init__(message)
+        self.deliveries = deliveries
 
 
 @dataclass(frozen=True)
@@ -770,6 +769,15 @@ def _parse_findings(
 # --- the call itself ----------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Completion:
+    content: str
+    response_id: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    deliveries: tuple[JudgeDelivery, ...] = ()
+
+
 async def run_judge(
     criteria: CriteriaSet,
     diff_text: str,
@@ -784,6 +792,11 @@ async def run_judge(
     transport: httpx.AsyncBaseTransport | None = None,
     timeout: float = DEFAULT_TIMEOUT_S,
     retry_backoff_s: float = DEFAULT_RETRY_BACKOFF_S,
+    evaluation_sink: Any | None = None,
+    scoring_job_id: str = "unattributed",
+    invocation_id: str = "",
+    tested_revision: str = "",
+    key_alias: str = "",
 ) -> JudgeVerdict:
     """Score `diff_text` against `criteria` with one bounded chat completion.
 
@@ -823,19 +836,27 @@ async def run_judge(
         gate_results=gate_results,
     )
 
-    content = await _complete(
-        prompt,
-        proxy_url=proxy_url,
-        virtual_key=virtual_key,
-        model_alias=model_alias,
-        transport=transport,
-        timeout=timeout,
-        retry_backoff_s=retry_backoff_s,
-    )
+    def persist(status, completion, *, verdict=None, feedback, parse_error=None):
+        if evaluation_sink is not None:
+            _record = _evaluation(
+                criteria, model_alias=model_alias, judge_attempt=judge_attempt,
+                verdict=verdict, completion=completion, scoring_job_id=scoring_job_id,
+                invocation_id=invocation_id, tested_revision=tested_revision,
+                status=status, feedback=feedback, parse_error=parse_error,
+                truncated_input=prompt.truncated_input, gates_shown=prompt.gates_shown,
+                key_alias=key_alias,
+            )
+            evaluation_sink(_record)
+
+    try:
+        completion = await _complete(prompt, proxy_url=proxy_url, virtual_key=virtual_key, model_alias=model_alias, transport=transport, timeout=timeout, retry_backoff_s=retry_backoff_s)
+    except JudgeUnavailableError as exc:
+        persist("unavailable", Completion("", deliveries=exc.deliveries), feedback=str(exc))
+        raise
 
     try:
         verdict = parse_verdict(
-            content,
+            completion.content,
             dispatched_scenario_ids(criteria),
             judge_attempt=judge_attempt,
             model_alias=model_alias,
@@ -844,27 +865,42 @@ async def run_judge(
         )
     except JudgeParseError as exc:
         exhausted = judge_attempt >= 1 + max_judge_retries
+        feedback = _malformed_feedback(exc, exhausted=exhausted)
+        persist("parse_error", completion, feedback=feedback, parse_error=str(exc))
         return JudgeVerdict(
             outcome=JudgeOutcome.FAIL if exhausted else JudgeOutcome.RETRY,
-            findings=[],
-            feedback=_malformed_feedback(exc, exhausted=exhausted),
-            judge_attempt=judge_attempt,
-            truncated_input=prompt.truncated_input,
-            model_alias=model_alias,
-            # Recorded on the unreadable-response path too: what the judge was
-            # shown is a fact about the ask, and an ask that produced garbage
-            # was still made with — or without — the measurements in it.
+            findings=[], feedback=feedback, judge_attempt=judge_attempt,
+            truncated_input=prompt.truncated_input, model_alias=model_alias,
             gates_shown=prompt.gates_shown,
         )
 
-    return _reask_on_contradiction(
-        verdict,
-        gate_results or (),
-        judge_attempt=judge_attempt,
-        max_judge_retries=max_judge_retries,
+    contradictions = detect_gate_contradictions(verdict, gate_results or ())
+    status = "contradiction" if contradictions else "valid"
+    persist(
+        status, completion, verdict=verdict,
+        feedback=_contradiction_feedback(verdict.feedback, contradictions) if contradictions else verdict.feedback,
     )
+    return _reask_on_contradiction(verdict, gate_results or (), judge_attempt=judge_attempt, max_judge_retries=max_judge_retries)
 
 
+def _evaluation(
+    criteria: CriteriaSet, *, model_alias: str, judge_attempt: int, verdict: JudgeVerdict | None,
+    completion: Completion, scoring_job_id: str, invocation_id: str, tested_revision: str,
+    status: str, feedback: str, key_alias: str, parse_error: str | None = None,
+    truncated_input: bool | None = None, gates_shown: bool | None = None,
+) -> JudgeEvaluationRecord:
+    return JudgeEvaluationRecord(
+        evaluation_id=f"{scoring_job_id}:{status}:{judge_attempt}", scoring_job_id=scoring_job_id,
+        scoring_call_ordinal=judge_attempt, invocation_id=invocation_id, key_alias=key_alias,
+        criteria_fingerprint=criteria.source_sha256, tested_revision=tested_revision,
+        status=status, model_alias=model_alias,
+        scenario_results=() if verdict is None else tuple((finding.scenario, finding.passed, finding.reasoning) for finding in verdict.findings),
+        feedback=feedback, parse_error=parse_error, deliveries=completion.deliveries,
+        prompt_tokens=completion.prompt_tokens, completion_tokens=completion.completion_tokens,
+        usage_status="unknown" if completion.prompt_tokens is None or completion.completion_tokens is None else "partial",
+        truncated_input=verdict.truncated_input if verdict is not None else truncated_input,
+        gates_shown=verdict.gates_shown if verdict is not None else gates_shown,
+    )
 def _reask_on_contradiction(
     verdict: JudgeVerdict,
     gate_results: Sequence[GateResult],
@@ -945,7 +981,7 @@ async def _complete(
     transport: httpx.AsyncBaseTransport | None,
     timeout: float,
     retry_backoff_s: float,
-) -> str:
+) -> Completion:
     """POST the one completion and return the assistant's text (R4).
 
     Retries a briefly unreachable backend and then gives up: this is the only
@@ -960,6 +996,7 @@ async def _complete(
     }
 
     reason = "no request was attempted"
+    deliveries: list[JudgeDelivery] = []
     async with httpx.AsyncClient(
         base_url=proxy_url.rstrip("/"),
         headers={"Authorization": f"Bearer {virtual_key}"},
@@ -971,10 +1008,14 @@ async def _complete(
                 response = await client.post(COMPLETIONS_PATH, json=body)
             except httpx.HTTPError as exc:
                 reason = _scrub(f"{type(exc).__name__}: {exc}", virtual_key)
+                deliveries.append(JudgeDelivery(attempt, "transport_error", error=reason))
             else:
                 if response.status_code < 400:
-                    return _assistant_content(response)
+                    completion = _completion(response)
+                    deliveries.append(JudgeDelivery(attempt, "delivered", response_id=completion.response_id))
+                    return replace(completion, deliveries=tuple(deliveries))
                 reason = f"HTTP {response.status_code}: {_proxy_message(response, virtual_key)}"
+                deliveries.append(JudgeDelivery(attempt, "transport_error", error=reason))
                 if response.status_code not in RETRYABLE_STATUSES:
                     break
 
@@ -983,16 +1024,13 @@ async def _complete(
 
     # Outside the client and outside every `except`, so no chained exception can
     # carry a credential out with it (FR-009, SC-004).
-    raise JudgeUnavailableError(f"the judge's chat completion did not succeed: {reason}")
+    raise JudgeUnavailableError(
+        f"the judge's chat completion did not succeed: {reason}",
+        deliveries=tuple(deliveries),
+    )
 
 
-def _assistant_content(response: httpx.Response) -> str:
-    """The assistant message of a chat completion, or an outage.
-
-    A 200 without a message is the backend breaking its own protocol, not the
-    judge answering badly — charging it to the judge-retry budget would spend a
-    node's attempts on someone else's failure.
-    """
+def _completion(response: httpx.Response) -> Completion:
     try:
         payload: Any = response.json()
     except ValueError:
@@ -1021,7 +1059,13 @@ def _assistant_content(response: httpx.Response) -> str:
         raise JudgeUnavailableError(
             "the proxy returned a chat completion with no assistant message"
         )
-    return content
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
+    completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    return Completion(
+        content=content, response_id=payload.get("id") if isinstance(payload, dict) else None,
+        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+    )
 
 
 def _proxy_message(response: httpx.Response, *secrets: str) -> str:

@@ -72,11 +72,18 @@ from temporalio import activity
 from temporalio.exceptions import ApplicationError
 
 from factory.verify import diffcheck, gates, judge, store
+from factory.attestation.models import AttemptGitEvidence
+from factory.attestation.journal import (
+    journal_path as default_journal_path,
+    record_attempt_evidence,
+    record_scoring_evaluation,
+)
 from factory.verify.criteria import CriteriaParseError, load_criteria
 from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.judge import DEFAULT_MAX_JUDGE_RETRIES
 from factory.workgraph.worktree import resolve_factory_root
 from factory.verify.gates import publish_artifact_capture
+from factory.verify.git_evidence import capture_attempt_evidence as capture_git_evidence
 from factory.verify.models import (
     ArtifactType,
     CriteriaSet,
@@ -476,6 +483,10 @@ class RunJudgeInput:
     prior_feedback: str | None = None
     max_judge_retries: int = DEFAULT_MAX_JUDGE_RETRIES
     gate_results: list[GateResult] = field(default_factory=list)
+    scoring_job_id: str = "unattributed"
+    invocation_id: str = ""
+    tested_revision: str = ""
+    key_alias: str = ""
 
 
 @activity.defn
@@ -505,6 +516,11 @@ async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
             max_judge_retries=request.max_judge_retries,
             transport=judge_transport(),
             retry_backoff_s=JUDGE_RETRY_BACKOFF_S,
+            scoring_job_id=request.scoring_job_id,
+            invocation_id=request.invocation_id,
+            tested_revision=request.tested_revision,
+            key_alias=request.key_alias,
+            evaluation_sink=lambda record: record_scoring_evaluation(default_journal_path(), record),
         )
     except judge.JudgeUnavailableError as exc:
         # The library already scrubbed its own message; nothing is added here
@@ -539,6 +555,42 @@ class RecordedVerification:
 
     row_id: int
     criteria_drift: bool
+
+
+@dataclass(frozen=True)
+class CaptureAttemptEvidenceInput:
+    """The explicit identity and refs needed for one Git evidence read."""
+
+    evidence_id: str
+    epic_id: str
+    node_id: str
+    attempt: int
+    dispatch: str
+    worktree_path: str
+    base_ref: str
+    attempted_ref: str
+    verified_ref: str
+    gate_results: list[GateResult]
+
+
+@activity.defn
+async def capture_attempt_evidence(
+    request: CaptureAttemptEvidenceInput,
+) -> AttemptGitEvidence:
+    """Read exact Git evidence while the worktree still exists."""
+    return capture_git_evidence(
+        request.worktree_path,
+        base_ref=request.base_ref,
+        attempted_ref=request.attempted_ref,
+        verified_ref=request.verified_ref,
+        gate_results=request.gate_results,
+        evidence_id=request.evidence_id,
+        epic_id=request.epic_id,
+        node_id=request.node_id,
+        attempt=request.attempt,
+        dispatch=request.dispatch,
+        journal_path=default_journal_path(),
+    )
 
 
 @activity.defn

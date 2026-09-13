@@ -1143,6 +1143,7 @@ def _gate_to_dict(gate: GateResult) -> dict[str, Any]:
         "exit_code": gate.exit_code,
         "duration_s": gate.duration_s,
         "output_tail": gate.output_tail,
+        "output_truncated": gate.output_truncated,
         "concurrent_gates": gate.concurrent_gates,
         "worktree_writes": list(gate.worktree_writes),
         "writes_declared": gate.writes_declared,
@@ -1176,6 +1177,7 @@ def _gate_from_dict(data: dict[str, Any]) -> GateResult:
         exit_code=data["exit_code"],
         duration_s=data["duration_s"],
         output_tail=data["output_tail"],
+        output_truncated=bool(data.get("output_truncated", False)),
         # Rows written before 007 FR-005 have no contention marker; absent
         # means uncontended, which is the only honest reading of a row that
         # predates fan-out.

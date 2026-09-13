@@ -192,6 +192,8 @@ with workflow.unsafe.imports_passed_through():
         RecordExternalCompletionInput,
         RecordVerificationInput,
         RunGatesInput,
+        CaptureAttemptEvidenceInput,
+        capture_attempt_evidence,
         RunJudgeInput,
         SnapshotCriteriaInput,
         check_output,
@@ -202,7 +204,7 @@ with workflow.unsafe.imports_passed_through():
         run_judge,
         snapshot_criteria,
     )
-    from factory.attestation import RungSelection
+    from factory.attestation.models import GitFileChange, RungSelection
     from factory.mergequeue.classify import classify
     from factory.mergequeue.models import (
         CheckFailure,
@@ -2871,6 +2873,25 @@ class EpicWorkflow:
             **_FAST,
         )
 
+        git_evidence = None
+        if workflow.patched("attempt-git-evidence"):
+            git_evidence = await workflow.execute_activity(
+                capture_attempt_evidence,
+                CaptureAttemptEvidenceInput(
+                    evidence_id=f"{dispatch}:{node.id}:{attempt}:git",
+                    epic_id=request.graph.epic_id,
+                    node_id=node.id,
+                    attempt=attempt,
+                    dispatch=dispatch,
+                    worktree_path=prepared.path,
+                    base_ref=prepared.base_ref,
+                    attempted_ref="worktree",
+                    verified_ref="worktree",
+                    gate_results=list(gate_results),
+                ),
+                **_GIT,
+            )
+
         verdict: JudgeVerdict | None = None
         if judge_required(gate_results, output, criteria):
             diff_text = await workflow.execute_activity(
@@ -2894,6 +2915,7 @@ class EpicWorkflow:
                 # unscoreable — the judge was asked to guess an answer the
                 # factory had already written down.
                 gate_results,
+                git_evidence.attempted_commit if git_evidence is not None else "",
             )
 
         gate_names = tuple(r.name for r in gate_results)
@@ -2969,6 +2991,7 @@ class EpicWorkflow:
         judge: ResolvedPersona,
         prior_feedback: str | None,
         gate_results: Sequence[GateResult],
+        tested_revision: str,
     ) -> JudgeVerdict:
         """Score the diff, on one key minted and revoked for this scoring alone.
 
@@ -3044,6 +3067,7 @@ class EpicWorkflow:
                     judge_attempt,
                     prior_feedback,
                     gate_results,
+                    tested_revision,
                 )
                 if not judge_should_be_reasked(verdict, gate_results):
                     break
@@ -3175,6 +3199,7 @@ class EpicWorkflow:
         judge_attempt: int,
         prior_feedback: str | None,
         gate_results: Sequence[GateResult],
+        tested_revision: str,
     ) -> JudgeVerdict:
         """One judge completion, with an outage answered rather than raised.
 
@@ -3197,6 +3222,11 @@ class EpicWorkflow:
                     prior_feedback=prior_feedback,
                     max_judge_retries=request.config.max_judge_retries,
                     gate_results=list(gate_results),
+                    scoring_job_id=lease.scoring_job_id
+                    or f"{lease.epic_id}:{lease.node_id}:{lease.attempt}:score",
+                    invocation_id=lease.invocation_id,
+                    tested_revision=tested_revision,
+                    key_alias=lease.key_alias,
                 ),
                 **_JUDGE,
             )
