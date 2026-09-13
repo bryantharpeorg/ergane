@@ -643,6 +643,10 @@ def test_the_adapter_result_carries_nothing_but_outcome_and_evidence() -> None:
         "last_snapshot",
         "detail",
         "credential_source",
+        # 159-US3 (FR-012): whether the durable owner is still held because the
+        # process fence could not be proved. This is adapter-owned lifecycle
+        # state, not an agent-reported signal.
+        "owner_retained",
     ]
 
 

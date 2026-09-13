@@ -2036,6 +2036,7 @@ class EpicWorkflow:
             # fallback figure: teardown would attribute another attempt's spend.
             record.last_snapshot = None
             teardown_done = False
+            adapter_result: AdapterResult | None = None
             try:
                 try:
                     adapter_result = await self._attempt(
@@ -2064,7 +2065,11 @@ class EpicWorkflow:
                         ),
                     )
                 finally:
-                    await self._release_codex_owner(owner)
+                    await self._release_codex_owner(
+                        None
+                        if adapter_result is not None and adapter_result.owner_retained
+                        else owner
+                    )
                 # `None` is the attempt the kill cancelled: the adapter re-raises on
                 # its KILLED path rather than reporting a termination the workflow
                 # could mistake for an ending (R2), so the classification is the
@@ -4286,6 +4291,7 @@ class EpicWorkflow:
         # the finally with a defined key ending instead of becoming an
         # `UnboundLocalError` that leaks the lease.
         termination = Termination.KILLED
+        adapter_result: AdapterResult | None = None
         try:
             try:
                 adapter_result = await self._attempt(
@@ -4310,7 +4316,11 @@ class EpicWorkflow:
                     ),
                 )
             finally:
-                await self._release_codex_owner(owner)
+                await self._release_codex_owner(
+                    None
+                    if adapter_result is not None and adapter_result.owner_retained
+                    else owner
+                )
             if adapter_result is None or self._kill_requested:
                 termination = (
                     adapter_result.termination

@@ -535,6 +535,9 @@ class AdapterResult:
     #: record rather than inferred from behaviour (FR-005, trap 10). `None` for
     #: gateway-routed attempts, which have no such choice.
     credential_source: str | None = None
+    #: US3: `True` only when the process fence could not be proved and the
+    #: durable owner remains held for recovery instead of being released.
+    owner_retained: bool = False
 
 
 # The pre-agent failure, as an operator reads it (095-US1) --------------------
