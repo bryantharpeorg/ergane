@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sqlite3
 import stat
 import zipfile
@@ -232,8 +233,34 @@ US3_S1 = "US3-S1"
 EVIDENCE_JOURNAL: Path | None = None
 
 
+def _blocked_socket(*args: object, **kwargs: object) -> None:
+    pytest.fail("packet verification must not use a socket")
+
+
 def _selector(ordinal: int) -> tuple[str, str, str, str]:
     return ("test", "coverage.txt", f"dispatch-{ordinal}", f"capture-{ordinal}")
+
+
+def _capture_artifact(
+    root: Path,
+    *,
+    ordinal: int,
+    source: Path,
+    kind: ArtifactType = ArtifactType.COVERAGE,
+    status: str = "permitted",
+    present: bool = True,
+    declared_path: str = "coverage.txt",
+) -> tuple[tuple[str, str, str, str], GateArtifact]:
+    artifact = _artifact(
+        f"dispatch-{ordinal}",
+        f"capture-{ordinal}",
+        source,
+        status=status,
+        present=present,
+    )
+    artifact = GateArtifact(**{**artifact.__dict__, "type": kind, "path": declared_path})
+    _verification(connect_verification(root / "verification.db"), ordinal, artifact)
+    return ("test", declared_path, f"dispatch-{ordinal}", f"capture-{ordinal}"), artifact
 
 
 def _read_zip(path: Path) -> tuple[list[str], dict[str, bytes]]:
@@ -266,7 +293,7 @@ def test_export_contains_manifest_report_exact_bytes_and_offline_verifies(tmp_pa
     source = root / "source-worktree"
     shutil.rmtree(source)
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr("socket.socket", pytest.fail("packet verification must not use a socket"))
+        patch.setattr(socket, "socket", _blocked_socket)
         verify_packet(relocated)
     assert read_manifest(relocated)["schema_version"] == 1
 
@@ -356,3 +383,163 @@ def test_missing_expired_refused_oversized_items_remain_visible(tmp_path: Path) 
         export_packet(root, SUBJECT, output=root / "strict.zip", selectors=(_selector(3),), strict=True)
     assert "incomplete" in str(error.value)
     assert not (root / "strict.zip").exists()
+
+
+def test_source_containment_types_and_aliases_are_refused(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    artifacts = root / "artifacts" / "167" / "US3"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside\n")
+    symlink = artifacts / "linked.txt"
+    symlink.symlink_to(outside)
+    hardlink = artifacts / "hardlink.txt"
+    os.link(artifacts / "coverage-2.txt", hardlink)
+    fifo = artifacts / "pipe"
+    os.mkfifo(fifo)
+
+    selectors = (
+        _capture_artifact(root, ordinal=7, source=symlink)[0],
+        _capture_artifact(root, ordinal=8, source=hardlink)[0],
+        _capture_artifact(root, ordinal=9, source=fifo)[0],
+        _capture_artifact(root, ordinal=10, source=outside, stored_path=str(outside))[0],
+    )
+    result = export_packet(root, SUBJECT, output=root / "unsafe.zip", selectors=selectors)
+    reasons = {item.identity: (item.status, item.reason) for item in result.items}
+    assert reasons[selectors[0]][0] == "refused" and "symlink" in reasons[selectors[0]][1]
+    assert reasons[selectors[1]][0] == "refused" and "hardlink" in reasons[selectors[1]][1]
+    assert reasons[selectors[2]][0] == "refused" and "FIFO" in reasons[selectors[2]][1]
+    assert reasons[selectors[3]][0] == "refused" and "containment" in reasons[selectors[3]][1]
+    assert not symlink.exists() or symlink.is_symlink()
+    assert fifo.exists() and stat.S_ISFIFO(fifo.stat().st_mode)
+
+
+def test_raw_cli_transcripts_are_excluded_and_html_and_paths_are_escaped(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    transcript = root / "artifacts" / "167" / "US3" / ".codex" / "sessions" / "run.jsonl"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text('{"raw cli transcript": "/home/private/alice/secret"}\n')
+    selector, _ = _capture_artifact(
+        root,
+        ordinal=11,
+        source=transcript,
+        kind=ArtifactType.OPAQUE,
+        declared_path=".codex/sessions/run.jsonl",
+    )
+    result = export_packet(root, SUBJECT, output=root / "raw.zip", selectors=(selector,))
+    item = result.items[0]
+    assert item.status == "refused" and "raw CLI transcript" in item.reason
+
+    record_scoring_evaluation(
+        EVIDENCE_JOURNAL,
+        JudgeEvaluationRecord(
+            evaluation_id="eval-html",
+            scoring_job_id="job-1",
+            scoring_call_ordinal=3,
+            invocation_id="judge-1",
+            key_alias="167:US3:1:judge",
+            criteria_fingerprint="c" * 64,
+            tested_revision="attempt-html",
+            status="parse_error",
+            model_alias="judge",
+            scenario_results=((US3_S1, False, '<script>alert("x")</script> & /home/private/alice/notes'),),
+            feedback="token=sk-live-abcdef ABC_TOKEN=abc123 <img src=x onerror=alert(1)>",
+        ),
+    )
+    export_packet(root, SUBJECT, output=root / "text.zip", selectors=(_selector(2),))
+    names, contents = _read_zip(root / "text.zip")
+    report = contents["report.md"].decode()
+    assert "<script>" not in report and "&lt;script&gt;" in report
+    assert "/home/private/alice" not in report and "[PRIVATE_PATH]" in report
+    assert "sk-live-abcdef" not in report and "ABC_TOKEN" not in report
+    assert "<img" not in report
+
+
+def test_opaque_bytes_are_selected_with_sensitivity_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    blob = root / "artifacts" / "167" / "US3" / "blob.bin"
+    blob.write_bytes(b"\x00\x01opaque\n")
+    selector, artifact = _capture_artifact(root, ordinal=12, source=blob, kind=ArtifactType.OPAQUE)
+    result = export_packet(root, SUBJECT, output=root / "opaque.zip", selectors=(selector,))
+    assert result.items[0].sensitivity == "opaque"
+    manifest = read_manifest(root / "opaque.zip")
+    assert manifest["entries"]["attachments/blob.bin"]["sensitivity"] == "opaque"
+    report = (root / "opaque.zip").read_bytes()
+    assert b"not redacted" in report and b"safe" not in report
+
+
+def test_offline_verification_refuses_bad_names_bounds_and_bytes(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    archive = root / "good.zip"
+    export_packet(root, SUBJECT, output=archive, selectors=(_selector(2),))
+    names, contents = _read_zip(archive)
+    manifest = json.loads(contents["manifest.json"])
+    manifest["entries"]["attachments/coverage.txt"]["sha256"] = "0" * 64
+    contents["manifest.json"] = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    contents["manifest.sha256"] = hashlib.sha256(contents["manifest.json"]).hexdigest().encode()
+
+    corrupt = root / "corrupt.zip"
+    with zipfile.ZipFile(corrupt, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
+        for name, data in contents.items():
+            output.writestr(name, data)
+    with pytest.raises(PacketError, match="digest"):
+        verify_packet(corrupt)
+
+    unlisted = root / "unlisted.zip"
+    with zipfile.ZipFile(unlisted, "w") as output:
+        for name, data in contents.items():
+            output.writestr(name, data)
+        output.writestr("attachments/extra.txt", b"unlisted")
+    with pytest.raises(PacketError, match="unlisted"):
+        verify_packet(unlisted)
+
+    duplicate = root / "duplicate.zip"
+    with zipfile.ZipFile(duplicate, "w") as output:
+        for name, data in contents.items():
+            output.writestr(name, data)
+        output.writestr("report.md", b"duplicate")
+    with pytest.raises(PacketError, match="duplicate"):
+        verify_packet(duplicate)
+
+    bomb = root / "bomb.zip"
+    with zipfile.ZipFile(bomb, "w", compression=zipfile.ZIP_DEFLATED) as output:
+        output.writestr("manifest.json", contents["manifest.json"])
+        output.writestr("manifest.sha256", contents["manifest.sha256"])
+        output.writestr("report.md", contents["report.md"])
+        output.writestr("attachments/coverage.txt", b"x" * 32)
+    with pytest.raises(PacketError, match="expanded"):
+        verify_packet(bomb, limits=ArchiveLimits(max_expanded_bytes=8))
+
+
+def test_output_writes_are_atomic_and_collisions_are_preserved(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    collision = root / "collision.zip"
+    collision.write_bytes(b"unchanged\n")
+    with pytest.raises(PacketError, match="collision"):
+        export_packet(root, SUBJECT, output=collision, selectors=(_selector(2),))
+    assert collision.read_bytes() == b"unchanged\n"
+    assert not list(root.glob("*.tmp"))
+
+    output = root / "atomic.zip"
+    export_packet(root, SUBJECT, output=output, selectors=(_selector(2),))
+    before = output.read_bytes()
+    temporary = root / "atomic.zip.tmp"
+    temporary.write_bytes(b"partial")
+    original_replace = os.replace
+
+    def failing_replace(source: Path, destination: Path) -> None:
+        if Path(destination) == output:
+            raise OSError("simulated crash before publication")
+        return original_replace(source, destination)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "replace", failing_replace)
+        with pytest.raises(OSError, match="simulated crash"):
+            export_packet(root, SUBJECT, output=output, selectors=(_selector(2),), force_output=True)
+    assert output.read_bytes() == before
+    assert temporary.exists()
+    temporary.unlink()
