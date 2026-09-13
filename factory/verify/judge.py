@@ -270,7 +270,7 @@ class JudgeParseError(ValueError):
 
 
 class JudgeUnavailableError(RuntimeError):
-    """An outage, with observable transport deliveries retained for the packet."""
+    """An outage; its deliveries are retained for the packet."""
 
     def __init__(self, message: str, *, deliveries: tuple[JudgeDelivery, ...] = ()):
         super().__init__(message)
@@ -837,25 +837,19 @@ async def run_judge(
     )
 
     def persist(status, completion, *, verdict=None, feedback, parse_error=None):
-        _record_evaluation(evaluation_sink, _evaluation(
-            criteria, model_alias=model_alias, judge_attempt=judge_attempt,
-            verdict=verdict, completion=completion, scoring_job_id=scoring_job_id,
-            invocation_id=invocation_id, tested_revision=tested_revision,
-            status=status, feedback=feedback, parse_error=parse_error,
-            truncated_input=prompt.truncated_input, gates_shown=prompt.gates_shown,
-            key_alias=key_alias,
-        ))
+        if evaluation_sink is not None:
+            _record = _evaluation(
+                criteria, model_alias=model_alias, judge_attempt=judge_attempt,
+                verdict=verdict, completion=completion, scoring_job_id=scoring_job_id,
+                invocation_id=invocation_id, tested_revision=tested_revision,
+                status=status, feedback=feedback, parse_error=parse_error,
+                truncated_input=prompt.truncated_input, gates_shown=prompt.gates_shown,
+                key_alias=key_alias,
+            )
+            evaluation_sink(_record)
 
     try:
-        completion = await _complete(
-            prompt,
-            proxy_url=proxy_url,
-            virtual_key=virtual_key,
-            model_alias=model_alias,
-            transport=transport,
-            timeout=timeout,
-            retry_backoff_s=retry_backoff_s,
-        )
+        completion = await _complete(prompt, proxy_url=proxy_url, virtual_key=virtual_key, model_alias=model_alias, transport=transport, timeout=timeout, retry_backoff_s=retry_backoff_s)
     except JudgeUnavailableError as exc:
         persist("unavailable", Completion("", deliveries=exc.deliveries), feedback=str(exc))
         raise
@@ -890,21 +884,10 @@ async def run_judge(
 
 
 def _evaluation(
-    criteria: CriteriaSet,
-    *,
-    model_alias: str,
-    judge_attempt: int,
-    verdict: JudgeVerdict | None = None,
-    completion: Completion,
-    scoring_job_id: str,
-    invocation_id: str,
-    tested_revision: str,
-    status: str,
-    feedback: str,
-    key_alias: str,
-    parse_error: str | None = None,
-    truncated_input: bool | None = None,
-    gates_shown: bool | None = None,
+    criteria: CriteriaSet, *, model_alias: str, judge_attempt: int, verdict: JudgeVerdict | None,
+    completion: Completion, scoring_job_id: str, invocation_id: str, tested_revision: str,
+    status: str, feedback: str, key_alias: str, parse_error: str | None = None,
+    truncated_input: bool | None = None, gates_shown: bool | None = None,
 ) -> JudgeEvaluationRecord:
     return JudgeEvaluationRecord(
         evaluation_id=f"{scoring_job_id}:{status}:{judge_attempt}", scoring_job_id=scoring_job_id,
@@ -914,17 +897,10 @@ def _evaluation(
         scenario_results=() if verdict is None else tuple((finding.scenario, finding.passed, finding.reasoning) for finding in verdict.findings),
         feedback=feedback, parse_error=parse_error, deliveries=completion.deliveries,
         prompt_tokens=completion.prompt_tokens, completion_tokens=completion.completion_tokens,
-        usage_status="partial" if completion.prompt_tokens is not None and completion.completion_tokens is not None else "unknown",
+        usage_status="unknown" if completion.prompt_tokens is None or completion.completion_tokens is None else "partial",
         truncated_input=verdict.truncated_input if verdict is not None else truncated_input,
         gates_shown=verdict.gates_shown if verdict is not None else gates_shown,
     )
-
-
-def _record_evaluation(sink: Any | None, record: JudgeEvaluationRecord) -> None:
-    if sink is not None:
-        sink(record)
-
-
 def _reask_on_contradiction(
     verdict: JudgeVerdict,
     gate_results: Sequence[GateResult],

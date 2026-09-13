@@ -94,7 +94,8 @@ class AttemptGitEvidence:
     base_commit: str
     attempted_commit: str
     verified_commit: str
-    files: tuple[GitFileChange, ...]
+    attempted_files: tuple[GitFileChange, ...]
+    verified_files: tuple[GitFileChange, ...]
     log_tail: str
     log_truncated: bool
     tests_executed: tuple[str, ...]

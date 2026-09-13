@@ -20,7 +20,6 @@ def capture_attempt_evidence(
     base_commit = _rev_parse(cwd, base_ref)
     attempted_commit = _tree_or_commit(cwd, attempted_ref)
     verified_commit = attempted_commit if verified_ref == "worktree" else _tree_or_commit(cwd, verified_ref)
-    files = _file_manifest(cwd, base_commit, attempted_commit)
     gate_tail = "\n".join(f"{gate.name}: {gate.output_tail}" for gate in gate_results)
     log_truncated = any(gate.output_truncated for gate in gate_results)
     encoded = gate_tail.encode("utf-8")
@@ -33,7 +32,9 @@ def capture_attempt_evidence(
     evidence = AttemptGitEvidence(
         evidence_id=evidence_id, epic_id=epic_id, node_id=node_id, attempt=attempt,
         dispatch=dispatch, base_commit=base_commit, attempted_commit=attempted_commit,
-        verified_commit=verified_commit, files=files, log_tail=gate_tail,
+        verified_commit=verified_commit,
+        attempted_files=_file_manifest(cwd, base_commit, attempted_commit),
+        verified_files=_file_manifest(cwd, base_commit, verified_commit), log_tail=gate_tail,
         log_truncated=log_truncated,
         tests_executed=tuple(gate.command for gate in gate_results if gate.name == "test"),
         coverage_status="absent",
@@ -58,9 +59,9 @@ def _git(cwd: Path, *args: str) -> bytes:
     return subprocess.run(["git", *args], cwd=cwd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
 
 
-def _file_manifest(cwd: Path, base_commit: str, attempted_commit: str) -> tuple[GitFileChange, ...]:
-    statuses = _git(cwd, *DIFF_TREE, "--name-status", base_commit, attempted_commit).decode("utf-8", errors="surrogateescape")
-    binaries = _binary_paths(cwd, base_commit, attempted_commit)
+def _file_manifest(cwd: Path, base: str, attempted: str) -> tuple[GitFileChange, ...]:
+    statuses = _git(cwd, *DIFF_TREE, "--name-status", base, attempted).decode("utf-8", errors="surrogateescape")
+    binaries = _binary_paths(cwd, base, attempted)
     files: list[GitFileChange] = []
     entries = iter(statuses.split("\0"))
     for status in entries:
@@ -75,8 +76,8 @@ def _file_manifest(cwd: Path, base_commit: str, attempted_commit: str) -> tuple[
     return tuple(sorted(files, key=lambda item: (item.path, item.old_path or "")))
 
 
-def _binary_paths(cwd: Path, base_commit: str, attempted_commit: str) -> set[str]:
-    output = _git(cwd, *DIFF_TREE, "--numstat", base_commit, attempted_commit).decode("utf-8", errors="surrogateescape")
+def _binary_paths(cwd: Path, base: str, attempted: str) -> set[str]:
+    output = _git(cwd, *DIFF_TREE, "--numstat", base, attempted).decode("utf-8", errors="surrogateescape")
     return {
         fields[2] for entry in output.split("\0") if len(fields := entry.split("\t", 2)) == 3
         and fields[0] == fields[1] == "-"

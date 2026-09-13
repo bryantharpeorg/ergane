@@ -238,18 +238,21 @@ def _record(path: str | Path, record: object, evidence_id: str) -> None:
         connection.commit()
 
 
-def _decode(payload: str, model: type[JudgeEvaluationRecord | AttemptGitEvidence], nested: str) -> JudgeEvaluationRecord | AttemptGitEvidence:
+def _decode(payload: str, model: type[JudgeEvaluationRecord | AttemptGitEvidence]) -> JudgeEvaluationRecord | AttemptGitEvidence:
     data = json.loads(payload)
-    data[nested] = tuple((JudgeDelivery if nested == "deliveries" else GitFileChange)(**item) for item in data[nested])
+    nested_values = ("deliveries",) if model is JudgeEvaluationRecord else ("attempted_files", "verified_files")
+    for nested in nested_values:
+        model_item = JudgeDelivery if nested == "deliveries" else GitFileChange
+        data[nested] = tuple(model_item(**item) for item in data[nested])
     if model is AttemptGitEvidence:
         data["tests_executed"] = tuple(data["tests_executed"])
     return model(**data)
 
 
-def _read(path: str | Path, model: type[JudgeEvaluationRecord | AttemptGitEvidence], nested: str) -> tuple:
+def _read(path: str | Path, model: type[JudgeEvaluationRecord | AttemptGitEvidence]) -> tuple:
     with connect(path) as connection:
         rows = connection.execute("SELECT payload FROM evidence_records ORDER BY evidence_id")
-        return tuple(_decode(row[0], model, nested) for row in rows)
+        return tuple(_decode(row[0], model) for row in rows if (model is JudgeEvaluationRecord) == ('"deliveries"' in row[0]))
 
 
 def record_scoring_evaluation(
@@ -260,8 +263,7 @@ def record_scoring_evaluation(
 
 
 def read_scoring_evaluations(path: str | Path) -> tuple[JudgeEvaluationRecord, ...]:
-    records = _read(path, JudgeEvaluationRecord, "deliveries")
-    return tuple(sorted(records, key=lambda item: (item.scoring_call_ordinal, item.evaluation_id)))
+    return tuple(sorted(_read(path, JudgeEvaluationRecord), key=lambda item: (item.scoring_call_ordinal, item.evaluation_id)))
 
 
 def record_attempt_evidence(
@@ -272,4 +274,4 @@ def record_attempt_evidence(
 
 
 def read_attempt_evidence(path: str | Path) -> tuple[AttemptGitEvidence, ...]:
-    return tuple(_read(path, AttemptGitEvidence, "files"))
+    return tuple(_read(path, AttemptGitEvidence))

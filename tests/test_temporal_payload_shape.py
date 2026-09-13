@@ -715,7 +715,7 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
     "factory.workgraph.workflow.NodeStatus": ("state", "attempt", "branch",),
     "factory.workgraph.worktree.PreparedWorktree": ("path", "branch", "base_ref",),
     "factory.activities.verify_activities.CaptureAttemptEvidenceInput": ("evidence_id", "epic_id", "node_id", "attempt", "dispatch", "worktree_path", "base_ref", "attempted_ref", "verified_ref", "gate_results",),
-    "factory.attestation.models.AttemptGitEvidence": ("evidence_id", "epic_id", "node_id", "attempt", "dispatch", "base_commit", "attempted_commit", "verified_commit", "files", "log_tail", "log_truncated", "tests_executed", "coverage_status",),
+    "factory.attestation.models.AttemptGitEvidence": ("evidence_id", "epic_id", "node_id", "attempt", "dispatch", "base_commit", "attempted_commit", "verified_commit", "attempted_files", "verified_files", "log_tail", "log_truncated", "tests_executed", "coverage_status",),
     "factory.attestation.models.GitFileChange": ("path", "status",),}
 
 

@@ -1515,7 +1515,7 @@ class ScriptedWorld:
             script._log(
                 "capture_attempt_evidence", _node_of_worktree(request.worktree_path)
             )
-            return AttemptGitEvidence("e","e","n",1,"d","a"*40,"b"*40,"b"*40,(),"",False,(),"absent")
+            return AttemptGitEvidence("e","e","n",1,"d","a"*40,"b"*40,"b"*40,(),(),"",False,(),"absent")
 
         @activity.defn(name="run_judge")
         async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
