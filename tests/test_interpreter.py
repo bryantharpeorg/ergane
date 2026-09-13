@@ -193,6 +193,7 @@ from factory.activities.verify_activities import (
     RunJudgeInput,
     SnapshotCriteriaInput,
 )
+from factory.attestation.models import AttemptGitEvidence
 from factory.config import Persona, WriteScope
 from factory.notify.service import QUESTION_SIGNAL_NAME, SIGNAL_NAME
 from factory.usage.models import KeyLease, Termination, UsageRecord, UsageSnapshot
@@ -1510,10 +1511,11 @@ class ScriptedWorld:
         @activity.defn(name="capture_attempt_evidence")
         async def capture_attempt_evidence(
             request: CaptureAttemptEvidenceInput,
-        ) -> None:
+        ) -> AttemptGitEvidence:
             script._log(
                 "capture_attempt_evidence", _node_of_worktree(request.worktree_path)
             )
+            return AttemptGitEvidence("e","e","n",1,"d","a"*40,"b"*40,"b"*40,(),"",False,(),"absent")
 
         @activity.defn(name="run_judge")
         async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
@@ -4271,11 +4273,11 @@ async def test_a_scored_node_runs_the_judge_inside_its_own_key_lifecycle(
         "detect_operator_question_activity",
         "run_gates",
         "check_output",
+        "capture_attempt_evidence",
         "read_worktree_diff",
         f"issue_attempt_key:{JUDGE_PERSONA}",
         "run_judge",
         f"teardown_attempt:{JUDGE_PERSONA}",
-        "capture_attempt_evidence",
         "record_verification",
         "teardown_attempt:implementer",
         "salvage_worktree",
@@ -4580,6 +4582,7 @@ async def test_an_unreadable_judge_response_is_re_asked_inside_the_attempt(
     assert [key.attempt for key in judge_keys(script)] == [1]
     assert len([t for t in script.teardowns if t.lease.persona == JUDGE_PERSONA]) == 1
     assert script.judge_requests[0].virtual_key == script.judge_requests[1].virtual_key
+    assert {request.tested_revision for request in script.judge_requests} == {"b" * 40}
     assert script.judge_requests[1].prior_feedback == UNREADABLE_FEEDBACK
 
     # One agent attempt, one row, and the verdict of the judge that answered.

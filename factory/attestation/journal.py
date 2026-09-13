@@ -241,6 +241,8 @@ def _record(path: str | Path, record: object, evidence_id: str) -> None:
 def _decode(payload: str, model: type[JudgeEvaluationRecord | AttemptGitEvidence], nested: str) -> JudgeEvaluationRecord | AttemptGitEvidence:
     data = json.loads(payload)
     data[nested] = tuple((JudgeDelivery if nested == "deliveries" else GitFileChange)(**item) for item in data[nested])
+    if model is AttemptGitEvidence:
+        data["tests_executed"] = tuple(data["tests_executed"])
     return model(**data)
 
 

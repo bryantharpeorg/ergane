@@ -486,6 +486,7 @@ class RunJudgeInput:
     scoring_job_id: str = "unattributed"
     invocation_id: str = ""
     tested_revision: str = ""
+    key_alias: str = ""
 
 
 @activity.defn
@@ -518,6 +519,7 @@ async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
             scoring_job_id=request.scoring_job_id,
             invocation_id=request.invocation_id,
             tested_revision=request.tested_revision,
+            key_alias=request.key_alias,
             evaluation_sink=lambda record: record_scoring_evaluation(default_journal_path(), record),
         )
     except judge.JudgeUnavailableError as exc:

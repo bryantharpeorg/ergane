@@ -204,7 +204,7 @@ with workflow.unsafe.imports_passed_through():
         run_judge,
         snapshot_criteria,
     )
-    from factory.attestation import RungSelection
+    from factory.attestation.models import GitFileChange, RungSelection
     from factory.mergequeue.classify import classify
     from factory.mergequeue.models import (
         CheckFailure,
@@ -2727,7 +2727,6 @@ class EpicWorkflow:
         *,
         provenance: str | None = None,
         routing: ResolvedPersona | None = None,
-        tested_revision: str = "",
     ) -> tuple[VerificationResult, JudgeVerdict | None]:
         """Gates, then output, then — only if it can still matter — the judge.
 
@@ -2788,6 +2787,25 @@ class EpicWorkflow:
             **_FAST,
         )
 
+        git_evidence = None
+        if workflow.patched("attempt-git-evidence"):
+            git_evidence = await workflow.execute_activity(
+                capture_attempt_evidence,
+                CaptureAttemptEvidenceInput(
+                    evidence_id=f"{dispatch}:{node.id}:{attempt}:git",
+                    epic_id=request.graph.epic_id,
+                    node_id=node.id,
+                    attempt=attempt,
+                    dispatch=dispatch,
+                    worktree_path=prepared.path,
+                    base_ref=prepared.base_ref,
+                    attempted_ref="worktree",
+                    verified_ref="worktree",
+                    gate_results=list(gate_results),
+                ),
+                **_GIT,
+            )
+
         verdict: JudgeVerdict | None = None
         if judge_required(gate_results, output, criteria):
             diff_text = await workflow.execute_activity(
@@ -2811,7 +2829,7 @@ class EpicWorkflow:
                 # unscoreable — the judge was asked to guess an answer the
                 # factory had already written down.
                 gate_results,
-                tested_revision,
+                git_evidence.attempted_commit if git_evidence is not None else "",
             )
 
         gate_names = tuple(r.name for r in gate_results)
@@ -2864,25 +2882,6 @@ class EpicWorkflow:
         )
         if provenance is not None:
             result = replace(result, provenance=provenance)
-
-        # Replay-032 histories predate Git evidence collection.
-        if workflow.patched("attempt-git-evidence"):
-            await workflow.execute_activity(
-                capture_attempt_evidence,
-                CaptureAttemptEvidenceInput(
-                    evidence_id=f"{dispatch}:{node.id}:{attempt}:git",
-                    epic_id=request.graph.epic_id,
-                    node_id=node.id,
-                    attempt=attempt,
-                    dispatch=dispatch,
-                    worktree_path=prepared.path,
-                    base_ref=prepared.base_ref,
-                    attempted_ref="worktree",
-                    verified_ref="worktree",
-                    gate_results=list(gate_results),
-                ),
-                **_GIT,
-            )
 
         recorded = await workflow.execute_activity(
             record_verification,
@@ -3141,6 +3140,7 @@ class EpicWorkflow:
                     or f"{lease.epic_id}:{lease.node_id}:{lease.attempt}:score",
                     invocation_id=lease.invocation_id,
                     tested_revision=tested_revision,
+                    key_alias=lease.key_alias,
                 ),
                 **_JUDGE,
             )

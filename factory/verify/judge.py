@@ -796,6 +796,7 @@ async def run_judge(
     scoring_job_id: str = "unattributed",
     invocation_id: str = "",
     tested_revision: str = "",
+    key_alias: str = "",
 ) -> JudgeVerdict:
     """Score `diff_text` against `criteria` with one bounded chat completion.
 
@@ -835,6 +836,16 @@ async def run_judge(
         gate_results=gate_results,
     )
 
+    def persist(status, completion, *, verdict=None, feedback, parse_error=None):
+        _record_evaluation(evaluation_sink, _evaluation(
+            criteria, model_alias=model_alias, judge_attempt=judge_attempt,
+            verdict=verdict, completion=completion, scoring_job_id=scoring_job_id,
+            invocation_id=invocation_id, tested_revision=tested_revision,
+            status=status, feedback=feedback, parse_error=parse_error,
+            truncated_input=prompt.truncated_input, gates_shown=prompt.gates_shown,
+            key_alias=key_alias,
+        ))
+
     try:
         completion = await _complete(
             prompt,
@@ -846,17 +857,7 @@ async def run_judge(
             retry_backoff_s=retry_backoff_s,
         )
     except JudgeUnavailableError as exc:
-        _record_evaluation(
-            evaluation_sink,
-            _evaluation(
-                criteria, virtual_key=virtual_key, model_alias=model_alias,
-                judge_attempt=judge_attempt,
-                completion=Completion("", deliveries=exc.deliveries),
-                scoring_job_id=scoring_job_id, invocation_id=invocation_id,
-                tested_revision=tested_revision, status="unavailable",
-                feedback=str(exc),
-            ),
-        )
+        persist("unavailable", Completion("", deliveries=exc.deliveries), feedback=str(exc))
         raise
 
     try:
@@ -871,17 +872,7 @@ async def run_judge(
     except JudgeParseError as exc:
         exhausted = judge_attempt >= 1 + max_judge_retries
         feedback = _malformed_feedback(exc, exhausted=exhausted)
-        _record_evaluation(
-            evaluation_sink,
-            _evaluation(
-                criteria, virtual_key=virtual_key, model_alias=model_alias,
-                judge_attempt=judge_attempt, completion=completion,
-                scoring_job_id=scoring_job_id, invocation_id=invocation_id,
-                tested_revision=tested_revision, status="parse_error",
-                feedback=feedback, parse_error=str(exc),
-                truncated_input=prompt.truncated_input, gates_shown=prompt.gates_shown,
-            ),
-        )
+        persist("parse_error", completion, feedback=feedback, parse_error=str(exc))
         return JudgeVerdict(
             outcome=JudgeOutcome.FAIL if exhausted else JudgeOutcome.RETRY,
             findings=[], feedback=feedback, judge_attempt=judge_attempt,
@@ -891,17 +882,9 @@ async def run_judge(
 
     contradictions = detect_gate_contradictions(verdict, gate_results or ())
     status = "contradiction" if contradictions else "valid"
-    _record_evaluation(
-        evaluation_sink,
-        _evaluation(
-            criteria, virtual_key=virtual_key, model_alias=model_alias,
-            judge_attempt=judge_attempt, verdict=verdict, completion=completion,
-            scoring_job_id=scoring_job_id, invocation_id=invocation_id,
-            tested_revision=tested_revision, status=status,
-            feedback=_contradiction_feedback(verdict.feedback, contradictions)
-            if contradictions
-            else verdict.feedback,
-        ),
+    persist(
+        status, completion, verdict=verdict,
+        feedback=_contradiction_feedback(verdict.feedback, contradictions) if contradictions else verdict.feedback,
     )
     return _reask_on_contradiction(verdict, gate_results or (), judge_attempt=judge_attempt, max_judge_retries=max_judge_retries)
 
@@ -909,7 +892,6 @@ async def run_judge(
 def _evaluation(
     criteria: CriteriaSet,
     *,
-    virtual_key: str,
     model_alias: str,
     judge_attempt: int,
     verdict: JudgeVerdict | None = None,
@@ -919,13 +901,14 @@ def _evaluation(
     tested_revision: str,
     status: str,
     feedback: str,
+    key_alias: str,
     parse_error: str | None = None,
     truncated_input: bool | None = None,
     gates_shown: bool | None = None,
 ) -> JudgeEvaluationRecord:
     return JudgeEvaluationRecord(
         evaluation_id=f"{scoring_job_id}:{status}:{judge_attempt}", scoring_job_id=scoring_job_id,
-        scoring_call_ordinal=judge_attempt, invocation_id=invocation_id, key_alias=virtual_key,
+        scoring_call_ordinal=judge_attempt, invocation_id=invocation_id, key_alias=key_alias,
         criteria_fingerprint=criteria.source_sha256, tested_revision=tested_revision,
         status=status, model_alias=model_alias,
         scenario_results=() if verdict is None else tuple((finding.scenario, finding.passed, finding.reasoning) for finding in verdict.findings),
@@ -1022,7 +1005,7 @@ async def _complete(
     transport: httpx.AsyncBaseTransport | None,
     timeout: float,
     retry_backoff_s: float,
-) -> str:
+) -> Completion:
     """POST the one completion and return the assistant's text (R4).
 
     Retries a briefly unreachable backend and then gives up: this is the only

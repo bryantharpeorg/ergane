@@ -1,7 +1,6 @@
 """US2-S5: exact Git and gate evidence is captured before cleanup."""
 
 import subprocess
-from dataclasses import replace
 from pathlib import Path
 import pytest
 from temporalio.testing import ActivityEnvironment
@@ -45,23 +44,16 @@ def git_repo(tmp_path: Path) -> tuple[Path, str, str]:
 
 
 def gate_results() -> tuple[GateResult, GateResult]:
-    return (
-        GateResult("test", "pytest", GateStatus.PASS, 0, 1.0, tail_output("x" * 40_000), output_truncated=True),
-        GateResult("lint", "lint", GateStatus.PASS, 0, 0.5, "ok"),
-    )
-
-
-def request(repo: Path, base: str, attempted: str, evidence_id: str):
-    return CaptureAttemptEvidenceInput(
-        evidence_id=evidence_id, epic_id="epic", node_id="node", attempt=1, dispatch="dispatch",
-        worktree_path=str(repo), base_ref=base, attempted_ref=attempted, verified_ref=attempted,
-        gate_results=list(gate_results()),
-    )
+    return (GateResult("test", "pytest", GateStatus.PASS, 0, 1.0, tail_output("x" * 40_000), output_truncated=True), GateResult("lint", "lint", GateStatus.PASS, 0, 0.5, "ok"))
 
 
 async def capture(git_repo, evidence_id: str):
     repo, base, attempted = git_repo
-    return await ActivityEnvironment().run(capture_attempt_evidence, request(repo, base, attempted, evidence_id))
+    return await ActivityEnvironment().run(capture_attempt_evidence, CaptureAttemptEvidenceInput(
+        evidence_id=evidence_id, epic_id="epic", node_id="node", attempt=1, dispatch="dispatch",
+        worktree_path=str(repo), base_ref=base, attempted_ref=attempted, verified_ref=attempted,
+        gate_results=list(gate_results()),
+    ))
 
 
 async def test_capture_exact_refs_and_safe_file_manifest(git_repo, monkeypatch) -> None:
@@ -77,13 +69,4 @@ async def test_capture_exact_refs_and_safe_file_manifest(git_repo, monkeypatch) 
     } <= statuses
     assert all("\0" not in item.path for item in evidence.files)
     assert (evidence.tests_executed, evidence.coverage_status, evidence.log_truncated) == (("pytest",), "absent", True)
-
-
-async def test_attempt_evidence_is_persisted_for_the_report(git_repo, monkeypatch) -> None:
-    journal = git_repo[0].parent / "attestation.db"
-    monkeypatch.setenv("ERGANE_ATTESTATION_DB", str(journal))
-    await capture(git_repo, "evidence-2")
-    evidence = read_attempt_evidence(journal)[0]
-    assert (evidence.evidence_id, evidence.base_commit) == ("evidence-2", git_repo[1])
-    assert evidence.attempted_commit == evidence.verified_commit == git_repo[2]
-    assert (evidence.log_truncated, evidence.coverage_status) == (True, "absent")
+    assert read_attempt_evidence(journal)[0] == evidence

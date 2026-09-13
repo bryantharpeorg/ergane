@@ -7,7 +7,7 @@ import pytest
 from temporalio.testing import ActivityEnvironment
 
 from factory.activities import usage_activities, verify_activities
-from factory.activities.usage_activities import ERGANE_LEDGER_PATH_ENV, IssueKeyInput, TeardownInput, issue_attempt_key, teardown_attempt
+from factory.activities.usage_activities import ERGANE_LEDGER_PATH_ENV, TeardownInput, issue_attempt_key, teardown_attempt
 from factory.activities.verify_activities import RunJudgeInput
 from factory.attestation import read_scoring_evaluations, read_usage_evidence
 from factory.usage.litellm_client import LiteLLMClient
@@ -23,6 +23,7 @@ JOB = "us2:1:score"
 INV = "run-167:us2:judge:score:1"
 REV = "attempt-tree-1"
 MODEL = "judge-model"
+KEY_ALIAS = "epic-167:us2:1:judge"
 FP = "1" * 64
 SCENARIOS = tuple(Scenario(f"US2-S{i}", [f"**Then** scenario {i} survives"], f"{i}. ...") for i in (1, 2))
 CRITERIA = CriteriaSet(
@@ -32,28 +33,10 @@ CRITERIA = CriteriaSet(
 )
 
 
-def judge_input(**overrides: Any) -> IssueKeyInput:
-    return issue_input(
-        persona="judge", epic_id="epic-167", node_id="us2", attempt=1,
-        spec_ref=CRITERIA.spec_ref, models=[MODEL], target="bryantharpeorg/ergane",
-        spec_revision=CRITERIA.source_path, spec_fingerprint=CRITERIA.source_sha256,
-        epic_workflow_id="workflow-167", epic_run_id="run-167",
-        invocation_id=INV, launch_ordinal=1, ladder_ordinal=1,
-        scoring_job_id=JOB, transition_reason="judge scoring job", agent="", route="gateway", **overrides,
-    )
-
-
 async def score(proxy: FakeJudgeProxy, *, sink: Callable[[Any], None], **kwargs: Any) -> Any:
     prior_feedback = None
     for judge_attempt in range(1, kwargs.pop("max_judge_retries") + 2):
-        verdict = await run_judge(
-        CRITERIA, "diff", scoring_job_id=JOB, invocation_id=INV,
-        tested_revision=REV, proxy_url=proxy.base_url,
-            virtual_key=proxy.virtual_key, model_alias=MODEL,
-            transport=proxy.transport, retry_backoff_s=0.0,
-            judge_attempt=judge_attempt, prior_feedback=prior_feedback,
-            evaluation_sink=sink, **kwargs,
-        )
+        verdict = await run_judge(CRITERIA, "diff", scoring_job_id=JOB, invocation_id=INV, tested_revision=REV, proxy_url=proxy.base_url, virtual_key=proxy.virtual_key, model_alias=MODEL, key_alias=KEY_ALIAS, transport=proxy.transport, retry_backoff_s=0.0, judge_attempt=judge_attempt, prior_feedback=prior_feedback, evaluation_sink=sink, **kwargs)
         if verdict.outcome != JudgeOutcome.RETRY:
             return verdict
         prior_feedback = verdict.feedback
@@ -63,7 +46,7 @@ async def test_the_real_reask_loop_keeps_transport_and_every_evaluation() -> Non
     proxy = FakeJudgeProxy()
     proxy.fail_next(times=1)
     proxy.reply("this is not a verdict object")
-    proxy.reply('{"verdict":"pass","scenarios":[{"scenario":"US2-S1","pass":false,"reasoning":"the test gate would fail"},{"scenario":"US2-S2","pass":true,"reasoning":"S2 passed"}],"feedback":"contradictory draft"}')
+    proxy.reply(verdict_json(verdict="pass", scenarios=(("US2-S1", False), ("US2-S2", True)), feedback="contradictory draft").replace("US2-S1: the diff does not satisfy every step", "the test gate would fail"))
     proxy.reply(verdict_json(scenarios=(("US2-S1", True), ("US2-S2", True)), feedback="the gate is recorded PASS"))
     records: list[Any] = []
     verdict = await score(
@@ -71,9 +54,7 @@ async def test_the_real_reask_loop_keeps_transport_and_every_evaluation() -> Non
         gate_results=[GateResult("test", "pytest", "PASS", 0, 1.0, "1 passed")],
     )
     assert (verdict.judge_attempt, verdict.outcome.value) == (3, "PASS")
-    assert [(record.scoring_call_ordinal, record.status) for record in records] == [
-        (1, "parse_error"), (2, "contradiction"), (3, "valid"),
-    ]
+    assert [(record.scoring_call_ordinal, record.status) for record in records] == [(1, "parse_error"), (2, "contradiction"), (3, "valid")]
     first_delivery = records[0].deliveries
     assert [item.status for item in first_delivery] == ["transport_error", "delivered"]
     assert first_delivery[0].error
@@ -82,6 +63,7 @@ async def test_the_real_reask_loop_keeps_transport_and_every_evaluation() -> Non
          record.prompt_tokens, record.completion_tokens, record.usage_status) == (FP, REV, MODEL, 1200, 180, "partial") for record in records
     )
     assert len({record.evaluation_id for record in records}) == 3
+    assert all(record.key_alias == KEY_ALIAS and proxy.virtual_key not in record.feedback for record in records)
     assert [result[:2] for result in records[1].scenario_results] == [("US2-S1", False), ("US2-S2", True)]
 
 
@@ -93,7 +75,13 @@ async def test_one_scoring_job_has_one_usage_total_and_unknown_request_metrics(
     monkeypatch.setenv("ERGANE_ATTESTATION_DB", str(journal))
     monkeypatch.setattr(usage_activities, "open_client", lambda: LiteLLMClient.from_env(transport=litellm_env.transport))
     environment = ActivityEnvironment()
-    lease = await environment.run(issue_attempt_key, judge_input())
+    lease = await environment.run(issue_attempt_key, issue_input(
+        persona="judge", epic_id="epic-167", node_id="us2", attempt=1, spec_ref=CRITERIA.spec_ref,
+        models=[MODEL], target="bryantharpeorg/ergane", spec_revision=CRITERIA.source_path,
+        spec_fingerprint=CRITERIA.source_sha256, epic_workflow_id="workflow-167", epic_run_id="run-167",
+        invocation_id=INV, launch_ordinal=1, ladder_ordinal=1, scoring_job_id=JOB,
+        transition_reason="judge scoring job", agent="", route="gateway",
+    ))
     await environment.run(teardown_attempt, TeardownInput(lease=lease, termination=Termination.COMPLETED))
     evidence = read_usage_evidence(ledger)
     assert (len(evidence), evidence[0].builder_or_judge) == (1, "judge")
@@ -104,13 +92,7 @@ async def test_one_scoring_job_has_one_usage_total_and_unknown_request_metrics(
 
 
 def judge_run(proxy: FakeJudgeProxy, *, judge_attempt: int = 1, max_judge_retries: int = 0, prior_feedback: str | None = None) -> RunJudgeInput:
-    return RunJudgeInput(
-        criteria=CRITERIA, diff_text="diff", virtual_key=proxy.virtual_key,
-        proxy_url=proxy.base_url, model_alias=MODEL, judge_attempt=judge_attempt,
-        prior_feedback=prior_feedback, max_judge_retries=max_judge_retries,
-        scoring_job_id=JOB,
-        invocation_id=INV, tested_revision=REV,
-    )
+    return RunJudgeInput(criteria=CRITERIA, diff_text="diff", virtual_key=proxy.virtual_key, proxy_url=proxy.base_url, model_alias=MODEL, judge_attempt=judge_attempt, prior_feedback=prior_feedback, max_judge_retries=max_judge_retries, scoring_job_id=JOB, invocation_id=INV, tested_revision=REV)
 
 
 async def judge_activity(monkeypatch, proxy: FakeJudgeProxy, run: RunJudgeInput) -> Any:
@@ -145,10 +127,7 @@ async def test_run_judge_activity_persists_an_unavailable_scoring_failure(
     proxy.fail_always(503)
     monkeypatch.setenv("ERGANE_ATTESTATION_DB", str(journal))
     with pytest.raises(Exception):
-        await judge_activity(
-            monkeypatch, proxy,
-            judge_run(proxy, max_judge_retries=0),
-        )
+        await judge_activity(monkeypatch, proxy, judge_run(proxy, max_judge_retries=0))
     records = read_scoring_evaluations(journal)
     assert [(record.status, record.scoring_call_ordinal) for record in records] == [("unavailable", 1)]
     record = records[0]
