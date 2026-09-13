@@ -1378,6 +1378,7 @@ class ScriptedWorld:
                 persona=request.persona,
                 spec_ref=request.spec_ref,
                 issued_at="2026-08-05T09:30:00Z",
+                invocation_id=request.invocation_id,
             )
 
         @activity.defn(name="run_agent_attempt")
@@ -6080,4 +6081,3 @@ async def test_checks_failed_recovery_without_enqueued_tip_reenqueues_normally(
     assert script.compare_trees_requests == []
     assert len(script.escalation_requests) == 0
     assert [r.pr_number for r in script.enqueue_requests] == [pr_number, pr_number]
-
