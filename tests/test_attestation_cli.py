@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import io
 from pathlib import Path
+from contextlib import redirect_stderr, redirect_stdout
 
 import pytest
 
@@ -13,9 +15,6 @@ from tests.test_attestation_archive import SUBJECT, _write, _selector
 
 
 def _run(*args: str) -> tuple[int, str, str]:
-    import io
-    from contextlib import redirect_stderr, redirect_stdout
-
     stdout, stderr = io.StringIO(), io.StringIO()
     with redirect_stdout(stdout), redirect_stderr(stderr):
         code = main(list(args))
@@ -78,6 +77,13 @@ def test_cli_refuses_ambiguous_subjects_and_incomplete_strict_export(tmp_path: P
     assert "incomplete" in error
     assert not archive.exists()
 
+    incomplete = root / "incomplete.zip"
+    code, _, _ = _run(*_export_args(root, incomplete, _selector(3)))
+    assert code == 0
+    code, _, error = _run("attestation", "verify", str(incomplete), "--strict")
+    assert code == 1
+    assert "incomplete" in error
+
 
 def test_show_and_verify_do_not_change_the_evidence_root(tmp_path: Path) -> None:
     root = tmp_path / "evidence"
@@ -86,9 +92,18 @@ def test_show_and_verify_do_not_change_the_evidence_root(tmp_path: Path) -> None
     code, _, _ = _run(*_export_args(root, archive, _selector(2)))
     assert code == 0
 
-    def state() -> list[tuple[Path, int, int]]:
+    def state() -> list[tuple[Path, tuple[int, bytes | None]]]:
         return sorted(
-            (path, path.stat().st_mode, path.stat().st_mtime_ns)
+            (
+                path,
+                (
+                    path.stat().st_mode,
+                    None
+                    if not path.is_file()
+                    or path.name.endswith((".db-shm", ".db-wal"))
+                    else path.read_bytes(),
+                ),
+            )
             for path in root.rglob("*")
             if path != archive
         )
@@ -98,18 +113,7 @@ def test_show_and_verify_do_not_change_the_evidence_root(tmp_path: Path) -> None
     code += _run("attestation", "verify", str(archive))[0]
     assert code == 0
     after = state()
-    assert {path for path, _, _ in after} == {path for path, _, _ in before}
-    before_content = {
-        path: (mode, path.read_bytes())
-        for path, mode, _ in before
-        if path.is_file() and path.suffix not in {"-shm", "-wal"}
-    }
-    after_content = {
-        path: (mode, path.read_bytes())
-        for path, mode, _ in after
-        if path.is_file() and path.suffix not in {"-shm", "-wal"}
-    }
-    assert after_content == before_content
+    assert after == before
 
 
 def test_missing_evidence_root_is_read_only(tmp_path: Path) -> None:

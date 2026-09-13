@@ -10,9 +10,6 @@ __pycache__/
 # Temporal dev server state (temporal server start-dev --db-filename .temporal/dev.db)
 .temporal/
 
-# Toolchain installs under the worktree (fresh-HOME gate compatibility).
-/.cache/
-
 # Engine-owned runtime artifacts (SQLite stores, WAL/SHM sidecars, agent homes,
 # node worktrees). `.ergane/` is the root as of 040-manifest-rename; `.factory/`
 # is the legacy name that resolve_factory_root() still honors, so both stay

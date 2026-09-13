@@ -83,7 +83,7 @@ def _export_command(args: argparse.Namespace) -> int:
 
 def _verify_command(args: argparse.Namespace) -> int:
     try:
-        manifest = verify_packet(args.archive)
+        manifest = verify_packet(args.archive, strict=args.strict)
     except PacketError as error:
         raise OperatorError(str(error)) from error
     print(json.dumps(manifest, indent=2, sort_keys=True))

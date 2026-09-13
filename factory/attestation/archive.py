@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import NamedTuple, Sequence
 
 from factory.attestation.journal import (
-    read_attempt_evidence,
     read_launches,
     read_scoring_evaluations,
 )
@@ -400,7 +399,9 @@ def export_packet(
             else:
                 name = ATTACHMENT_PREFIX + _safe_component(Path(artifact.path).name, "artifact name")
                 if name in used_names:
-                    name = ATTACHMENT_PREFIX + f"{identity.capture_id}-{Path(artifact.path).name}"
+                    name = ATTACHMENT_PREFIX + _safe_component(
+                        f"{identity.capture_id}-{Path(artifact.path).name}", "artifact name"
+                    )
                 if name in used_names:
                     raise PacketError(f"duplicate archive name: {name}")
                 total += len(data)
@@ -510,7 +511,9 @@ def read_manifest(path: Path) -> dict[str, object]:
         return json.loads(archive.read(MANIFEST_NAME))
 
 
-def verify_packet(path: Path, *, limits: ArchiveLimits | None = None) -> dict[str, object]:
+def verify_packet(
+    path: Path, *, limits: ArchiveLimits | None = None, strict: bool = False
+) -> dict[str, object]:
     bounds = limits or ArchiveLimits()
     if not path.is_file():
         raise PacketError(f"missing archive: {path}")
@@ -553,8 +556,18 @@ def verify_packet(path: Path, *, limits: ArchiveLimits | None = None) -> dict[st
             expected = required | set(entries)
             if set(names) != expected:
                 raise PacketError("unlisted archive entry")
+            if REPORT_NAME not in entries:
+                raise PacketError("invalid manifest entries")
+            completeness = manifest.get("completeness")
+            if not isinstance(completeness, dict):
+                raise PacketError("invalid manifest completeness")
+            if not all(isinstance(entry, dict) for entry in completeness.values()):
+                raise PacketError("invalid manifest completeness")
             expanded = 0
+            payload = {}
             for name, entry in entries.items():
+                if not isinstance(entry, dict):
+                    raise PacketError(f"invalid manifest entry: {name}")
                 info = archive.getinfo(name)
                 expanded += info.file_size
                 if expanded > bounds.max_expanded_bytes:
@@ -562,6 +575,17 @@ def verify_packet(path: Path, *, limits: ArchiveLimits | None = None) -> dict[st
                 data = archive.read(name, pwd=None)
                 if len(data) != entry.get("size") or hashlib.sha256(data).hexdigest() != entry.get("sha256"):
                     raise PacketError(f"entry digest mismatch: {name}")
+                payload[name] = data
+            digest = hashlib.sha256(b"".join(payload[name] for name in sorted(payload))).hexdigest()
+            if digest != manifest.get("content_digest"):
+                raise PacketError("content digest mismatch")
+            incomplete = [
+                f"{name}={entry.get('status')}"
+                for name, entry in completeness.items()
+                if entry.get("status") != "included"
+            ]
+            if strict and incomplete:
+                raise PacketError("packet is incomplete: " + "; ".join(incomplete))
             return manifest
     except (zipfile.BadZipFile, zlib.error) as error:
         raise PacketError("corrupted archive") from error

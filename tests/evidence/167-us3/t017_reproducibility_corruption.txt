@@ -1,45 +1,18 @@
-# Real CLI output: export twice, compare bytes, verify, then corrupt one payload byte.
-625d95cf26855ee878183d61fa75612223401e2c0a30774bf567c0533c8e92c2  .cache/t017-final2/first.zip
-e3e6b7f6326e37cb437e2648dc66e9d47c17ae58ee3575814b76d7fc41c6ae79  .cache/t017-final2/second.zip
-first_status=0 second_status=0 verify_status=0 corrupt_status=1
-export1.json {  "archive": ".cache/t017-final2/first.zip",  "complete": true,  "content_revision": "397608ce07835cf613d2e4ccc2e1cffcc3969e2d91a7f7d0c549f0cbd2d8a3ed",  "items": [    [      [        "test",        "coverage.txt",        "dispatch-2",        "capture-2"      ],      "included",      "retained declared artifact",      "text",      "attachments/coverage.txt"    ]  ],  "predecessor_revision": null,  "revision": "397608ce07835cf613d2e4ccc2e1cffcc3969e2d91a7f7d0c549f0cbd2d8a3ed"}
-export2.json {  "archive": ".cache/t017-final2/second.zip",  "complete": true,  "content_revision": "397608ce07835cf613d2e4ccc2e1cffcc3969e2d91a7f7d0c549f0cbd2d8a3ed",  "items": [    [      [        "test",        "coverage.txt",        "dispatch-2",        "capture-2"      ],      "included",      "retained declared artifact",      "text",      "attachments/coverage.txt"    ]  ],  "predecessor_revision": null,  "revision": "397608ce07835cf613d2e4ccc2e1cffcc3969e2d91a7f7d0c549f0cbd2d8a3ed"}
-# verify output:
-{
-  "completeness": {
-    "test|coverage.txt|dispatch-2|capture-2": {
-      "reason": "retained declared artifact",
-      "status": "included"
-    }
-  },
-  "content_digest": "19979fbfe407c03a7e21a11a93682492c2925a1ae6eabcffe046bb5d8779ed1e",
-  "content_revision": "397608ce07835cf613d2e4ccc2e1cffcc3969e2d91a7f7d0c549f0cbd2d8a3ed",
-  "entries": {
-    "attachments/coverage.txt": {
-      "identity": {
-        "capture_id": "capture-2",
-        "dispatch": "dispatch-2",
-        "gate": "test",
-        "path": "coverage.txt"
-      },
-      "sensitivity": "text",
-      "sha256": "d7dfb3762d9315ff47a99849b411b8a62a5b27746e9c590b7147e17f31caf60c",
-      "size": 11
-    },
-    "report.md": {
-      "identity": null,
-      "sensitivity": "text",
-      "sha256": "e220039d3a945edb19a2c70bc958dc4072503c4e626589b0da1293bff085063d",
-      "size": 1119
-    }
-  },
-  "format": "ergane-attestation-story",
-  "generator_version": "1.0.0",
-  "predecessor_revision": null,
-  "schema_version": 1,
-  "spec_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-  "spec_revision": "167-spec",
-  "subject": "org/repo:167/US3"
-}
-# corrupt refusal:
+# Real CLI evidence: reproducible export and corrupt refusal.
+
+```text
+$ ergane attestation export --output first.zip --selector test:coverage.txt:dispatch-2:capture-2 --strict
+  "revision": "300211cfaa3d0f48fd06a192d636607664da2c0a7cc9017784cebc587672cc7c"
+exit=0
+$ ergane attestation export --output second.zip --selector ... --strict
+exit=0
+$ sha256sum first.zip second.zip
+7caa97ebc123fef92edf756f43bd4f97496f9c3dbab37d9054e1e333c7b3c219  first.zip
+7caa97ebc123fef92edf756f43bd4f97496f9c3dbab37d9054e1e333c7b3c219  second.zip
+$ ergane attestation verify first.zip --strict
+  "schema_version": 1
+exit=0
+$ ergane attestation verify corrupt.zip --strict
 ergane: corrupted archive
+exit=1
+```
