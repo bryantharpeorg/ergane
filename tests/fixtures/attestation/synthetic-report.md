@@ -5,7 +5,7 @@
 
 ## Judge history
 
-- `eval-1` status `parse_error`: failed 
+- `eval-1` status `parse_error`: failed
   - `US3-S1`: `fail` — covered
 - `eval-2` status `valid`: passed
   - `US3-S1`: `pass` — covered
