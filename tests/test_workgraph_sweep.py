@@ -1165,6 +1165,8 @@ def test_the_adapter_returns_a_classification_and_evidence_and_nothing_else() ->
         "last_snapshot",
         "detail",
         "credential_source",
+        # 159-US3 (FR-012): adapter-owned fence outcome, not agent output.
+        "owner_retained",
     }
 
 
@@ -1208,12 +1210,19 @@ def test_the_workflow_reads_nothing_off_an_attempt_but_its_termination() -> None
         and isinstance(node.value, ast.Name)
         and node.value.id == "adapter_result"
     }
-    assert read == {"termination", "transcript_path", "detail", "credential_source"}, (
+    assert read == {
+        "termination",
+        "transcript_path",
+        "detail",
+        "credential_source",
+        "owner_retained",
+    }, (
         f"the workflow reads {sorted(read)} off the adapter's result; only the "
         "process classification may reach node state, and the amendment holes are "
         "the marker's read of transcript_path (FR-010), the pre-agent note's "
-        "read of detail (095 FR-002), and the credential-source observability "
-        "passed into AttemptRecord (US1 FR-005)"
+        "read of detail (095 FR-002), the credential-source observability "
+        "passed into AttemptRecord (US1 FR-005), and the durable-owner fence "
+        "outcome read only to release or retain the lease (159 US3 FR-012)"
     )
 
     # 095-US1's hole is fenced the same way: `detail` may be handed to

@@ -277,6 +277,92 @@ class CredentialLease:
 
 
 @dataclass(frozen=True)
+class CredentialCandidate:
+    """A candidate path plus redacted generation; its bytes never enter here."""
+
+    path: Path
+    generation: int
+
+
+@dataclass(frozen=True)
+class CredentialFinalization:
+    """What happened after the current child was fenced."""
+
+    candidate: CredentialCandidate
+    result: Any = None
+    retained_ownership: bool = False
+    fence_error: str = ""
+
+
+class CredentialFenceFailure(Exception):
+    """A process group could not be proved reaped before credential reads."""
+
+
+async def fence_prior_child_before_candidate(
+    reap: Callable[[object], Awaitable[None] | None],
+    inspect_candidate: Callable[[CredentialCandidate], Any],
+    pid_file: object,
+    candidate_path: Path,
+    *,
+    generation: int,
+) -> Any:
+    """Run a prior child's fence, and only then inspect its candidate."""
+    candidate = CredentialCandidate(path=candidate_path, generation=generation)
+    await _invoke_reap(reap, pid_file)
+    return await inspect_candidate(candidate)
+
+
+async def finalize_current_candidate(
+    terminate: Callable[[], Awaitable[None] | None],
+    prove: Callable[[], Awaitable[None] | None],
+    inspect_candidate: Callable[[CredentialCandidate], Any],
+    candidate_path: Path,
+    *,
+    generation: int,
+    quarantine: Callable[[CredentialCandidate], None] | None = None,
+) -> CredentialFinalization:
+    """Terminate, prove death, and only then read the candidate."""
+    candidate = CredentialCandidate(path=candidate_path, generation=generation)
+    await _invoke_termination(terminate)
+    try:
+        await _invoke_termination(prove)
+    except CredentialFenceFailure as error:
+        if quarantine is None:
+            raise
+        quarantine(candidate)
+        return CredentialFinalization(
+            candidate=candidate,
+            retained_ownership=True,
+            fence_error=str(error),
+        )
+    result = inspect_candidate(candidate)
+    if result is not None and hasattr(result, "__await__"):
+        result = await result
+    return CredentialFinalization(
+        candidate=candidate,
+        result=result,
+    )
+
+
+def quarantine_candidate(
+    owner_directory: Path,
+    candidate_path: Path,
+    *,
+    generation: int,
+) -> Path:
+    """Move an unread candidate out of staging without changing its bytes."""
+    quarantine_directory = owner_directory / "quarantine" / str(generation)
+    quarantine_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = quarantine_directory / candidate_path.name
+    suffix = 1
+    while target.exists():
+        target = quarantine_directory / f"{candidate_path.name}.{suffix}"
+        suffix += 1
+    candidate_path.replace(target)
+    return target
+
+
+@dataclass(frozen=True)
 class CredentialBusy:
     """BUSY as data: workflow time, not a blocking activity wait."""
 
@@ -352,6 +438,24 @@ def _prepare_private_owner_root(root: Path, operator_uid: int | None) -> None:
         raise ValueError("credential owner root must not be a symlink")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     _validate_private_root(root, operator_uid)
+
+
+async def _invoke_reap(
+    reap: Callable[[object], Awaitable[None] | None], pid_file: object
+) -> None:
+    """Run one reap/fence callback and preserve its named fence refusal."""
+    result = reap(pid_file)
+    if result is not None:
+        await result
+
+
+async def _invoke_termination(
+    operation: Callable[[], Awaitable[None] | None],
+) -> None:
+    """Await either an async or an immediate termination/proof step."""
+    result = operation()
+    if result is not None:
+        await result
 
 
 def _validate_private_root(root: Path, operator_uid: int | None) -> None:

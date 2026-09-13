@@ -96,7 +96,10 @@ from factory.verify.toolchain import (
 from factory.workgraph.detector import compare_and_report, capture_start
 from factory.workgraph.codex_credential import (
     CredentialDeclaration,
+    CredentialFinalization,
+    CredentialFenceFailure,
     credential_provenance_json,
+    finalize_current_candidate,
     validate_codex_credential,
 )
 from factory.workgraph.codex_events import INVALID_JSON, decode_codex_events
@@ -1288,13 +1291,21 @@ class SharedAttemptPolicy:
                     transcript_path=str(archive),
                     detail=stage.failure,
                 )
+        candidate_path = self._candidate_path(context, {})
+        try:
+            await self._reap(pids)
+        except CredentialFenceFailure as error:
+            return AdapterResult(
+                termination=Termination.PRE_AGENT_FAILURE,
+                transcript_path=str(archive),
+                detail=str(error),
+                owner_retained=True,
+            )
         # 155-US1 (FR-003): the seed is per-CLI and may need the whole context —
         # Codex's generated `config.toml` is parameterised by the attempt's
         # proxy URL, which only the context carries. The two-argument call is
         # the seam; a CLI that seeds from the credential alone ignores it.
         self._cli._seed_home(home, credential_path, context)
-        await self._reap(pids)
-
         worktree = Path(context.worktree_path).resolve()
         target_repo = Path(context.target_repo) if context.target_repo else None
         # `ATTEMPT_ARCHIVE` is the one constructed env var beyond the gateway
@@ -1358,7 +1369,14 @@ class SharedAttemptPolicy:
                 # monitor itself end identically: the process group dies and the
                 # attempt keeps its evidence. Only the classification differs,
                 # and on this path the workflow supplies it.
-                await self._reclaim(process)
+                finalization = await self._finalize_current(process, context, env)
+                if finalization.retained_ownership:
+                    return AdapterResult(
+                        termination=Termination.AGENT_ERROR,
+                        transcript_path=str(archive),
+                        detail=finalization.fence_error,
+                        owner_retained=True,
+                    )
                 self._archive_session(context, worktree, env, archive)
                 _clear_pid_file(pids)
                 self._archive_plain_final(env, archive)
@@ -1369,6 +1387,22 @@ class SharedAttemptPolicy:
             finally:
                 await _stop_feeding(feeder)
 
+        try:
+            finalization = await self._finalize_current(process, context, env)
+        except CredentialFenceFailure as error:
+            return AdapterResult(
+                termination=termination,
+                transcript_path=str(archive),
+                detail=str(error),
+                owner_retained=True,
+            )
+        if finalization.retained_ownership:
+            return AdapterResult(
+                termination=termination,
+                transcript_path=str(archive),
+                detail=finalization.fence_error,
+                owner_retained=True,
+            )
         self._archive_session(context, worktree, env, archive)
         _clear_pid_file(pids)
         self._archive_plain_final(env, archive)
@@ -1656,7 +1690,6 @@ class SharedAttemptPolicy:
             exited.cancel()
             raise
 
-        await self._reclaim(process)
         return Termination.TIMEOUT, snapshot
 
     async def _ferry_once(
@@ -1726,6 +1759,47 @@ class SharedAttemptPolicy:
         _signal_group(process.pid, signal.SIGKILL)
         await process.wait()
 
+    async def _prove_group_dead(self, pgid: int) -> bool:
+        """Return whether the whole group is gone after its final signal."""
+        deadline = asyncio.get_running_loop().time() + self._cli.grace_s
+        while _group_alive(pgid) and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        return not _group_alive(pgid)
+
+    async def _finalize_current(
+        self,
+        process: asyncio.subprocess.Process,
+        context: AttemptContext,
+        env: Mapping[str, str],
+    ) -> CredentialFinalization:
+        """Terminate the current group and prove it dead before a final read."""
+        candidate_path = self._candidate_path(context, env)
+
+        async def terminate() -> None:
+            await self._reclaim(process)
+
+        async def prove() -> None:
+            if not await self._prove_group_dead(process.pid):
+                raise CredentialFenceFailure(
+                    f"could not prove current process group {process.pid} died"
+                )
+
+        return await finalize_current_candidate(
+            terminate,
+            prove,
+            lambda candidate: candidate,
+            candidate_path,
+            generation=context.attempt,
+            quarantine=getattr(self._cli, "_quarantine_candidate", None),
+        )
+
+    def _candidate_path(self, context: AttemptContext, env: Mapping[str, str]) -> Path:
+        resolver = getattr(self._cli, "_credential_candidate", None)
+        if resolver is None:
+            return Path(env.get(ATTEMPT_ARCHIVE_ENV, "."))
+        resolved = resolver(context, env)
+        return resolved if resolved is not None else Path(env.get(ATTEMPT_ARCHIVE_ENV, "."))
+
     # -- reap an orphan (R4) --------------------------------------------------
 
     async def _reap(self, pids: Path) -> None:
@@ -1740,11 +1814,14 @@ class SharedAttemptPolicy:
         if pgid is None or not _group_alive(pgid):
             return
 
-        _signal_group(pgid, signal.SIGTERM)
-        deadline = asyncio.get_running_loop().time() + self._cli.grace_s
-        while _group_alive(pgid) and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.05)
         _signal_group(pgid, signal.SIGKILL)
+        await asyncio.sleep(0.01)
+        if _group_alive(pgid):
+            raise CredentialFenceFailure(
+                f"could not prove previous process group {pgid} died"
+            )
+        with contextlib.suppress(OSError):
+            pids.unlink()
 
     # -- archive (FR-007) -----------------------------------------------------
 
@@ -2209,7 +2286,10 @@ class CodexAdapter:
             effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION
         ):
             _seed_codex_config(seed_target, context)
+            return
         elif credential_path is not None:
+            with contextlib.suppress(FileNotFoundError):
+                (seed_target / "config.toml").unlink()
             target = seed_target / "auth.json"
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(credential_path, target)
@@ -2231,6 +2311,26 @@ class CodexAdapter:
             for path in _codex_rollouts(env)
             if self._rollout_thread(path) == current
         ]
+
+    def _credential_candidate(
+        self, context: AttemptContext, env: Mapping[str, str] | None = None
+    ) -> Path:
+        """The route-specific file whose bytes may only be read after fencing."""
+        codex_home = codex_home_path(context.home_path)
+        if effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION:
+            return codex_home / "config.toml"
+        return codex_home / "auth.json"
+
+    def _quarantine_candidate(self, candidate: object) -> None:
+        path = getattr(candidate, "path")
+        quarantine = path.parent / "quarantine" / str(getattr(candidate, "generation"))
+        quarantine.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = quarantine / path.name
+        suffix = 1
+        while target.exists():
+            target = quarantine / f"{path.name}.{suffix}"
+            suffix += 1
+        path.replace(target)
 
     def _archive_final_message(
         self, env: Mapping[str, str], archive: Path
@@ -2336,6 +2436,8 @@ def _seed_codex_config(codex_home: Path, context: AttemptContext) -> None:
     environment, so no credential is written to disk twice.
     """
     codex_home.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(FileNotFoundError):
+        (codex_home / "auth.json").unlink()
     config = (
         f'model_provider = "{CODEX_GATEWAY_PROVIDER}"\n'
         "\n"
@@ -2503,14 +2605,23 @@ def _read_pgid(pids: Path) -> int | None:
 
 
 def _group_alive(pgid: int) -> bool:
-    """Whether signal 0 still finds the group (a zombie counts — it exists)."""
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
+    """Whether a non-zombie member of the process group remains."""
+    if pgid <= 0:
         return False
-    except PermissionError:
-        return True
-    return True
+    for process_directory in Path("/proc").glob("[0-9]*"):
+        try:
+            fields = (process_directory / "stat").read_text(encoding="utf-8").rsplit(")", 1)
+            if len(fields) != 2:
+                continue
+            numbers = fields[1].split()
+            if len(numbers) < 4 or int(numbers[3]) != pgid:
+                continue
+            state = numbers[0]
+            if state != "Z":
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
 
 
 def _signal_group(pgid: int, sig: int) -> None:
