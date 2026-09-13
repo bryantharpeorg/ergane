@@ -398,8 +398,11 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _journal_path(owner_directory: Path, generation: int) -> Path:
-    return owner_directory / "journal" / f"generation-{generation}.json"
+def _journal_path(owner_directory: Path, candidate: CredentialCandidate) -> Path:
+    intent_id = hashlib.sha256(
+        f"{candidate.generation}:{candidate.path.absolute()}".encode("utf-8")
+    ).hexdigest()[:16]
+    return owner_directory / "journal" / f"generation-{candidate.generation}-{intent_id}.json"
 
 
 def _atomic_copy(source: Path, target: Path) -> None:
@@ -448,7 +451,7 @@ def _write_intent(
     staging_path: Path | None,
 ) -> None:
     _atomic_json(
-        _journal_path(owner_directory, candidate.generation),
+        _journal_path(owner_directory, candidate),
         {
             "generation": candidate.generation,
             "state": "journaled",
@@ -564,7 +567,7 @@ async def finalize_codex_candidate(
     manifest = _read_owner_manifest(owner_directory)
     with exclusive_lock(owner_directory / "transaction", timeout_s=0):
         _claim_active_lease(owner_directory, lease, manifest)
-        intent_path = _journal_path(owner_directory, candidate.generation)
+        intent_path = _journal_path(owner_directory, candidate)
         replayed = intent_path.exists()
         if replayed:
             try:
@@ -688,10 +691,70 @@ async def finalize_codex_candidate(
         )
 
 
-def recover_codex_owner(owner_directory: Path, *, now: datetime) -> CredentialOwnerFinalization | None:
+async def recover_codex_owner(
+    owner_directory: Path,
+    *,
+    now: datetime,
+) -> CredentialOwnerFinalization | None:
     """Repair the newest committed generation without touching the seed."""
     _validate_private_root(owner_directory, None)
     manifest = _read_owner_manifest(owner_directory)
+    journal = owner_directory / "journal"
+    if journal.is_dir():
+        intents = sorted(journal.glob("generation-*.json"))
+        for intent_path in intents:
+            try:
+                intent = json.loads(intent_path.read_bytes())
+                generation = int(intent["generation"])
+                state = intent.get("state")
+            except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+            if state != "journaled" or generation < 1:
+                continue
+            generation_path = (
+                owner_directory / "generations" / str(generation) / "auth.json"
+            )
+            if generation_path.is_file():
+                _mark_intent(intent_path, CredentialOutcome.COMMITTED)
+                continue
+            quarantine_directory = owner_directory / "quarantine" / str(generation)
+            quarantined = list(quarantine_directory.glob("auth.json*")) if quarantine_directory.is_dir() else []
+            if quarantined:
+                _mark_intent(
+                    intent_path,
+                    CredentialOutcome.QUARANTINED,
+                    quarantine_path=quarantined[0],
+                )
+                continue
+            try:
+                active = json.loads((owner_directory / "active-lease.json").read_bytes())
+                lease = CredentialLease(
+                    owner_id=str(manifest["owner_id"]),
+                    host_id=str(manifest["host_id"]),
+                    lease_id=str(active["lease_id"]),
+                )
+                provider_value = intent.get("provider_result")
+                provider_result = (
+                    CredentialProviderResult(provider_value)
+                    if provider_value is not None
+                    else None
+                )
+                candidate = CredentialCandidate(
+                    path=Path(intent["candidate_path"]),
+                    generation=generation,
+                    provider_result=provider_result,
+                )
+            except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                continue
+            with contextlib.suppress(
+                CredentialOwnerBusy,
+                CredentialPersistenceError,
+                ValueError,
+                OSError,
+            ):
+                await finalize_codex_candidate(
+                    owner_directory, candidate, lease, now=now
+                )
     generations = owner_directory / "generations"
     candidates: list[int] = []
     if generations.is_dir():
