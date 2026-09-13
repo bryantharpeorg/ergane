@@ -426,6 +426,59 @@ def _read_owner_manifest(owner_directory: Path) -> dict[str, Any]:
     return manifest
 
 
+def read_codex_owner_manifest(owner_directory: Path) -> dict[str, Any]:
+    """Read the redacted manifest for adapter-side lease reconstruction."""
+    return _read_owner_manifest(owner_directory)
+
+
+def next_codex_generation(owner_directory: Path) -> int:
+    """The next durable generation, independent of attempt numbering."""
+    return _committed_generation(owner_directory) + 1
+
+
+def codex_candidate_provider_result(candidate_path: Path) -> CredentialProviderResult | None:
+    """Read a redacted provider-result sidecar, never credential bytes."""
+    try:
+        value = json.loads(
+            candidate_path.with_name("provider-result.json").read_text(encoding="utf-8")
+        ).get("result")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    if value == CredentialProviderResult.REVOKED.value:
+        return CredentialProviderResult.REVOKED
+    return None
+
+
+def current_codex_source(owner_directory: Path) -> Path | None:
+    """Return the current durable source, or None when no generation exists."""
+    manifest = read_codex_owner_manifest(owner_directory)
+    generation = _committed_generation(owner_directory)
+    if generation == 0:
+        return None
+    if not _repair_current(owner_directory, generation, manifest):
+        raise CredentialPersistenceError(
+            "current credential generation is not locally valid"
+        )
+    return owner_directory / "current" / "auth.json"
+
+
+@dataclass(frozen=True)
+class CredentialOwnerRecoveryInput:
+    """The redacted owner placement needing journal reconciliation."""
+
+    owner_directory: str = ""
+    operator_uid: int | None = None
+
+
+@dataclass(frozen=True)
+class CredentialOwnerRecoveryResult:
+    """A redacted recovery outcome; no candidate bytes cross the boundary."""
+
+    committed_generation: int | None = None
+    quarantine_path: str | None = None
+    refusal: str | None = None
+
+
 def _committed_generation(owner_directory: Path) -> int:
     try:
         current = json.loads((owner_directory / "current.json").read_bytes())
@@ -963,6 +1016,32 @@ async def release_codex_owner(
         host_id=request.lease.host_id,
         operator_uid=request.operator_uid,
     ).release(request.lease, owner_directory=owner)
+
+
+@activity.defn(name="recover_codex_owner")
+async def recover_codex_owner_activity(
+    request: CredentialOwnerRecoveryInput,
+) -> CredentialOwnerRecoveryResult:
+    """Reconcile interrupted journal work before the attempt is charged."""
+    owner_directory = Path(request.owner_directory)
+    try:
+        _validate_private_root(owner_directory, request.operator_uid)
+        outcome = await recover_codex_owner(
+            owner_directory,
+            now=datetime.now(timezone.utc),
+        )
+    except (CredentialPersistenceError, ValueError, OSError) as error:
+        return CredentialOwnerRecoveryResult(refusal=str(error))
+    if outcome is None:
+        return CredentialOwnerRecoveryResult()
+    return CredentialOwnerRecoveryResult(
+        committed_generation=outcome.committed_generation,
+        quarantine_path=(
+            str(outcome.quarantine_path)
+            if outcome.quarantine_path is not None
+            else None
+        ),
+    )
 
 
 @activity.defn(name="gateway_credential_tick")

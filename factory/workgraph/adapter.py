@@ -98,8 +98,16 @@ from factory.workgraph.codex_credential import (
     CredentialDeclaration,
     CredentialFinalization,
     CredentialFenceFailure,
+    CredentialLease,
+    CredentialPersistenceError,
+    CredentialCandidate,
     credential_provenance_json,
     finalize_current_candidate,
+    finalize_codex_candidate,
+    next_codex_generation,
+    read_codex_owner_manifest,
+    codex_candidate_provider_result,
+    current_codex_source,
     validate_codex_credential,
 )
 from factory.workgraph.codex_events import INVALID_JSON, decode_codex_events
@@ -1784,13 +1792,67 @@ class SharedAttemptPolicy:
                     f"could not prove current process group {process.pid} died"
                 )
 
-        return await finalize_current_candidate(
+        finalization = await finalize_current_candidate(
             terminate,
             prove,
             lambda candidate: candidate,
             candidate_path,
             generation=context.attempt,
             quarantine=getattr(self._cli, "_quarantine_candidate", None),
+        )
+        if finalization.retained_ownership:
+            return finalization
+        owner_finalization = await self._finalize_owner_candidate(
+            candidate_path,
+            context,
+        )
+        return owner_finalization if owner_finalization is not None else finalization
+
+    async def _finalize_owner_candidate(
+        self,
+        candidate_path: Path,
+        context: AttemptContext,
+    ) -> CredentialFinalization | None:
+        """Promote or quarantine the fenced copy before ownership is released."""
+        if (
+            not context.credential_owner_directory
+            or not context.credential_owner_lease_id
+        ):
+            return None
+        owner_directory = Path(context.credential_owner_directory)
+        try:
+            manifest = read_codex_owner_manifest(owner_directory)
+        except (CredentialPersistenceError, OSError, ValueError) as error:
+            return CredentialFinalization(
+                candidate=CredentialCandidate(candidate_path, context.attempt),
+                retained_ownership=True,
+                fence_error=str(error),
+            )
+        lease = CredentialLease(
+            owner_id=manifest.get("owner_id", ""),
+            host_id=manifest.get("host_id", ""),
+            lease_id=context.credential_owner_lease_id,
+        )
+        try:
+            outcome = await finalize_codex_candidate(
+                owner_directory,
+                CredentialCandidate(
+                    path=candidate_path,
+                    generation=next_codex_generation(owner_directory),
+                    provider_result=codex_candidate_provider_result(candidate_path),
+                ),
+                lease,
+                now=datetime.now(timezone.utc),
+            )
+        except (CredentialPersistenceError, ValueError, OSError) as error:
+            return CredentialFinalization(
+                candidate=CredentialCandidate(candidate_path, context.attempt),
+                retained_ownership=True,
+                fence_error=str(error),
+            )
+        return CredentialFinalization(
+            candidate=CredentialCandidate(candidate_path, outcome.committed_generation or context.attempt),
+            result=outcome.failure.value if outcome.failure is not None else None,
         )
 
     def _candidate_path(self, context: AttemptContext, env: Mapping[str, str]) -> Path:
@@ -2221,23 +2283,47 @@ class CodexAdapter:
         gateway no persona asked for."""
         if effective_route(context.route, context.agent) != ROUTE_SUBSCRIPTION:
             return CredentialStage(gateway=True)
-        credential_path = discover_codex_credential()
-        if credential_path is None:
-            operator_home = _operator_home()
-            return CredentialStage(
-                gateway=False,
-                path=None,
-                error=(
-                    "codex subscription credential not found: no auth.json under "
-                    f"{codex_home_path(operator_home)} or $CODEX_HOME. "
-                    "Run `codex login` on the worker host."
-                ),
-            )
+        if context.credential_owner_directory:
+            try:
+                credential_path = current_codex_source(
+                    Path(context.credential_owner_directory)
+                )
+            except (CredentialPersistenceError, ValueError, OSError) as error:
+                return CredentialStage(gateway=False, path=None, error=str(error))
+            if credential_path is None:
+                return CredentialStage(
+                    gateway=False,
+                    path=None,
+                    error="codex credential owner has no committed generation",
+                )
+        else:
+            credential_path = discover_codex_credential()
+            if credential_path is None:
+                operator_home = _operator_home()
+                return CredentialStage(
+                    gateway=False,
+                    path=None,
+                    error=(
+                        "codex subscription credential not found: no auth.json under "
+                        f"{codex_home_path(operator_home)} or $CODEX_HOME. "
+                        "Run `codex login` on the worker host."
+                    ),
+                )
         validation = validate_codex_credential(
             CredentialDeclaration(
-                owner_id="codex-factory",
+                owner_id=(
+                    read_codex_owner_manifest(
+                        Path(context.credential_owner_directory)
+                    ).get("owner_id", "codex-factory")
+                    if context.credential_owner_directory
+                    else "codex-factory"
+                ),
                 source_path=credential_path,
-                generation=1,
+                generation=(
+                    next_codex_generation(Path(context.credential_owner_directory)) - 1
+                    if context.credential_owner_directory
+                    else 1
+                ),
             ),
             now=datetime.now(timezone.utc),
         )

@@ -127,6 +127,7 @@ ACTIVITIES = [
     # 159-US2 — the effective-rung credential bracket and its release.
     codex_credential.admit_codex_owner,
     codex_credential.release_codex_owner,
+    codex_credential.recover_codex_owner_activity,
     codex_credential.gateway_credential_tick,
     # 001 — the attribution bracket around every attempt.
     usage_activities.issue_attempt_key,

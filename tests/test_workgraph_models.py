@@ -595,6 +595,9 @@ def test_the_attempt_context_carries_exactly_the_adapters_inputs() -> None:
         # 167-US1: launch identity, so adapter evidence is not correlated by
         # host path or wall-clock timestamps.
         "invocation_id",
+        # 159-US5: the owner lease is supplied after admission, never inferred.
+        "credential_owner_directory",
+        "credential_owner_lease_id",
     }
 
 

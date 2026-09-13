@@ -257,7 +257,9 @@ with workflow.unsafe.imports_passed_through():
         CodexOwnerDeclaration,
         CredentialOwnerAdmissionInput,
         CredentialOwnerAdmissionResult,
+        CredentialOwnerRecoveryInput,
         admit_codex_owner,
+        recover_codex_owner_activity,
         release_codex_owner,
     )
     from factory.config import (
@@ -2062,6 +2064,16 @@ class EpicWorkflow:
                                 f"{workflow.info().run_id}:{node.id}:{persona}:"
                                 f"launch:{record.launch_ordinal}"
                             ),
+                            credential_owner_directory=(
+                                owner.owner_directory or ""
+                                if owner is not None
+                                else ""
+                            ),
+                            credential_owner_lease_id=(
+                                owner.lease.lease_id
+                                if owner is not None and owner.lease is not None
+                                else ""
+                            ),
                         ),
                     )
                 finally:
@@ -2597,6 +2609,22 @@ class EpicWorkflow:
                         type=GRAPH_INVALID,
                         non_retryable=True,
                     )
+                if result.lease is not None and result.owner_directory is not None:
+                    recovery = await workflow.execute_activity(
+                        recover_codex_owner_activity,
+                        CredentialOwnerRecoveryInput(
+                            owner_directory=result.owner_directory,
+                            operator_uid=result.operator_uid,
+                        ),
+                        start_to_close_timeout=_PROXY["start_to_close_timeout"],
+                        retry_policy=_ISSUE_KEY_RETRIES,
+                    )
+                    if recovery.refusal is not None:
+                        raise ApplicationError(
+                            recovery.refusal,
+                            type=GRAPH_INVALID,
+                            non_retryable=True,
+                        )
                 return result
             await workflow.sleep(timedelta(seconds=result.busy.retry_after_s))
 
@@ -4313,6 +4341,16 @@ class EpicWorkflow:
                         target_repo=graph.target_repo,
                         agent=recovery_agent,
                         route=recovery_route,
+                        credential_owner_directory=(
+                            owner.owner_directory or ""
+                            if owner is not None
+                            else ""
+                        ),
+                        credential_owner_lease_id=(
+                            owner.lease.lease_id
+                            if owner is not None and owner.lease is not None
+                            else ""
+                        ),
                     ),
                 )
             finally:

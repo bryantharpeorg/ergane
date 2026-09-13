@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 import httpx
+from factory.workgraph.adapter import CodexAdapter, SharedAttemptPolicy
+from factory.workgraph.models import AttemptContext
+from temporalio.converter import default as default_data_converter
 
 from factory.workgraph.codex_credential import (
     CredentialCandidate,
@@ -495,3 +498,139 @@ async def test_replaying_a_quarantined_candidate_quarantines_once(
     assert second.replayed is True
     assert second.release_ownership is True
     assert sorted((owner / "quarantine" / "2").iterdir()) == quarantine_before
+
+
+async def test_shared_policy_finalizes_the_owner_after_fencing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """US3's fence feeds US5's durable owner transaction before release."""
+    owner, lease = await _lease(tmp_path, 1)
+    seed = await _write_candidate(
+        tmp_path / "operator-state" / "source-auth.json",
+        managed_payload("first"),
+        1,
+    )
+    await finalize_codex_candidate(owner, seed, lease, now=NOW)
+    node_home = tmp_path / "node-home"
+    candidate = await _write_candidate(
+        node_home / ".codex" / "auth.json",
+        managed_payload("second"),
+        2,
+    )
+    context = AttemptContext(
+        epic_id="159",
+        node_id="us5",
+        attempt=1,
+        prompt="scope",
+        worktree_path=str(tmp_path / "worktree"),
+        home_path=str(node_home),
+        proxy_url="http://litellm.test:4000",
+        virtual_key="synthetic-virtual-key",
+        model_alias="synthetic-model",
+        session_id="synthetic-session",
+        timeout_s=1,
+        agent="codex",
+        route="subscription",
+        credential_owner_directory=str(owner),
+        credential_owner_lease_id=lease.lease_id,
+    )
+    policy = SharedAttemptPolicy(CodexAdapter())
+    calls: list[str] = []
+
+    async def terminate() -> None:
+        calls.append("terminate")
+
+    async def prove() -> None:
+        calls.append("prove")
+
+    async def reclaim(process: object) -> None:
+        await terminate()
+
+    async def prove_group_dead(pgid: int) -> bool:
+        await prove()
+        return True
+
+    monkeypatch.setattr(policy, "_reclaim", reclaim)
+    monkeypatch.setattr(policy, "_prove_group_dead", prove_group_dead)
+
+    result = await policy._finalize_current(type("FakeProcess", (), {"pid": 123})(), context, {})
+
+    assert calls == ["terminate", "prove"]
+    assert result.retained_ownership is False
+    assert (owner / "current.json").exists()
+    current = json.loads((owner / "current.json").read_text(encoding="utf-8"))
+    assert current["generation"] == 2
+    assert (owner / "active-lease.json").exists()
+    assert (owner / "current" / "auth.json").read_text(encoding="utf-8") == (
+        candidate.path.read_text(encoding="utf-8")
+    )
+
+
+async def test_owner_stage_uses_current_not_bootstrap(
+    tmp_path: Path,
+) -> None:
+    """Seeding preserves the durable generation across attempts."""
+    owner, lease = await _lease(tmp_path, 1)
+    first = await _write_candidate(
+        tmp_path / "operator-state" / "source-auth.json",
+        managed_payload("first"),
+        1,
+    )
+    second = await _write_candidate(
+        tmp_path / "node" / ".codex" / "auth.json",
+        managed_payload("second"),
+        2,
+    )
+    await finalize_codex_candidate(owner, first, lease, now=NOW)
+    await finalize_codex_candidate(owner, second, lease, now=NOW)
+    context = AttemptContext(
+        epic_id="159",
+        node_id="us5",
+        attempt=2,
+        prompt="scope",
+        worktree_path=str(tmp_path / "worktree"),
+        home_path=str(tmp_path / "next-node-home"),
+        proxy_url="http://litellm.test:4000",
+        virtual_key="synthetic-virtual-key",
+        model_alias="synthetic-model",
+        session_id="synthetic-session",
+        timeout_s=1,
+        agent="codex",
+        route="subscription",
+        credential_owner_directory=str(owner),
+    )
+    stage = CodexAdapter()._credential(context)
+
+    assert stage.path == owner / "current" / "auth.json"
+    assert '"generation":2' in stage.source
+
+
+async def test_recovery_payloads_round_trip_with_temporal_converter() -> None:
+    """Recovery returns typed scalars that survive the real payload boundary."""
+    from factory.workgraph.codex_credential import (
+        CredentialOwnerRecoveryInput,
+        CredentialOwnerRecoveryResult,
+    )
+
+    payloads = [
+        CredentialOwnerRecoveryInput(
+            owner_directory="/operator/state/owner",
+            operator_uid=None,
+        ),
+        CredentialOwnerRecoveryResult(
+            committed_generation=None,
+            quarantine_path=None,
+            refusal=None,
+        ),
+        CredentialOwnerRecoveryResult(
+            committed_generation=2,
+            quarantine_path="/operator/state/owner/quarantine/2/auth.json",
+            refusal=None,
+        ),
+    ]
+    for payload in payloads:
+        converter = default_data_converter().payload_converter
+        payload_data = converter.to_payload(payload)
+        decoded = converter.from_payload(payload_data, type(payload))
+        assert decoded == payload

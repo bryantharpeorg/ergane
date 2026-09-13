@@ -497,6 +497,10 @@ class AttemptContext:
     #: 167-US1: the launch identity supplied with the key. Carried so adapter
     #: archives and outcomes are not correlated by path or timestamp.
     invocation_id: str = ""
+    #: 159-US5: the operator-owned owner directory and lease that owns this
+    #: subscription attempt. Empty for gateway attempts and legacy payloads.
+    credential_owner_directory: str = ""
+    credential_owner_lease_id: str = ""
 
 
 @dataclass(frozen=True)
