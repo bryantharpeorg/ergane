@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
 
@@ -76,6 +77,17 @@ def connect(path: str | Path) -> sqlite3.Connection:
     if connection.execute("SELECT COUNT(*) FROM schema_version").fetchone()[0] == 0:
         connection.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     connection.commit()
+    return connection
+
+
+def connect_readonly(path: str | Path) -> sqlite3.Connection:
+    """Open an existing journal without creating or migrating it."""
+    location = Path(path)
+    if not location.is_file():
+        raise FileNotFoundError(f"no attestation journal at {location}")
+    connection = sqlite3.connect(f"{location.resolve().as_uri()}?mode=ro", uri=True)
+    connection.execute("PRAGMA busy_timeout = 5000")
+    connection.execute("PRAGMA query_only = ON")
     return connection
 
 
@@ -177,12 +189,18 @@ def set_launch_outcome(
 
 
 def read_launches(path: str | Path) -> tuple[LaunchRecord, ...]:
-    with connect(path) as connection:
-        connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            "SELECT * FROM launches ORDER BY launch_ordinal, invocation_id"
-        ).fetchall()
-        columns = [item[0] for item in connection.execute("SELECT * FROM launches LIMIT 0").description]
+    try:
+        with closing(connect_readonly(path)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                "SELECT * FROM launches ORDER BY launch_ordinal, invocation_id"
+            ).fetchall()
+            columns = [
+                item[0]
+                for item in connection.execute("SELECT * FROM launches LIMIT 0").description
+            ]
+    except FileNotFoundError:
+        return ()
     records = []
     for values in rows:
         data = dict(zip(columns, values))
@@ -216,14 +234,17 @@ def record_usage_observation(path: str | Path, record: UsageObservation) -> Usag
 
 
 def read_usage_observations(path: str | Path) -> tuple[UsageObservation, ...]:
-    with connect(path) as connection:
-        rows = connection.execute("SELECT * FROM usage_observations ORDER BY id").fetchall()
-        columns = [
-            item[0]
-            for item in connection.execute(
-                "SELECT * FROM usage_observations LIMIT 0"
-            ).description
-        ]
+    try:
+        with closing(connect_readonly(path)) as connection:
+            rows = connection.execute("SELECT * FROM usage_observations ORDER BY id").fetchall()
+            columns = [
+                item[0]
+                for item in connection.execute(
+                    "SELECT * FROM usage_observations LIMIT 0"
+                ).description
+            ]
+    except FileNotFoundError:
+        return ()
     return tuple(UsageObservation(**dict(zip(columns, row))) for row in rows)
 
 
@@ -250,9 +271,16 @@ def _decode(payload: str, model: type[JudgeEvaluationRecord | AttemptGitEvidence
 
 
 def _read(path: str | Path, model: type[JudgeEvaluationRecord | AttemptGitEvidence]) -> tuple:
-    with connect(path) as connection:
-        rows = connection.execute("SELECT payload FROM evidence_records ORDER BY evidence_id")
-        return tuple(_decode(row[0], model) for row in rows if (model is JudgeEvaluationRecord) == ('"deliveries"' in row[0]))
+    try:
+        with closing(connect_readonly(path)) as connection:
+            rows = connection.execute("SELECT payload FROM evidence_records ORDER BY evidence_id")
+            return tuple(
+                _decode(row[0], model)
+                for row in rows
+                if (model is JudgeEvaluationRecord) == ('"deliveries"' in row[0])
+            )
+    except FileNotFoundError:
+        return ()
 
 
 def record_scoring_evaluation(

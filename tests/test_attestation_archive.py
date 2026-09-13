@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import gc
 import json
 import math
 import os
 import shutil
 import socket
 import stat
+import sqlite3
 import zipfile
 import zlib
 from contextlib import closing
@@ -224,6 +226,22 @@ def test_export_scopes_evidence_to_the_selected_subject(tmp_path: Path) -> None:
     export_packet(root, SUBJECT, output=root / "scoped.zip", selectors=(_selector(2),))
     report = _read_zip(root / "scoped.zip")[1]["report.md"].decode()
     assert "other" not in report and "9.99" not in report
+
+
+def test_packet_reads_do_not_migrate_the_journal(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    journal = root / "attestation.db"
+    gc.collect()
+    with closing(sqlite3.connect(journal)) as connection:
+        connection.execute("PRAGMA journal_mode = DELETE")
+    before = journal.read_bytes()
+
+    export_packet(root, SUBJECT, output=root / "readonly-source.zip", selectors=(_selector(2),))
+
+    assert journal.read_bytes() == before
+    assert not (root / "attestation.db-wal").exists()
+    assert not (root / "attestation.db-shm").exists()
 
 
 def test_identical_evidence_is_reproducible_and_new_evidence_is_successor(tmp_path: Path) -> None:

@@ -14,14 +14,12 @@ import sqlite3
 import stat
 import zipfile
 import zlib
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Sequence
 
-from factory.attestation.journal import (
-    read_launches,
-    read_scoring_evaluations,
-)
+from factory.attestation.journal import connect_readonly, read_launches, read_scoring_evaluations
 from factory.attestation.usage import read_usage_evidence
 from factory.verify.models import ArtifactType, GateArtifact, VerificationResult
 from factory.verify.store import connect_readonly, node_history
@@ -138,9 +136,8 @@ def show_subject(root: Path, subject: str, revision: str | None = None) -> dict[
     if not root.is_dir():
         raise PacketError(f"missing evidence root: {root}")
     journal = _require_file(root / "attestation.db", "attestation journal")
-    connection = sqlite3.connect(f"file:{journal}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    try:
+    with closing(connect_readonly(journal)) as connection:
+        connection.row_factory = sqlite3.Row
         launches = [
             dict(row)
             for row in connection.execute(
@@ -161,8 +158,6 @@ def show_subject(root: Path, subject: str, revision: str | None = None) -> dict[
             for row in evaluations
             if str(json.loads(row["payload"]).get("key_alias", "")).startswith(alias_prefix)
         ]
-    finally:
-        connection.close()
     if not launches:
         raise PacketError(f"no subject {subject}")
     if revision is None and len(launches) > 1:
