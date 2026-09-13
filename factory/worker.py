@@ -87,6 +87,7 @@ from factory.roadmap.workflow import (
     RoadmapWorkflow,
 )
 from factory.workgraph.workflow import TASK_QUEUE, EpicWorkflow
+from factory.workgraph import codex_credential
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,10 @@ ACTIVITIES = [
     # 126-US3 — read local git state to name the blocking ref and whether its tip
     # is archived before composing the escalation message (FR-011).
     agent_activities.ref_conflict_facts,
+    # 159-US2 — the effective-rung credential bracket and its release.
+    codex_credential.admit_codex_owner,
+    codex_credential.release_codex_owner,
+    codex_credential.gateway_credential_tick,
     # 001 — the attribution bracket around every attempt.
     usage_activities.issue_attempt_key,
     usage_activities.poll_usage,

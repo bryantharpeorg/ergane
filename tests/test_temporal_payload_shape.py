@@ -468,6 +468,23 @@ MUST_BE_PRESENT: dict[str, tuple[str, ...]] = {
         "clean", "base_ref", "conflicted_files", "refused", "reason"
     ),
     "factory.activities.merge_activities.ValidateTargetRepoInput": ("target_repo",),
+    # 159-US2: redacted owner coordinates and identities address a durable
+    # host-global lease; defaults would let an incomplete admission pretend to
+    # have been declared.
+    "factory.workgraph.codex_credential.CredentialLease": (
+        "owner_id", "host_id", "lease_id"
+    ),
+    "factory.workgraph.codex_credential.CredentialOwnerAdmissionInput": (
+        "epic_id", "node_id", "target_repo", "deployment_shape",
+        "owner_id", "source_path",
+    ),
+    "factory.workgraph.codex_credential.CodexOwnerDeclaration": (
+        "owner_id", "source_path", "host_id",
+        "operator_state_root", "operator_uid",
+    ),
+    "factory.workgraph.codex_credential.GatewayProgressInput": (
+        "epic_id", "node_id", "attempt",
+    ),
     "factory.activities.notify_activities.ExpireEscalationInput": ("escalation_id",),
     "factory.activities.notify_activities.ExpireQuestionInput": ("question_id",),
     "factory.activities.notify_activities.ExpiredEscalation": ("final_state",),
