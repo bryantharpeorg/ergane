@@ -9,6 +9,8 @@ provider result.
 from __future__ import annotations
 
 import base64
+import shutil
+import contextlib
 import hashlib
 import json
 import os
@@ -58,6 +60,13 @@ class CredentialProviderResult(StrEnum):
     """Only a durable provider response may establish revocation."""
 
     REVOKED = "revoked"
+
+
+class CredentialOutcome(StrEnum):
+    """A durable owner outcome, safe to release ownership after."""
+
+    COMMITTED = "committed"
+    QUARANTINED = "quarantined"
 
 
 @dataclass(frozen=True)
@@ -282,6 +291,7 @@ class CredentialCandidate:
 
     path: Path
     generation: int
+    provider_result: CredentialProviderResult | None = None
 
 
 @dataclass(frozen=True)
@@ -292,6 +302,23 @@ class CredentialFinalization:
     result: Any = None
     retained_ownership: bool = False
     fence_error: str = ""
+
+
+class CredentialPersistenceError(Exception):
+    """Owner storage could not be completed without an ambiguous state change."""
+
+
+@dataclass(frozen=True)
+class CredentialOwnerFinalization:
+    """The durable result of one fenced candidate, without candidate bytes."""
+
+    candidate: CredentialCandidate
+    outcome: CredentialOutcome
+    committed_generation: int | None = None
+    quarantine_path: Path | None = None
+    failure: CredentialFailure | None = None
+    replayed: bool = False
+    release_ownership: bool = False
 
 
 class CredentialFenceFailure(Exception):
@@ -360,6 +387,333 @@ def quarantine_candidate(
         suffix += 1
     candidate_path.replace(target)
     return target
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    """Replace a durable owner document without leaving partial JSON."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{uuid.uuid4()}.tmp")
+    temporary.write_text(json.dumps(value), encoding="utf-8")
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def _journal_path(owner_directory: Path, generation: int) -> Path:
+    return owner_directory / "journal" / f"generation-{generation}.json"
+
+
+def _atomic_copy(source: Path, target: Path) -> None:
+    """Move one credential document inside the owner without exposing it."""
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = target.with_name(f"{target.name}.{uuid.uuid4()}.tmp")
+    shutil.copy2(source, temporary)
+    temporary.chmod(0o600)
+    temporary.replace(target)
+
+
+def _read_owner_manifest(owner_directory: Path) -> dict[str, Any]:
+    try:
+        manifest = json.loads((owner_directory / "owner-manifest.json").read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise CredentialPersistenceError(
+            "credential owner manifest is unreadable"
+        ) from error
+    if not isinstance(manifest, dict) or not manifest.get("owner_id"):
+        raise CredentialPersistenceError("credential owner manifest is malformed")
+    return manifest
+
+
+def _committed_generation(owner_directory: Path) -> int:
+    try:
+        current = json.loads((owner_directory / "current.json").read_bytes())
+        generation = current.get("generation")
+        if isinstance(generation, int) and generation >= 1:
+            return generation
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    generations = owner_directory / "generations"
+    numbers = []
+    if generations.is_dir():
+        for path in generations.iterdir():
+            try:
+                numbers.append(int(path.name))
+            except ValueError:
+                continue
+    return max(numbers, default=0)
+
+
+def _write_intent(
+    owner_directory: Path,
+    candidate: CredentialCandidate,
+    staging_path: Path | None,
+) -> None:
+    _atomic_json(
+        _journal_path(owner_directory, candidate.generation),
+        {
+            "generation": candidate.generation,
+            "state": "journaled",
+            "candidate_path": str(candidate.path),
+            "staging_path": str(staging_path) if staging_path is not None else None,
+            "provider_result": (
+                candidate.provider_result.value
+                if candidate.provider_result is not None
+                else None
+            ),
+        },
+    )
+
+
+def _mark_intent(
+    intent_path: Path,
+    state: CredentialOutcome,
+    *,
+    quarantine_path: Path | None = None,
+) -> None:
+    try:
+        intent = json.loads(intent_path.read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise CredentialPersistenceError(
+            "credential owner journal is unreadable"
+        ) from error
+    intent["state"] = state.value
+    if quarantine_path is not None:
+        intent["quarantine_path"] = str(quarantine_path)
+    _atomic_json(intent_path, intent)
+
+
+def _claim_active_lease(
+    owner_directory: Path,
+    lease: CredentialLease,
+    manifest: dict[str, Any],
+) -> None:
+    try:
+        active = json.loads((owner_directory / "active-lease.json").read_bytes())
+    except (OSError, json.JSONDecodeError) as error:
+        raise CredentialPersistenceError(
+            "credential owner lease is unreadable"
+        ) from error
+    if (
+        active.get("lease_id") != lease.lease_id
+        or active.get("owner_id") != lease.owner_id
+        or lease.owner_id != manifest.get("owner_id")
+        or lease.host_id != manifest.get("host_id")
+    ):
+        raise ValueError("credential lease does not own this active use")
+
+
+def _quarantine_staged_candidate(
+    owner_directory: Path,
+    candidate: CredentialCandidate,
+    staging_path: Path,
+    failure: CredentialFailure,
+) -> Path:
+    quarantine_directory = (
+        owner_directory / "quarantine" / str(candidate.generation)
+    )
+    quarantine_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = quarantine_directory / staging_path.name
+    suffix = 1
+    while target.exists():
+        target = quarantine_directory / f"{staging_path.name}.{suffix}"
+        suffix += 1
+    staging_path.replace(target)
+    _atomic_json(
+        target.with_suffix(".reason.json"),
+        {
+            "generation": candidate.generation,
+            "failure": failure.value,
+        },
+    )
+    return target
+
+
+def _repair_current(
+    owner_directory: Path,
+    generation: int,
+    manifest: dict[str, Any],
+) -> bool:
+    generation_path = owner_directory / "generations" / str(generation) / "auth.json"
+    if not generation_path.is_file():
+        return False
+    declaration = CredentialDeclaration(
+        owner_id=str(manifest["owner_id"]),
+        source_path=generation_path,
+        generation=generation,
+    )
+    if not validate_codex_credential(declaration, now=datetime.now(timezone.utc)).admitted:
+        return False
+    _atomic_copy(generation_path, owner_directory / "current" / "auth.json")
+    _atomic_json(
+        owner_directory / "current.json",
+        {"owner_id": manifest["owner_id"], "generation": generation},
+    )
+    return True
+
+
+async def finalize_codex_candidate(
+    owner_directory: Path,
+    candidate: CredentialCandidate,
+    lease: CredentialLease,
+    *,
+    now: datetime,
+) -> CredentialOwnerFinalization:
+    """Journal, validate, and durably resolve one fenced candidate."""
+    if candidate.generation < 1:
+        raise ValueError("credential candidate requires a generation of at least 1")
+    _validate_private_root(owner_directory, None)
+    manifest = _read_owner_manifest(owner_directory)
+    with exclusive_lock(owner_directory / "transaction", timeout_s=0):
+        _claim_active_lease(owner_directory, lease, manifest)
+        intent_path = _journal_path(owner_directory, candidate.generation)
+        replayed = intent_path.exists()
+        if replayed:
+            try:
+                intent = json.loads(intent_path.read_bytes())
+            except (OSError, json.JSONDecodeError) as error:
+                raise CredentialPersistenceError(
+                    "credential owner journal is unreadable"
+                ) from error
+            state = intent.get("state")
+            if state == CredentialOutcome.COMMITTED.value:
+                outcome = CredentialOutcome.COMMITTED
+            elif state == CredentialOutcome.QUARANTINED.value:
+                outcome = CredentialOutcome.QUARANTINED
+            elif state != "journaled":
+                raise CredentialPersistenceError(
+                    "credential owner journal contains an unknown state"
+                )
+            else:
+                outcome = None
+        else:
+            _write_intent(owner_directory, candidate, None)
+            outcome = None
+
+        if outcome is not None:
+            if outcome is CredentialOutcome.COMMITTED:
+                generation = intent.get("generation", candidate.generation)
+                if isinstance(generation, int):
+                    _repair_current(owner_directory, generation, manifest)
+                return CredentialOwnerFinalization(
+                    candidate=candidate,
+                    outcome=outcome,
+                    committed_generation=generation
+                    if isinstance(generation, int)
+                    else None,
+                    replayed=True,
+                    release_ownership=True,
+                )
+            quarantine_path = intent.get("quarantine_path")
+            return CredentialOwnerFinalization(
+                candidate=candidate,
+                outcome=outcome,
+                quarantine_path=Path(quarantine_path) if quarantine_path else None,
+                replayed=True,
+                release_ownership=True,
+            )
+
+        staging_path = owner_directory / "staging" / str(candidate.generation) / "auth.json"
+        if not staging_path.is_file():
+            if not candidate.path.is_file():
+                source = None
+            else:
+                _atomic_copy(candidate.path, staging_path)
+                source = staging_path
+                _write_intent(owner_directory, candidate, staging_path)
+        else:
+            source = staging_path
+            if not replayed:
+                _write_intent(owner_directory, candidate, staging_path)
+        if source is None:
+            validation = _failure(
+                CredentialMode.UNKNOWN,
+                CredentialFailure.MISSING_SOURCE,
+                "fenced credential candidate is missing",
+            )
+        else:
+            declaration = CredentialDeclaration(
+                owner_id=str(manifest["owner_id"]),
+                source_path=source,
+                generation=candidate.generation,
+                provider_result=candidate.provider_result,
+            )
+            validation = validate_codex_credential(declaration, now=now)
+        current_generation = _committed_generation(owner_directory)
+        stale = candidate.generation <= current_generation
+        if validation.admitted and stale:
+            validation = _failure(
+                CredentialMode.MANAGED_CHATGPT,
+                CredentialFailure.MISSING_SOURCE,
+                "fenced credential candidate is older than the committed generation",
+            )
+        if not validation.admitted:
+            if source is None:
+                quarantine_path = None
+            else:
+                quarantine_path = _quarantine_staged_candidate(
+                    owner_directory,
+                    candidate,
+                    staging_path,
+                    validation.failure or CredentialFailure.MALFORMED_JSON,
+                )
+                _mark_intent(
+                    intent_path,
+                    CredentialOutcome.QUARANTINED,
+                    quarantine_path=quarantine_path,
+                )
+            return CredentialOwnerFinalization(
+                candidate=candidate,
+                outcome=CredentialOutcome.QUARANTINED,
+                quarantine_path=quarantine_path,
+                failure=validation.failure,
+                release_ownership=True,
+            )
+
+        generation_path = (
+            owner_directory / "generations" / str(candidate.generation) / "auth.json"
+        )
+        _atomic_copy(staging_path, generation_path)
+        _mark_intent(intent_path, CredentialOutcome.COMMITTED)
+        _atomic_json(
+            owner_directory / "current.json",
+            {"owner_id": manifest["owner_id"], "generation": candidate.generation},
+        )
+        _atomic_copy(generation_path, owner_directory / "current" / "auth.json")
+        with contextlib.suppress(OSError):
+            staging_path.unlink()
+        return CredentialOwnerFinalization(
+            candidate=candidate,
+            outcome=CredentialOutcome.COMMITTED,
+            committed_generation=candidate.generation,
+            release_ownership=True,
+        )
+
+
+def recover_codex_owner(owner_directory: Path, *, now: datetime) -> CredentialOwnerFinalization | None:
+    """Repair the newest committed generation without touching the seed."""
+    _validate_private_root(owner_directory, None)
+    manifest = _read_owner_manifest(owner_directory)
+    generations = owner_directory / "generations"
+    candidates: list[int] = []
+    if generations.is_dir():
+        for path in generations.iterdir():
+            try:
+                generation = int(path.name)
+            except ValueError:
+                continue
+            if generation > 0:
+                candidates.append(generation)
+    for generation in sorted(candidates, reverse=True):
+        if _repair_current(owner_directory, generation, manifest):
+            return CredentialOwnerFinalization(
+                candidate=CredentialCandidate(
+                    path=owner_directory / "current" / "auth.json",
+                    generation=generation,
+                ),
+                outcome=CredentialOutcome.COMMITTED,
+                committed_generation=generation,
+                release_ownership=False,
+            )
+    return None
 
 
 @dataclass(frozen=True)
