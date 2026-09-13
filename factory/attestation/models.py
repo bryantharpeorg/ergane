@@ -46,8 +46,6 @@ class LaunchRecord:
 
 @dataclass(frozen=True)
 class JudgeDelivery:
-    """One observable transport delivery, including a failed retry."""
-
     delivery_ordinal: int
     status: str
     error: str | None = None
@@ -56,8 +54,6 @@ class JudgeDelivery:
 
 @dataclass(frozen=True)
 class JudgeEvaluationRecord:
-    """One actual scoring result or bounded failure, captured before re-ask."""
-
     evaluation_id: str
     scoring_job_id: str
     scoring_call_ordinal: int
@@ -82,8 +78,6 @@ class JudgeEvaluationRecord:
 
 @dataclass(frozen=True)
 class GitFileChange:
-    """One path change with its exact Git status and binary fact."""
-
     path: str
     status: str
     old_path: str | None = None
@@ -92,8 +86,6 @@ class GitFileChange:
 
 @dataclass(frozen=True)
 class AttemptGitEvidence:
-    """Exact object ids and a bounded manifest, captured before cleanup."""
-
     evidence_id: str
     epic_id: str
     node_id: str

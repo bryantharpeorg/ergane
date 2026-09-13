@@ -73,7 +73,11 @@ from temporalio.exceptions import ApplicationError
 
 from factory.verify import diffcheck, gates, judge, store
 from factory.attestation.models import AttemptGitEvidence
-from factory.attestation.journal import record_attempt_evidence, record_scoring_evaluation
+from factory.attestation.journal import (
+    journal_path as default_journal_path,
+    record_attempt_evidence,
+    record_scoring_evaluation,
+)
 from factory.verify.criteria import CriteriaParseError, load_criteria
 from factory.verify.diffbounds import DIFF_REFUSAL_THRESHOLD
 from factory.verify.judge import DEFAULT_MAX_JUDGE_RETRIES
@@ -479,7 +483,6 @@ class RunJudgeInput:
     prior_feedback: str | None = None
     max_judge_retries: int = DEFAULT_MAX_JUDGE_RETRIES
     gate_results: list[GateResult] = field(default_factory=list)
-    journal_path: str | None = None
     scoring_job_id: str = "unattributed"
     invocation_id: str = ""
     tested_revision: str = ""
@@ -515,11 +518,7 @@ async def run_judge(request: RunJudgeInput) -> JudgeVerdict:
             scoring_job_id=request.scoring_job_id,
             invocation_id=request.invocation_id,
             tested_revision=request.tested_revision,
-            evaluation_sink=(
-                lambda record: record_scoring_evaluation(request.journal_path, record)
-                if request.journal_path
-                else None
-            ),
+            evaluation_sink=lambda record: record_scoring_evaluation(default_journal_path(), record),
         )
     except judge.JudgeUnavailableError as exc:
         # The library already scrubbed its own message; nothing is added here
@@ -570,7 +569,6 @@ class CaptureAttemptEvidenceInput:
     attempted_ref: str
     verified_ref: str
     gate_results: list[GateResult]
-    journal_path: str | None = None
 
 
 @activity.defn
@@ -589,7 +587,7 @@ async def capture_attempt_evidence(
         node_id=request.node_id,
         attempt=request.attempt,
         dispatch=request.dispatch,
-        journal_path=request.journal_path,
+        journal_path=default_journal_path(),
     )
 
 

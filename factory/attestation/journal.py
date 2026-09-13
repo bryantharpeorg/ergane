@@ -8,9 +8,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from factory.attestation.models import AttemptGitEvidence, GitFileChange, JudgeDelivery, JudgeEvaluationRecord, LaunchRecord, RungSelection
+from factory.env import resolve_env_path
 from factory.attestation.usage import UsageObservation
 
 SCHEMA_VERSION = 1
+DEFAULT_JOURNAL_PATH = ".factory/attestation.db"
+FACTORY_JOURNAL_PATH_ENV = "FACTORY_ATTESTATION_DB"
+ERGANE_JOURNAL_PATH_ENV = "ERGANE_ATTESTATION_DB"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
@@ -73,6 +77,10 @@ def connect(path: str | Path) -> sqlite3.Connection:
         connection.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
     connection.commit()
     return connection
+
+
+def journal_path() -> Path:
+    return resolve_env_path(ERGANE_JOURNAL_PATH_ENV, FACTORY_JOURNAL_PATH_ENV, DEFAULT_JOURNAL_PATH)
 
 
 def _selection_json(value: RungSelection) -> str:
@@ -230,21 +238,13 @@ def _record(path: str | Path, record: object, evidence_id: str) -> None:
         connection.commit()
 
 
-def _decode(
-    payload: str,
-    model: type[JudgeEvaluationRecord | AttemptGitEvidence],
-    nested: str,
-) -> JudgeEvaluationRecord | AttemptGitEvidence:
+def _decode(payload: str, model: type[JudgeEvaluationRecord | AttemptGitEvidence], nested: str) -> JudgeEvaluationRecord | AttemptGitEvidence:
     data = json.loads(payload)
     data[nested] = tuple((JudgeDelivery if nested == "deliveries" else GitFileChange)(**item) for item in data[nested])
     return model(**data)
 
 
-def _read(
-    path: str | Path,
-    model: type[JudgeEvaluationRecord | AttemptGitEvidence],
-    nested: str,
-) -> tuple:
+def _read(path: str | Path, model: type[JudgeEvaluationRecord | AttemptGitEvidence], nested: str) -> tuple:
     with connect(path) as connection:
         rows = connection.execute("SELECT payload FROM evidence_records ORDER BY evidence_id")
         return tuple(_decode(row[0], model, nested) for row in rows)
@@ -253,13 +253,11 @@ def _read(
 def record_scoring_evaluation(
     path: str | Path, record: JudgeEvaluationRecord
 ) -> JudgeEvaluationRecord:
-    """Persist one scoring result idempotently by its evaluation identity."""
     _record(path, record, record.evaluation_id)
     return record
 
 
 def read_scoring_evaluations(path: str | Path) -> tuple[JudgeEvaluationRecord, ...]:
-    """Read persisted evaluations, oldest scoring call first."""
     records = _read(path, JudgeEvaluationRecord, "deliveries")
     return tuple(sorted(records, key=lambda item: (item.scoring_call_ordinal, item.evaluation_id)))
 
@@ -267,11 +265,9 @@ def read_scoring_evaluations(path: str | Path) -> tuple[JudgeEvaluationRecord, .
 def record_attempt_evidence(
     path: str | Path, record: AttemptGitEvidence
 ) -> AttemptGitEvidence:
-    """Persist one exact Git snapshot by its evidence identity."""
     _record(path, record, record.evidence_id)
     return record
 
 
 def read_attempt_evidence(path: str | Path) -> tuple[AttemptGitEvidence, ...]:
-    """Read retained Git evidence, evidence-id ordered for stable reports."""
     return tuple(_read(path, AttemptGitEvidence, "files"))

@@ -270,13 +270,11 @@ class JudgeParseError(ValueError):
 
 
 class JudgeUnavailableError(RuntimeError):
-    """The judge could not be reached — an outage, not a verdict.
+    """An outage, with observable transport deliveries retained for the packet."""
 
-    Deliberately not a FAIL: charging a node's attempt to someone else's downtime
-    is the mirror image of the false PASS this component exists to prevent. The
-    caller maps it to `JUDGE_UNAVAILABLE` and composes a gates-only verdict with
-    the flag set (contracts/judge.md).
-    """
+    def __init__(self, message: str, *, deliveries: tuple[JudgeDelivery, ...] = ()):
+        super().__init__(message)
+        self.deliveries = deliveries
 
 
 @dataclass(frozen=True)
@@ -773,8 +771,6 @@ def _parse_findings(
 
 @dataclass(frozen=True)
 class Completion:
-    """The assistant content plus bounded transport and usage observations."""
-
     content: str
     response_id: str | None = None
     prompt_tokens: int | None = None
@@ -839,15 +835,29 @@ async def run_judge(
         gate_results=gate_results,
     )
 
-    completion = await _complete(
-        prompt,
-        proxy_url=proxy_url,
-        virtual_key=virtual_key,
-        model_alias=model_alias,
-        transport=transport,
-        timeout=timeout,
-        retry_backoff_s=retry_backoff_s,
-    )
+    try:
+        completion = await _complete(
+            prompt,
+            proxy_url=proxy_url,
+            virtual_key=virtual_key,
+            model_alias=model_alias,
+            transport=transport,
+            timeout=timeout,
+            retry_backoff_s=retry_backoff_s,
+        )
+    except JudgeUnavailableError as exc:
+        _record_evaluation(
+            evaluation_sink,
+            _evaluation(
+                criteria, virtual_key=virtual_key, model_alias=model_alias,
+                judge_attempt=judge_attempt,
+                completion=Completion("", deliveries=exc.deliveries),
+                scoring_job_id=scoring_job_id, invocation_id=invocation_id,
+                tested_revision=tested_revision, status="unavailable",
+                feedback=str(exc),
+            ),
+        )
+        raise
 
     try:
         verdict = parse_verdict(
@@ -913,7 +923,6 @@ def _evaluation(
     truncated_input: bool | None = None,
     gates_shown: bool | None = None,
 ) -> JudgeEvaluationRecord:
-    """Convert one parsed judge answer into bounded durable evidence."""
     return JudgeEvaluationRecord(
         evaluation_id=f"{scoring_job_id}:{status}:{judge_attempt}", scoring_job_id=scoring_job_id,
         scoring_call_ordinal=judge_attempt, invocation_id=invocation_id, key_alias=virtual_key,
@@ -929,41 +938,8 @@ def _evaluation(
 
 
 def _record_evaluation(sink: Any | None, record: JudgeEvaluationRecord) -> None:
-    """Invoke the caller-supplied durable sink without inventing one here."""
     if sink is not None:
         sink(record)
-
-
-async def run_scoring_job(
-    criteria: CriteriaSet,
-    diff_text: str,
-    *,
-    proxy_url: str,
-    virtual_key: str,
-    model_alias: str,
-    gate_results: Sequence[GateResult] | None = None,
-    max_judge_retries: int = DEFAULT_MAX_JUDGE_RETRIES,
-    scoring_job_id: str,
-    invocation_id: str,
-    tested_revision: str,
-    evaluation_sink: Any | None = None,
-    **kwargs: Any,
-) -> JudgeVerdict:
-    """Run the same bounded re-ask policy while persisting every evaluation."""
-    prior_feedback = None
-    for judge_attempt in range(1, max_judge_retries + 2):
-        verdict = await run_judge(
-            criteria, diff_text, proxy_url=proxy_url, virtual_key=virtual_key,
-            model_alias=model_alias, prior_feedback=prior_feedback,
-            gate_results=gate_results, judge_attempt=judge_attempt,
-            max_judge_retries=max_judge_retries, scoring_job_id=scoring_job_id,
-            invocation_id=invocation_id, tested_revision=tested_revision,
-            evaluation_sink=evaluation_sink, **kwargs,
-        )
-        if verdict.outcome != JudgeOutcome.RETRY:
-            return verdict
-        prior_feedback = verdict.feedback
-    return verdict
 
 
 def _reask_on_contradiction(
@@ -1073,9 +1049,7 @@ async def _complete(
                 response = await client.post(COMPLETIONS_PATH, json=body)
             except httpx.HTTPError as exc:
                 reason = _scrub(f"{type(exc).__name__}: {exc}", virtual_key)
-                deliveries.append(
-                    JudgeDelivery(delivery_ordinal=attempt, status="transport_error", error=reason)
-                )
+                deliveries.append(JudgeDelivery(attempt, "transport_error", error=reason))
             else:
                 if response.status_code < 400:
                     completion = _completion(response)
@@ -1091,16 +1065,13 @@ async def _complete(
 
     # Outside the client and outside every `except`, so no chained exception can
     # carry a credential out with it (FR-009, SC-004).
-    raise JudgeUnavailableError(f"the judge's chat completion did not succeed: {reason}")
+    raise JudgeUnavailableError(
+        f"the judge's chat completion did not succeed: {reason}",
+        deliveries=tuple(deliveries),
+    )
 
 
 def _completion(response: httpx.Response) -> Completion:
-    """The assistant message of a chat completion, or an outage.
-
-    A 200 without a message is the backend breaking its own protocol, not the
-    judge answering badly — charging it to the judge-retry budget would spend a
-    node's attempts on someone else's failure.
-    """
     try:
         payload: Any = response.json()
     except ValueError:

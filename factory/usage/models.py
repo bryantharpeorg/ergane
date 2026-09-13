@@ -96,8 +96,7 @@ class KeyLease:
     #: New invocations carry a stable identity supplied by workflow state. Empty
     #: preserves old payloads and old ledger rows; it never means "guess one".
     invocation_id: str = ""
-    #: US2: the scoring job this key brackets. Empty for builder keys and older
-    #: payloads; the report aggregates by this identity, not by attempt ordinal.
+    #: US2: scoring-job identity; empty for builders and older payloads.
     scoring_job_id: str = ""
 
 
