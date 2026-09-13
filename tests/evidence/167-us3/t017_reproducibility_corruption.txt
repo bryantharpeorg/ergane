@@ -1,0 +1,18 @@
+# Real CLI evidence: reproducible export and corrupt refusal.
+
+```text
+$ ergane attestation export --output first.zip --selector test:coverage.txt:dispatch-2:capture-2 --strict
+  "revision": "300211cfaa3d0f48fd06a192d636607664da2c0a7cc9017784cebc587672cc7c"
+exit=0
+$ ergane attestation export --output second.zip --selector ... --strict
+exit=0
+$ sha256sum first.zip second.zip
+7caa97ebc123fef92edf756f43bd4f97496f9c3dbab37d9054e1e333c7b3c219  first.zip
+7caa97ebc123fef92edf756f43bd4f97496f9c3dbab37d9054e1e333c7b3c219  second.zip
+$ ergane attestation verify first.zip --strict
+  "schema_version": 1
+exit=0
+$ ergane attestation verify corrupt.zip --strict
+ergane: corrupted archive
+exit=1
+```

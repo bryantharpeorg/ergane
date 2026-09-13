@@ -23,6 +23,7 @@ class UsageEvidence:
 
     usage_id: int | None
     invocation_id: str | None
+    key_alias: str | None
     builder_or_judge: str
     usage_source: str
     usage_status: str
@@ -105,6 +106,7 @@ def read_usage_evidence(path: str | Path) -> tuple[UsageEvidence, ...]:
             UsageEvidence(
                 usage_id=row["id"],
                 invocation_id=None,
+                key_alias=row["key_alias"] if "key_alias" in columns else None,
                 builder_or_judge=(
                     "judge" if str(row["persona"]).startswith("judge") else "builder"
                 ),
@@ -143,6 +145,7 @@ def _codex_by_alias(connection: sqlite3.Connection) -> list[UsageEvidence]:
             UsageEvidence(
                 usage_id=row["id"],
                 invocation_id=None,
+                key_alias=row["key_alias"],
                 builder_or_judge="builder",
                 usage_source=row["source"],
                 usage_status="complete" if row["complete"] else "partial",
