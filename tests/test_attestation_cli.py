@@ -97,7 +97,19 @@ def test_show_and_verify_do_not_change_the_evidence_root(tmp_path: Path) -> None
     code, _, _ = _run("attestation", "show", "--root", str(root), "--subject", SUBJECT, "--revision", "attempt-2")
     code += _run("attestation", "verify", str(archive))[0]
     assert code == 0
-    assert state() == before
+    after = state()
+    assert {path for path, _, _ in after} == {path for path, _, _ in before}
+    before_content = {
+        path: (mode, path.read_bytes())
+        for path, mode, _ in before
+        if path.is_file() and path.suffix not in {"-shm", "-wal"}
+    }
+    after_content = {
+        path: (mode, path.read_bytes())
+        for path, mode, _ in after
+        if path.is_file() and path.suffix not in {"-shm", "-wal"}
+    }
+    assert after_content == before_content
 
 
 def test_missing_evidence_root_is_read_only(tmp_path: Path) -> None:

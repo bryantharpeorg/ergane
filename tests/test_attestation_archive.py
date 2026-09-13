@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ import pytest
 
 from factory.attestation.archive import (
     ArchiveLimits,
+    Identity,
     PacketError,
     export_packet,
     read_manifest,
@@ -250,6 +252,7 @@ def _capture_artifact(
     status: str = "permitted",
     present: bool = True,
     declared_path: str = "coverage.txt",
+    stored_path: str | None = None,
 ) -> tuple[tuple[str, str, str, str], GateArtifact]:
     artifact = _artifact(
         f"dispatch-{ordinal}",
@@ -257,8 +260,9 @@ def _capture_artifact(
         source,
         status=status,
         present=present,
+        stored_path=stored_path,
     )
-    artifact = GateArtifact(**{**artifact.__dict__, "type": kind, "path": declared_path})
+    artifact = dataclasses.replace(artifact, type=kind, path=declared_path)
     _verification(connect_verification(root / "verification.db"), ordinal, artifact)
     return ("test", declared_path, f"dispatch-{ordinal}", f"capture-{ordinal}"), artifact
 
@@ -346,7 +350,7 @@ def test_missing_expired_refused_oversized_items_remain_visible(tmp_path: Path) 
         verdict=OverallVerdict.FAIL,
     )
     oversized_path = artifacts_dir / "oversized.txt"
-    oversized_path.write_text("too large\n")
+    oversized_path.write_text("x" * 64)
     _verification(
         verification,
         6,
@@ -367,7 +371,7 @@ def test_missing_expired_refused_oversized_items_remain_visible(tmp_path: Path) 
             _selector(5),
             _selector(6),
         ),
-        limits=ArchiveLimits(max_artifact_bytes=4),
+        limits=ArchiveLimits(max_artifact_bytes=32),
     )
     reasons = {item.identity: (item.status, item.reason) for item in result.items}
     assert reasons[_selector(1)][0] == "included"
@@ -377,7 +381,13 @@ def test_missing_expired_refused_oversized_items_remain_visible(tmp_path: Path) 
     assert reasons[_selector(6)][0] == "oversized"
     assert result.complete is False
     manifest = read_manifest(root / "incomplete.zip")
-    assert set(reasons).issubset(manifest["completeness"])
+    assert {
+        item.identity.key(): (
+            manifest["completeness"][item.identity.key()]["status"],
+            manifest["completeness"][item.identity.key()]["reason"],
+        )
+        for item in result.items
+    } == {item.key(): value for item, value in reasons.items()}
 
     with pytest.raises(PacketError) as error:
         export_packet(root, SUBJECT, output=root / "strict.zip", selectors=(_selector(3),), strict=True)
@@ -461,12 +471,15 @@ def test_opaque_bytes_are_selected_with_sensitivity_metadata(tmp_path: Path) -> 
     _write(root)
     blob = root / "artifacts" / "167" / "US3" / "blob.bin"
     blob.write_bytes(b"\x00\x01opaque\n")
-    selector, artifact = _capture_artifact(root, ordinal=12, source=blob, kind=ArtifactType.OPAQUE)
+    selector, artifact = _capture_artifact(
+        root, ordinal=12, source=blob, kind=ArtifactType.OPAQUE, declared_path="blob.bin"
+    )
     result = export_packet(root, SUBJECT, output=root / "opaque.zip", selectors=(selector,))
     assert result.items[0].sensitivity == "opaque"
     manifest = read_manifest(root / "opaque.zip")
     assert manifest["entries"]["attachments/blob.bin"]["sensitivity"] == "opaque"
-    report = (root / "opaque.zip").read_bytes()
+    _, contents = _read_zip(root / "opaque.zip")
+    report = contents["report.md"]
     assert b"not redacted" in report and b"safe" not in report
 
 
