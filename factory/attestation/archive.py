@@ -7,11 +7,13 @@ import hashlib
 import html
 import io
 import json
+import math
 import os
 import re
 import sqlite3
 import stat
 import zipfile
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple, Sequence
@@ -44,8 +46,8 @@ class ArchiveLimits:
     def __post_init__(self) -> None:
         values = dataclasses.asdict(self)
         for name, value in values.items():
-            if value <= 0:
-                raise ValueError(f"{name} must be positive and finite")
+            if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{name} must be positive, finite, and numeric")
 
 
 class Identity(NamedTuple):
@@ -99,8 +101,11 @@ def parse_subject(value: str) -> Subject:
         raise PacketError("subject must be TARGET:EPIC/NODE")
     target, remainder = value.split(":", 1)
     epic, node = remainder.split("/", 1)
-    if not target or not epic or not node or any(part in {".", ".."} for part in (target, epic, node)):
+    if not target or not epic or not node:
         raise PacketError("subject must be TARGET:EPIC/NODE")
+    _safe_component(target.replace("/", "-"), "target")
+    _safe_component(epic, "epic")
+    _safe_component(node, "node")
     return Subject(target, epic, node)
 
 
@@ -145,11 +150,17 @@ def show_subject(root: Path, subject: str, revision: str | None = None) -> dict[
                 (parsed.target, parsed.epic_id, parsed.node_id),
             )
         ]
+        alias_prefix = f"{parsed.epic_id}:{parsed.node_id}:"
         evaluations = [
             dict(row)
             for row in connection.execute(
                 "SELECT payload FROM evidence_records ORDER BY evidence_id"
             )
+        ]
+        evaluations = [
+            row
+            for row in evaluations
+            if str(json.loads(row["payload"]).get("key_alias", "")).startswith(alias_prefix)
         ]
     finally:
         connection.close()
@@ -159,9 +170,13 @@ def show_subject(root: Path, subject: str, revision: str | None = None) -> dict[
         raise PacketError("ambiguous subject; pass an explicit revision")
     if revision is not None:
         selected = []
+        invocation_ids = {launch["invocation_id"] for launch in launches}
         payloads = [json.loads(item["payload"]) for item in evaluations]
         for launch in launches:
-            if launch["outcome"] == revision or any(payload.get("tested_revision") == revision for payload in payloads):
+            if launch["outcome"] == revision or (
+                launch["invocation_id"] in invocation_ids
+                and any(payload.get("tested_revision") == revision for payload in payloads)
+            ):
                 selected.append(launch)
         if not selected:
             raise PacketError(f"revision {revision} not found")
@@ -271,12 +286,14 @@ def _redact(value: object) -> str:
     return html.escape(text, quote=True)
 
 
-def _usage_rows(root: Path, subject: Subject) -> list[dict[str, object]]:
+def _usage_rows(root: Path, launches: Sequence[dict[str, object]]) -> list[dict[str, object]]:
     ledger = root / "usage.db"
     if not ledger.is_file():
         return []
+    aliases = {str(launch.get("key_alias")) for launch in launches if launch.get("key_alias")}
     return [
         {
+            "key_alias": evidence.key_alias,
             "builder_or_judge": evidence.builder_or_judge,
             "usage_source": evidence.usage_source,
             "usage_status": evidence.usage_status,
@@ -284,6 +301,7 @@ def _usage_rows(root: Path, subject: Subject) -> list[dict[str, object]]:
             "complete_total": evidence.complete_total,
         }
         for evidence in read_usage_evidence(ledger)
+        if evidence.key_alias in aliases
     ]
 
 
@@ -305,7 +323,7 @@ def _report(root: Path, subject: Subject, results: Sequence[VerificationResult],
     for item in completeness:
         lines.append(f"- `{item.identity.key()}`: `{item.status}` — {_redact(item.reason)}")
     lines.extend(["", "## Usage", ""])
-    for row in _usage_rows(root, subject):
+    for row in _usage_rows(root, launches):
         lines.append(f"- {_redact(row)}")
     lines.extend(["", "Attachments are exact retained bytes. Opaque bytes are not redacted and may contain sensitive data."])
     return "\n".join(lines) + "\n"
@@ -330,7 +348,6 @@ def export_packet(
     selectors: Sequence[Identity | tuple[str, str, str, str]] = (),
     limits: ArchiveLimits | None = None,
     strict: bool = False,
-    force_output: bool = False,
 ) -> ExportResult:
     parsed = parse_subject(subject)
     bounds = limits or ArchiveLimits()
@@ -347,6 +364,7 @@ def export_packet(
     ]
     if not selected_launches:
         raise PacketError(f"no subject {subject}")
+    subject_launch = selected_launches[0]
 
     connection = connect_readonly(verification_path)
     connection.row_factory = None
@@ -356,7 +374,12 @@ def export_packet(
         connection.close()
 
     records = read_scoring_evaluations(journal)
-    evaluations = [dataclasses.asdict(record) for record in records]
+    alias_prefix = f"{parsed.epic_id}:{parsed.node_id}:"
+    evaluations = [
+        dataclasses.asdict(record)
+        for record in records
+        if record.key_alias.startswith(alias_prefix)
+    ]
     identities = tuple(Identity(*selector) for selector in selectors)
     if len(set(identities)) != len(identities):
         raise PacketError("duplicate artifact selection")
@@ -418,15 +441,15 @@ def export_packet(
     else:
         predecessor = max((str(item.get("content_revision")) for item in existing), default=None)
         revision = hashlib.sha256(
-            f"{subject}\0{FORMAT}\0{launches[0].get('spec_revision')}\0{launches[0].get('spec_fingerprint')}\0{content_digest}\0{predecessor}".encode()
+            f"{subject}\0{FORMAT}\0{subject_launch.get('spec_revision')}\0{subject_launch.get('spec_fingerprint')}\0{content_digest}\0{predecessor}".encode()
         ).hexdigest()
     manifest = {
         "schema_version": 1,
         "format": FORMAT,
         "generator_version": GENERATOR_VERSION,
         "subject": subject,
-        "spec_revision": launches[0].get("spec_revision"),
-        "spec_fingerprint": launches[0].get("spec_fingerprint"),
+        "spec_revision": subject_launch.get("spec_revision"),
+        "spec_fingerprint": subject_launch.get("spec_fingerprint"),
         "content_revision": revision,
         "content_digest": content_digest,
         "predecessor_revision": predecessor,
@@ -454,14 +477,14 @@ def export_packet(
     destination = output or directory / f"{revision}.zip"
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(destination.parent, 0o700)
-    _atomic_archive_write(directory / f"{revision}.zip", archive_bytes, force_output=force_output)
+    _atomic_archive_write(directory / f"{revision}.zip", archive_bytes)
     if destination.resolve() != (directory / f"{revision}.zip").resolve():
-        _atomic_archive_write(destination, archive_bytes, force_output=force_output)
+        _atomic_archive_write(destination, archive_bytes)
     return ExportResult(destination, revision, revision, predecessor, not incomplete, tuple(items))
 
 
-def _atomic_archive_write(path: Path, data: bytes, *, force_output: bool) -> None:
-    if path.exists() and not force_output:
+def _atomic_archive_write(path: Path, data: bytes) -> None:
+    if path.exists():
         if path.read_bytes() == data:
             return
         raise PacketError(f"refusing output collision: {path}")
@@ -511,12 +534,16 @@ def verify_packet(path: Path, *, limits: ArchiveLimits | None = None) -> dict[st
             if not required.issubset(names):
                 raise PacketError("missing required archive entry")
             try:
-                manifest = json.loads(archive.read(MANIFEST_NAME))
-                manifest_digest = archive.read(DIGEST_NAME)
                 manifest_bytes = archive.read(MANIFEST_NAME)
-            except (KeyError, zipfile.BadZipFile, json.JSONDecodeError) as error:
+                manifest = json.loads(manifest_bytes)
+                manifest_digest = archive.read(DIGEST_NAME)
+            except (KeyError, zipfile.BadZipFile, zlib.error, json.JSONDecodeError) as error:
                 raise PacketError("unreadable manifest") from error
-            if hashlib.sha256(manifest_bytes).hexdigest() != manifest_digest.decode("ascii", errors="strict"):
+            try:
+                digest = manifest_digest.decode("ascii", errors="strict")
+            except UnicodeDecodeError as error:
+                raise PacketError("manifest digest mismatch") from error
+            if hashlib.sha256(manifest_bytes).hexdigest() != digest:
                 raise PacketError("manifest digest mismatch")
             if manifest.get("schema_version") != 1 or manifest.get("format") != FORMAT:
                 raise PacketError("unsupported packet format")
@@ -536,5 +563,5 @@ def verify_packet(path: Path, *, limits: ArchiveLimits | None = None) -> dict[st
                 if len(data) != entry.get("size") or hashlib.sha256(data).hexdigest() != entry.get("sha256"):
                     raise PacketError(f"entry digest mismatch: {name}")
             return manifest
-    except zipfile.BadZipFile as error:
+    except (zipfile.BadZipFile, zlib.error) as error:
         raise PacketError("corrupted archive") from error

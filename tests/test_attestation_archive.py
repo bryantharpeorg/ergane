@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import math
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import socket
 import sqlite3
 import stat
 import zipfile
+import zlib
 from pathlib import Path
 
 import pytest
@@ -302,6 +304,70 @@ def test_export_contains_manifest_report_exact_bytes_and_offline_verifies(tmp_pa
     assert read_manifest(relocated)["schema_version"] == 1
 
 
+def test_export_scopes_evidence_to_the_selected_subject(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    other_launch = dataclasses.replace(
+        _launch_record(
+            invocation="builder-other",
+            ordinal=99,
+            outcome="succeeded",
+            persona="builder",
+        ),
+        node_id="US4",
+        key_alias="167:US4:99:builder",
+    )
+    record_launch(EVIDENCE_JOURNAL, other_launch)
+    record_scoring_evaluation(
+        EVIDENCE_JOURNAL,
+        JudgeEvaluationRecord(
+            evaluation_id="eval-other",
+            scoring_job_id="job-other",
+            scoring_call_ordinal=99,
+            invocation_id="judge-other",
+            key_alias="167:US4:1:judge",
+            criteria_fingerprint="c" * 64,
+            tested_revision="attempt-other",
+            status="valid",
+            model_alias="judge",
+            scenario_results=((US3_S1, True, "another node"),),
+            feedback="unrelated judge",
+        ),
+    )
+    usage = connect_usage(root / "usage.db")
+    upsert_record(
+        usage,
+        UsageRecord(
+            epic_id="167",
+            node_id="US4",
+            attempt=1,
+            persona="builder",
+            spec_ref="167/US4",
+            key_alias="167:US4:1:builder",
+            prompt_tokens=99,
+            completion_tokens=99,
+            cache_read_tokens=None,
+            cache_write_tokens=None,
+            request_count=1,
+            spend_usd=9.99,
+            final_usage_confirmed=True,
+            termination=Termination.COMPLETED,
+            issued_at="2026-01-01T00:00:00Z",
+            torn_down_at="2026-01-01T00:01:00Z",
+            usage_source="gateway",
+            usage_status="complete",
+            cost_basis="gateway_usd",
+        ),
+    )
+    usage.close()
+
+    export_packet(root, SUBJECT, output=root / "scoped.zip", selectors=(_selector(2),))
+    _, contents = _read_zip(root / "scoped.zip")
+    report = contents["report.md"].decode()
+    assert "other" not in report
+    assert "9.99" not in report
+
+
 def test_identical_evidence_is_reproducible_and_new_evidence_is_successor(tmp_path: Path) -> None:
     root = tmp_path / "evidence"
     _write(root)
@@ -527,6 +593,11 @@ def test_offline_verification_refuses_bad_names_bounds_and_bytes(tmp_path: Path)
         verify_packet(bomb, limits=ArchiveLimits(max_expanded_bytes=8))
 
 
+def test_archive_limits_refuse_nonfinite_values() -> None:
+    with pytest.raises(ValueError, match="finite"):
+        ArchiveLimits(max_artifact_bytes=math.nan)
+
+
 def test_output_writes_are_atomic_and_collisions_are_preserved(tmp_path: Path) -> None:
     root = tmp_path / "evidence"
     _write(root)
@@ -537,11 +608,7 @@ def test_output_writes_are_atomic_and_collisions_are_preserved(tmp_path: Path) -
     assert collision.read_bytes() == b"unchanged\n"
     assert not list(root.glob("*.tmp"))
 
-    output = root / "atomic.zip"
-    export_packet(root, SUBJECT, output=output, selectors=(_selector(2),))
-    before = output.read_bytes()
-    temporary = root / "atomic.zip.tmp"
-    temporary.write_bytes(b"partial")
+    output = root / "crash.zip"
     original_replace = os.replace
 
     def failing_replace(source: Path, destination: Path) -> None:
@@ -552,7 +619,27 @@ def test_output_writes_are_atomic_and_collisions_are_preserved(tmp_path: Path) -
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(os, "replace", failing_replace)
         with pytest.raises(OSError, match="simulated crash"):
-            export_packet(root, SUBJECT, output=output, selectors=(_selector(2),), force_output=True)
-    assert output.read_bytes() == before
-    assert temporary.exists()
-    temporary.unlink()
+            export_packet(root, SUBJECT, output=output, selectors=(_selector(2),))
+    assert not output.exists()
+    assert not list(root.glob("*.tmp"))
+
+
+def test_verification_refuses_zlib_failures_as_packet_errors(tmp_path: Path) -> None:
+    root = tmp_path / "evidence"
+    _write(root)
+    archive = root / "good.zip"
+    export_packet(root, SUBJECT, output=archive, selectors=(_selector(2),))
+    with zipfile.ZipFile(archive, "r") as source:
+        original_read = type(source).read
+
+        original_read = type(source).read
+
+        def invalid_deflate(self: zipfile.ZipFile, name: str, pwd: object = None) -> bytes:
+            if name == "report.md":
+                raise zlib.error("invalid distance code")
+            return original_read(self, name, pwd=pwd)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(type(source), "read", invalid_deflate)
+            with pytest.raises(PacketError, match="corrupted archive"):
+                verify_packet(archive)

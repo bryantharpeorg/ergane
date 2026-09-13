@@ -37,7 +37,6 @@ def add_attestation_parser(subparsers: argparse._SubParsersAction) -> argparse.A
     export.add_argument("--output", type=Path, required=True)
     export.add_argument("--selector", action="append", default=[], metavar="GATE:PATH:DISPATCH:CAPTURE")
     export.add_argument("--strict", action="store_true")
-    export.add_argument("--force-output", action="store_true")
     export.set_defaults(run=_export_command)
 
     verify = verbs.add_parser("verify", help="verify an archive without extracting it")
@@ -75,8 +74,7 @@ def _export_command(args: argparse.Namespace) -> int:
             output=args.output,
             selectors=selectors,
             strict=args.strict,
-            force_output=args.force_output,
-        )
+    )
     except PacketError as error:
         raise OperatorError(str(error)) from error
     print(json.dumps(result._asdict(), indent=2, sort_keys=True, default=lambda value: getattr(value, "_asdict", lambda: str(value))()))
