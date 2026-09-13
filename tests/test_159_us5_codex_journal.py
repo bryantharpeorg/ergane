@@ -445,3 +445,53 @@ def test_owner_module_contains_no_oauth_refresh_implementation() -> None:
     assert not {"httpx", "requests", "socket", "urllib"} & set(imported_names)
     assert "https://" not in source
     assert "oauth/token" not in source.lower()
+
+
+async def test_replaying_a_committed_candidate_commits_once(
+    tmp_path: Path,
+) -> None:
+    """A repeated finalization reads the durable outcome instead of rewriting it."""
+    owner, lease = await _lease(tmp_path, 1)
+    candidate = await _write_candidate(
+        tmp_path / "node" / ".codex" / "auth.json",
+        managed_payload("second"),
+        2,
+    )
+    first = await finalize_codex_candidate(owner, candidate, lease, now=NOW)
+    committed_before = (owner / "generations" / "2" / "auth.json").read_text(
+        encoding="utf-8"
+    )
+    candidate.path.write_text(json.dumps(managed_payload("changed")), encoding="utf-8")
+
+    second = await finalize_codex_candidate(owner, candidate, lease, now=NOW)
+
+    assert first.outcome is CredentialOutcome.COMMITTED
+    assert second.outcome is CredentialOutcome.COMMITTED
+    assert second.replayed is True
+    assert second.release_ownership is True
+    assert (owner / "generations" / "2" / "auth.json").read_text(
+        encoding="utf-8"
+    ) == committed_before
+    assert (owner / "current" / "auth.json").read_text(encoding="utf-8") == (
+        committed_before
+    )
+
+
+async def test_replaying_a_quarantined_candidate_quarantines_once(
+    tmp_path: Path,
+) -> None:
+    """A repeated invalid candidate is not moved or recorded twice."""
+    owner, lease = await _lease(tmp_path, 1)
+    candidate_path = tmp_path / "node" / ".codex" / "auth.json"
+    candidate = await _write_candidate(candidate_path, "{malformed", 2)
+    first = await finalize_codex_candidate(owner, candidate, lease, now=NOW)
+    quarantine_before = sorted((owner / "quarantine" / "2").iterdir())
+    candidate_path.write_text(json.dumps(managed_payload("changed")), encoding="utf-8")
+
+    second = await finalize_codex_candidate(owner, candidate, lease, now=NOW)
+
+    assert first.outcome is CredentialOutcome.QUARANTINED
+    assert second.outcome is CredentialOutcome.QUARANTINED
+    assert second.replayed is True
+    assert second.release_ownership is True
+    assert sorted((owner / "quarantine" / "2").iterdir()) == quarantine_before
