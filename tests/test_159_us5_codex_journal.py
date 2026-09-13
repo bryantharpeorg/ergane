@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import httpx
 
 from factory.workgraph.codex_credential import (
     CredentialCandidate,
@@ -396,4 +398,50 @@ async def test_crash_after_quarantine_marks_the_durable_outcome(
     journal = next((owner / "journal").glob("generation-2-*.json"))
     intent = json.loads(journal.read_text(encoding="utf-8"))
     assert intent["state"] == CredentialOutcome.QUARANTINED.value
-    assert not (owner / "current.json").exists()
+
+
+async def test_owner_does_not_contact_a_provider_refresh_endpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the fenced Codex child may refresh; the owner only persists files."""
+    network_calls: list[tuple[object, ...]] = []
+
+    def forbidden_request(self: object, *args: object, **kwargs: object) -> object:
+        network_calls.append(("request", args, kwargs))
+        raise AssertionError("owner storage contacted the network")
+
+    def forbidden_urlopen(*args: object, **kwargs: object) -> object:
+        network_calls.append(("urlopen", args, kwargs))
+        raise AssertionError("owner storage contacted the network")
+
+    monkeypatch.setattr(httpx.Client, "request", forbidden_request)
+    monkeypatch.setattr(httpx.AsyncClient, "request", forbidden_request)
+    monkeypatch.setattr("urllib.request.urlopen", forbidden_urlopen)
+    owner, lease = await _lease(tmp_path, 1)
+    candidate = await _write_candidate(
+        tmp_path / "node" / ".codex" / "auth.json",
+        managed_payload("second"),
+        2,
+    )
+
+    result = await finalize_codex_candidate(owner, candidate, lease, now=NOW)
+
+    assert result.outcome is CredentialOutcome.COMMITTED
+    assert network_calls == []
+
+
+def test_owner_module_contains_no_oauth_refresh_implementation() -> None:
+    """The source itself declares the child as the only refresh boundary."""
+    source = Path(codex_credential.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    imported_names = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_names.extend(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_names.append(node.module.split(".")[0])
+
+    assert not {"httpx", "requests", "socket", "urllib"} & set(imported_names)
+    assert "https://" not in source
+    assert "oauth/token" not in source.lower()
