@@ -236,10 +236,10 @@ def _open_bounded(source: Path, artifact_root: Path, limits: ArchiveLimits) -> b
         if file_stat.st_nlink != 1:
             raise PacketError("artifact source is a hardlink alias")
         if file_stat.st_size > limits.max_artifact_bytes:
-            raise PacketError("artifact exceeds max_artifact_bytes")
+            raise PacketError("artifact is too large for max_artifact_bytes")
         data = handle.read(limits.max_artifact_bytes + 1)
     if len(data) > limits.max_artifact_bytes:
-        raise PacketError("artifact exceeds max_artifact_bytes")
+        raise PacketError("artifact is too large for max_artifact_bytes")
     return data
 
 
@@ -257,7 +257,7 @@ def _source_status(root: Path, artifact: GateArtifact, limits: ArchiveLimits) ->
         data = _open_bounded(source, _artifact_root(root), limits)
     except PacketError as error:
         message = str(error)
-        return ("oversized", message, None) if "exceeds max_artifact_bytes" in message else ("refused", message, None)
+        return ("oversized", message, None) if "too large for max_artifact_bytes" in message else ("refused", message, None)
     if artifact.digest and artifact.digest != hashlib.sha256(data).hexdigest():
         return "refused", "stored artifact digest does not match retained bytes", None
     return "included", "retained declared artifact", data
@@ -382,7 +382,7 @@ def export_packet(
                     raise PacketError(f"duplicate archive name: {name}")
                 total += len(data)
                 if total > bounds.max_total_bytes:
-                    item = Item(identity, "oversized", "selected artifacts exceed max_total_bytes", sensitivity)
+                    item = Item(identity, "oversized", "selected artifacts are too large for max_total_bytes", sensitivity)
                 else:
                     contents[name] = data
                     used_names.add(name)
@@ -436,7 +436,7 @@ def export_packet(
     manifest_bytes = _canonical(manifest)
     archive_names = [MANIFEST_NAME, DIGEST_NAME, REPORT_NAME, *sorted(used_names)]
     if len(archive_names) > bounds.max_entries:
-        raise PacketError("archive exceeds max_entries")
+        raise PacketError("archive is too large for max_entries")
     payload = io.BytesIO()
     with zipfile.ZipFile(payload, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name in archive_names:
@@ -492,21 +492,21 @@ def verify_packet(path: Path, *, limits: ArchiveLimits | None = None) -> dict[st
     if not path.is_file():
         raise PacketError(f"missing archive: {path}")
     if path.stat().st_size > bounds.max_archive_bytes:
-        raise PacketError("archive exceeds max_archive_bytes")
+        raise PacketError("archive is too large for max_archive_bytes")
     try:
         with zipfile.ZipFile(path, "r") as archive:
             infos = archive.infolist()
             if len(infos) > bounds.max_entries:
-                raise PacketError("archive exceeds max_entries")
+                raise PacketError("archive is too large for max_entries")
             names = [info.filename for info in infos]
             if len(names) != len(set(names)):
                 raise PacketError("duplicate archive entry")
             if any(info.is_dir() or info.filename.startswith("/") or ".." in Path(info.filename).parts for info in infos):
                 raise PacketError("unsafe archive entry")
             if sum(info.compress_size for info in infos) > bounds.max_archive_bytes:
-                raise PacketError("archive exceeds max_archive_bytes")
+                raise PacketError("archive is too large for max_archive_bytes")
             if sum(info.file_size for info in infos) > bounds.max_expanded_bytes:
-                raise PacketError("archive exceeds max_expanded_bytes")
+                raise PacketError("archive is too large for max_expanded_bytes")
             required = {MANIFEST_NAME, DIGEST_NAME, REPORT_NAME}
             if not required.issubset(names):
                 raise PacketError("missing required archive entry")
@@ -531,7 +531,7 @@ def verify_packet(path: Path, *, limits: ArchiveLimits | None = None) -> dict[st
                 info = archive.getinfo(name)
                 expanded += info.file_size
                 if expanded > bounds.max_expanded_bytes:
-                    raise PacketError("archive exceeds max_expanded_bytes")
+                    raise PacketError("archive is too large for max_expanded_bytes")
                 data = archive.read(name, pwd=None)
                 if len(data) != entry.get("size") or hashlib.sha256(data).hexdigest() != entry.get("sha256"):
                     raise PacketError(f"entry digest mismatch: {name}")
