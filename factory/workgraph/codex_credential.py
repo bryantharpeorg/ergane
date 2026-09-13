@@ -291,6 +291,7 @@ class CredentialFinalization:
     candidate: CredentialCandidate
     result: Any = None
     retained_ownership: bool = False
+    fence_error: str = ""
 
 
 class CredentialFenceFailure(Exception):
@@ -325,13 +326,14 @@ async def finalize_current_candidate(
     await _invoke_termination(terminate)
     try:
         await _invoke_termination(prove)
-    except CredentialFenceFailure:
+    except CredentialFenceFailure as error:
         if quarantine is None:
             raise
         quarantine(candidate)
         return CredentialFinalization(
             candidate=candidate,
             retained_ownership=True,
+            fence_error=str(error),
         )
     result = inspect_candidate(candidate)
     if result is not None and hasattr(result, "__await__"):

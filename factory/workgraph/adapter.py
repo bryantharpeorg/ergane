@@ -1369,7 +1369,14 @@ class SharedAttemptPolicy:
                 # monitor itself end identically: the process group dies and the
                 # attempt keeps its evidence. Only the classification differs,
                 # and on this path the workflow supplies it.
-                await self._finalize_current(process, context, env)
+                finalization = await self._finalize_current(process, context, env)
+                if finalization.retained_ownership:
+                    return AdapterResult(
+                        termination=Termination.AGENT_ERROR,
+                        transcript_path=str(archive),
+                        detail=finalization.fence_error,
+                        owner_retained=True,
+                    )
                 self._archive_session(context, worktree, env, archive)
                 _clear_pid_file(pids)
                 self._archive_plain_final(env, archive)
@@ -1381,12 +1388,19 @@ class SharedAttemptPolicy:
                 await _stop_feeding(feeder)
 
         try:
-            await self._finalize_current(process, context, env)
+            finalization = await self._finalize_current(process, context, env)
         except CredentialFenceFailure as error:
             return AdapterResult(
                 termination=termination,
                 transcript_path=str(archive),
                 detail=str(error),
+                owner_retained=True,
+            )
+        if finalization.retained_ownership:
+            return AdapterResult(
+                termination=termination,
+                transcript_path=str(archive),
+                detail=finalization.fence_error,
                 owner_retained=True,
             )
         self._archive_session(context, worktree, env, archive)

@@ -21,6 +21,7 @@ from factory.workgraph.adapter import (
     pid_file,
 )
 from factory.workgraph.codex_credential import (
+    CredentialFinalization,
     CredentialCandidate,
     CredentialFenceFailure,
     fence_prior_child_before_candidate,
@@ -388,6 +389,117 @@ async def test_adapter_finalizes_before_candidate_reads(
     else:
         await adapter.run_attempt(context, factory_root=tmp_path / "factory")
         assert calls == ["terminate", "prove", "candidate"]
+
+
+async def test_adapter_retains_owner_when_current_death_is_unprovable(
+    tmp_path: Path,
+    worktree: Path,
+    node_home: Path,
+    attempt: Callable[..., AttemptContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-012: failed fencing keeps the pid and candidate for recovery."""
+    candidate = codex_home(node_home) / "auth.json"
+    node_home.mkdir(parents=True, exist_ok=True)
+    operator = node_home / "operator-auth.json"
+    operator.write_text(json.dumps({"auth_mode": "chatgpt"}), encoding="utf-8")
+    codex_home(node_home).mkdir(parents=True, exist_ok=True)
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("{}", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    install_as(bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr("factory.workgraph.adapter._group_alive", lambda pgid: True)
+    from factory.workgraph.adapter import CodexAdapter
+
+    adapter = CodexAdapter(
+        executable="codex",
+        grace_s=0.02,
+        backend=HostAgentBackend(executable="codex"),
+    )
+    adapter._credential = lambda context: CredentialStage(
+        gateway=False,
+        path=operator,
+        source="synthetic-codex-file",
+    )
+    context = attempt(timeout_s=1)
+    write_control(
+        node_home,
+        sleep_s=0.0,
+        exit_code=0,
+        json_events=False,
+        write_rollout=False,
+    )
+    factory_root = tmp_path / "factory"
+
+    result = await adapter.run_attempt(context, factory_root=factory_root)
+    pids = pid_file(factory_root, EPIC, NODE)
+
+    assert result.owner_retained is True
+    assert "could not prove" in result.detail
+    quarantined = candidate.parent / "quarantine" / "1" / "auth.json"
+    assert quarantined.read_text(encoding="utf-8") == operator.read_text(
+        encoding="utf-8"
+    )
+    assert not candidate.exists()
+    assert pids.exists()
+
+
+async def test_cancelled_adapter_retains_owner_without_finalizing_evidence(
+    tmp_path: Path,
+    worktree: Path,
+    node_home: Path,
+    attempt: Callable[..., AttemptContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FR-012: cancellation plus failed fencing leaves recovery state alone."""
+    candidate = codex_home(node_home) / "auth.json"
+    node_home.mkdir(parents=True, exist_ok=True)
+    operator = node_home / "operator-auth.json"
+    operator.write_text(json.dumps({"auth_mode": "chatgpt"}), encoding="utf-8")
+    codex_home(node_home).mkdir(parents=True, exist_ok=True)
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text("{}", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    install_as(bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+    async def retained_finalization(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        return CredentialFinalization(
+            candidate=CredentialCandidate(candidate, 1),
+            retained_ownership=True,
+            fence_error="could not prove current process group died",
+        )
+
+    monkeypatch.setattr(
+        "factory.workgraph.adapter.finalize_current_candidate",
+        retained_finalization,
+    )
+    from factory.workgraph.adapter import CodexAdapter
+
+    adapter = CodexAdapter(
+        executable="codex",
+        grace_s=0.02,
+        backend=HostAgentBackend(executable="codex"),
+    )
+    adapter._credential = lambda context: CredentialStage(
+        gateway=False,
+        path=operator,
+        source="synthetic-codex-file",
+    )
+    context = attempt(timeout_s=1)
+    write_control(node_home, sleep_s=2.0)
+    factory_root = tmp_path / "factory"
+    run = asyncio.create_task(adapter.run_attempt(context, factory_root=factory_root))
+    await wait_until_file(pid_file(factory_root, EPIC, NODE), "the child process")
+    candidate_before_cancel = candidate.read_text(encoding="utf-8")
+    run.cancel()
+    result = await run
+
+    assert result.owner_retained is True
+    assert candidate.read_text(encoding="utf-8") == candidate_before_cancel
+    assert pid_file(factory_root, EPIC, NODE).exists()
 
 
 async def wait_until_file(path: Path, what: str) -> None:
